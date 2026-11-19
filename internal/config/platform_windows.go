@@ -1,0 +1,108 @@
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package config
+
+import (
+	"errors"
+	"runtime"
+	"sync"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+func Replace(source, destination string) error {
+	from, err := windows.UTF16PtrFromString(source)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(destination)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+var (
+	advapi     = windows.NewLazySystemDLL("advapi32.dll")
+	credRead   = advapi.NewProc("CredReadW")
+	credWrite  = advapi.NewProc("CredWriteW")
+	credDelete = advapi.NewProc("CredDeleteW")
+	credFree   = advapi.NewProc("CredFree")
+	target     = windows.StringToUTF16Ptr("GSXCommsGo/Voxtral")
+)
+
+type credential struct {
+	Flags       uint32
+	Type        uint32
+	Target      *uint16
+	Comment     *uint16
+	LastWritten windows.Filetime
+	Size        uint32
+	Blob        *byte
+	Persist     uint32
+	Count       uint32
+	Attributes  uintptr
+	Alias       *uint16
+	User        *uint16
+}
+
+var credentialWrites sync.Mutex
+
+func SaveKey(token string) error {
+	credentialWrites.Lock()
+	defer credentialWrites.Unlock()
+	return writeKey(token)
+}
+
+func migrateLegacyKey(token string) error {
+	return migrateKeyIfMissing(token, ReadKey, writeKey)
+}
+
+func migrateKeyIfMissing(token string, read func() (string, error), write func(string) error) error {
+	credentialWrites.Lock()
+	defer credentialWrites.Unlock()
+	stored, err := read()
+	if err != nil || stored != "" {
+		return err
+	}
+	return write(token)
+}
+
+func writeKey(token string) error {
+	const generic = 1
+	const localMachine = 2
+	if token == "" {
+		ok, _, err := credDelete.Call(uintptr(unsafe.Pointer(target)), generic, 0)
+		if ok == 0 && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+			return err
+		}
+		return nil
+	}
+	blob := []byte(token)
+	defer clear(blob)
+	if len(blob) > 2560 {
+		return errors.New("Voxtral key exceeds the credential size limit")
+	}
+	entry := credential{Type: generic, Target: target, Size: uint32(len(blob)), Blob: &blob[0], Persist: localMachine}
+	ok, _, err := credWrite.Call(uintptr(unsafe.Pointer(&entry)), 0)
+	runtime.KeepAlive(entry)
+	if ok == 0 {
+		return err
+	}
+	return nil
+}
+
+func ReadKey() (string, error) {
+	var entry *credential
+	ok, _, err := credRead.Call(uintptr(unsafe.Pointer(target)), 1, 0, uintptr(unsafe.Pointer(&entry)))
+	if ok == 0 {
+		if errors.Is(err, windows.ERROR_NOT_FOUND) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer credFree.Call(uintptr(unsafe.Pointer(entry)))
+	return string(unsafe.Slice(entry.Blob, int(entry.Size))), nil
+}

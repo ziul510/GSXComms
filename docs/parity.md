@@ -1,0 +1,24 @@
+# GSXComms parity and verification
+
+The supplied GSXComms snapshot is the baseline. Local screenshots, scratch settings and model fixtures are excluded from Git. The package is an unsigned test build.
+
+| Workflow | Reference evidence | Implementation and verification |
+|---|---|---|
+| Startup, disconnected operation, settings and overlay | `main.py`, `ui_components.py`, disposable reference run | Go-gui windows and overlay. Main, wizard and Settings exercised on the host. Minimum-width and widget-ID layout test passes. GDI presentation uses go-gui's software painter if WGL fails. Interactive 150% and clean Windows 11 coverage remain open. |
+| First-run accent setup and voice packs | `accent_setup.py`, reference accent wizard, attribution notice | The wizard shows the original regions. The legacy recordings lack verified plan and voice rights for distribution or import. English fallback audio is bundled. Original regional extraction, voice randomization and per-accent assets remain open. |
+| Settings, migration and presets | `config_manager.py`, `preset_manager.py` | Migrated data, original-file preservation and preset trigger order pass automated tests. Preset creation, ordering and deletion are implemented in Settings. Hardware-specific binding migration and all UI paths still need live coverage. |
+| Normalization, bias vocabulary and command ordering | `stt_engine.py`, `main.py`, `sim_bridge.py`, `words.json` | 22 command cases, 10 menu cases and the full hotword set match Python output. |
+| MSFS 2024 and GSX | `sim_bridge.py`, `gsxremotecontrol.py`, loaded MSFS 2024 flight | Handshake, readiness, live menu open, nine-item parsing, Additional Services, close and reconnect passed. The reference settle delay is required after requesting remote control. Both the reference client and a compatible already-installed native client passed. Automatic discovery also passed on this PC. MSFS 2020 and packaging rights for a standalone SimConnect client remain open. |
+| Console and IPC | `gsxremotecontrol.py` | Windows console and `--ipc` build. Disconnected ready, ping, get-menu, invalid selection and shutdown passed. Live submenu choice and reconnect passed by IPC. |
+| PTT and audio | `input_mapper.py`, `audio_engine.py` | Low-level keyboard key-up, XInput, Raw Input/HID and WinMM implemented. Separate static and voice volumes, priority queue and synthetic English cues are included. Hardware capture and non-default endpoint parity remain open. |
+| GSX/Couatl mute recovery | `gsx_audio_muter.py` | Windows Core Audio watchdog and durable journal integrated with playback. Tests verify write-before-mute and recovery. Actual matching-session crash recovery remains open. |
+| Parakeet and Orukeet | `stt_engine.py`, pinned model files | Both loaded on CPU and transcribed the local jetway fixture. A forced worker-exit integration check exercises worker restart and recognition after reload. Broader accuracy remains unmeasured. |
+| Model management | `stt_engine.py`, `main.py` | Pinned revisions, digests, space check, range resume, cache import, cancel, retry, reload and deletion. Tests verify resume and prevent checksum failures from publishing. |
+| Voxtral | `main.py`, `mistral_provider.py` | Credential Manager, API validation, cloud audio gate and tutorial copy implemented. Live authorized credential test remains open. Third-party tutorial screenshots are excluded pending rights verification. |
+| Kokoro menu readout | `kokoro_tts.py`, `phonemizer_engine.py` | The pinned ONNX export and Go frontend matched 300/300 reference IPA strings at 0% aggregate character error. The worker generated 24 kHz `am_adam` PCM on CPU. Keyword readout, numbering and playback are integrated. The package includes a CPU runtime. Bundled GPU dependencies and live GPU verification remain open. |
+| Offline geocoding | `sim_bridge.py`, accent maps, GeoNames source | Direct GeoNames city data and nearest-city lookup tested at three airports. The bridge reads aircraft coordinates. Local overrides are retained. Per-region voice selection requires the licensed packs. |
+| Legacy launcher | Reference attribution | The snapshot lacks the original .NET launcher. Launcher-only behavior remains unverified. |
+| Diagnostics | `debug_logger.py` | Debug logs rotate at 2,000,000 bytes with three backups. The native console is available with Debug Mode. Credentials are kept out of the log path. |
+| Packaging | Windows Sandbox and installer | Offline, user-mode Windows 10 Sandbox setup, launch and uninstall passed with graphics acceleration disabled. Uninstall preserved test settings. Clean Windows 11, full upgrade UI coverage and Authenticode remain open. |
+
+Matched benchmarking of launch, idle resources and input latency remains open.

@@ -1,0 +1,98 @@
+name: Build Windows release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      PACKAGE_NAME: GSXCommsGo-win-x64-unsigned-test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Check source
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '1'
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
+          $unformatted = gofmt -l .
+          if ($LASTEXITCODE -ne 0 -or $unformatted) { throw "Go formatting check failed: $unformatted" }
+      - name: Prepare build tools and phonemizer
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'nsis-3.12.zip'
+          $nsis = Join-Path $env:RUNNER_TEMP 'nsis'
+          curl.exe --fail --silent --show-error --location --retry 2 --max-time 60 --output $zip 'https://master.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip?viasf=1'
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS download failed' }
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '56581F90DB321581C5381193D796FFFCF2D24B2F8FED2160A6C6A3BAA67F2C4F') {
+            throw 'NSIS archive checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $nsis
+          "MAKENSIS=$(Join-Path $nsis 'nsis-3.12/makensis.exe')" >> $env:GITHUB_ENV
+
+          $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
+          $packages = $export.buildDependencies
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==$($packages.torch)"
+          if ($LASTEXITCODE -ne 0) { throw 'PyTorch install failed' }
+          python -m pip install "deep-phonemizer==$($packages['deep-phonemizer'])" "onnx==$($packages.onnx)"
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer tool install failed' }
+          $checkpoint = Join-Path $env:RUNNER_TEMP 'best_model.pt'
+          Invoke-WebRequest $export.checkpoint -OutFile $checkpoint
+          if ((Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash -ne $export.checkpointSHA256) {
+            throw 'Phonemizer checkpoint checksum mismatch'
+          }
+          python scripts/export-phonemizer.py $checkpoint build/phonemizer
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer export failed' }
+      - name: Build and package
+        shell: pwsh
+        run: |
+          & ./scripts/build.ps1 -MakeNSIS $env:MAKENSIS -PhonemizerDir build/phonemizer
+          $exeName = "$env:PACKAGE_NAME.exe"
+          $zipName = "$env:PACKAGE_NAME.zip"
+          New-Item -ItemType Directory -Path build/release-package, dist/release | Out-Null
+          Copy-Item -LiteralPath "dist/$exeName" -Destination dist/release
+          Copy-Item -LiteralPath "dist/release/$exeName", 'LICENSE', 'THIRD_PARTY_NOTICES' -Destination build/release-package
+          $checksums = $exeName, 'LICENSE', 'THIRD_PARTY_NOTICES' | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "build/release-package/$_").Hash.ToLowerInvariant()
+            "$hash  $_"
+          }
+          $checksums | Set-Content -Encoding utf8 build/release-package/SHA256SUMS.txt
+          Compress-Archive -Path build/release-package/* -DestinationPath "dist/release/$zipName"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/release/$zipName").Hash.ToLowerInvariant()
+          "$hash  $zipName" | Set-Content -Encoding utf8 "dist/release/$zipName.sha256"
+      - name: Upload manual build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: GSXCommsGo-Windows-x64
+          path: dist/release/*
+          if-no-files-found: error
+          compression-level: 0
+      - name: Attach files to published release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload --clobber -- "$env:RELEASE_TAG" "dist/release/$env:PACKAGE_NAME.exe" "dist/release/$env:PACKAGE_NAME.zip" "dist/release/$env:PACKAGE_NAME.zip.sha256"
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }

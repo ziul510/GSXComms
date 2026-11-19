@@ -1,0 +1,484 @@
+{
+  "hotwords": [
+    "aero bridge",
+    "aerobridge",
+    "air bridge",
+    "air stair",
+    "air stairs",
+    "airbridge",
+    "aircraft",
+    "airstair",
+    "airstairs",
+    "alfa",
+    "alpha",
+    "anti ice",
+    "anti icing",
+    "anti-ice",
+    "anti-icing",
+    "avgas",
+    "board",
+    "boarding",
+    "boarding bridge",
+    "boarding stairs",
+    "bowser",
+    "bravo",
+    "cable",
+    "call",
+    "cancel",
+    "captain",
+    "cater",
+    "caterer",
+    "caterers",
+    "catering",
+    "catering service",
+    "catering truck",
+    "charlie",
+    "clean",
+    "clean up",
+    "cleaner",
+    "cleaners",
+    "cleaning",
+    "cleaning crew",
+    "cleaning service",
+    "cleaning truck",
+    "cleanup",
+    "close",
+    "cockpit",
+    "confirm",
+    "crew",
+    "de ice",
+    "de-ice",
+    "de-icer",
+    "de-icing",
+    "deboard",
+    "deboarding",
+    "defrost",
+    "defrosting",
+    "deice",
+    "deicer",
+    "deicing",
+    "delta",
+    "deplane",
+    "deplaning",
+    "disembark",
+    "disembarking",
+    "drinking water",
+    "echo",
+    "eight",
+    "electric",
+    "electrical power",
+    "eleven",
+    "embark",
+    "embarkation",
+    "embarking",
+    "external",
+    "external power",
+    "first officer",
+    "five",
+    "flight deck",
+    "food",
+    "food service",
+    "food truck",
+    "four",
+    "foxtrot",
+    "fresh water",
+    "front stairs",
+    "fuel",
+    "fuel service",
+    "fuel truck",
+    "fueling",
+    "fuelling",
+    "galley",
+    "gangway",
+    "gasoline",
+    "gate",
+    "golf",
+    "goodbye",
+    "gpu",
+    "gpu cart",
+    "ground",
+    "ground crew",
+    "ground power",
+    "ground power unit",
+    "hello",
+    "hotel",
+    "ice truck",
+    "icing",
+    "icing truck",
+    "india",
+    "jet bridge",
+    "jet fuel",
+    "jetbridge",
+    "jetway",
+    "juliet",
+    "juliett",
+    "kerosene",
+    "kilo",
+    "lav",
+    "lav service",
+    "lav truck",
+    "lavatory",
+    "lavatory service",
+    "lima",
+    "load passengers",
+    "meal",
+    "meal service",
+    "meals",
+    "mike",
+    "nine",
+    "niner",
+    "no",
+    "november",
+    "offload",
+    "offloading",
+    "one",
+    "open",
+    "oscar",
+    "papa",
+    "passenger bridge",
+    "passengers off",
+    "passengers on",
+    "petrol",
+    "please",
+    "plug",
+    "potable water",
+    "power",
+    "power cable",
+    "power cart",
+    "power cord",
+    "power supply",
+    "power truck",
+    "power unit",
+    "push",
+    "push back",
+    "push truck",
+    "pushback",
+    "pushback truck",
+    "quebec",
+    "ready",
+    "rear stairs",
+    "refreshments",
+    "refuel",
+    "refueling",
+    "refuelling",
+    "request",
+    "restroom",
+    "romeo",
+    "service",
+    "seven",
+    "sierra",
+    "six",
+    "snacks",
+    "snow removal",
+    "stair",
+    "stairs",
+    "stairway",
+    "step",
+    "steps",
+    "tango",
+    "tanker",
+    "tanker truck",
+    "ten",
+    "thanks",
+    "three",
+    "toilet",
+    "toilet service",
+    "toilets",
+    "tow",
+    "tow truck",
+    "towing",
+    "tractor",
+    "truck",
+    "tug",
+    "tug truck",
+    "twelve",
+    "two",
+    "uniform",
+    "unit",
+    "unloading",
+    "victor",
+    "volt",
+    "washroom",
+    "water",
+    "water cart",
+    "water service",
+    "water truck",
+    "whiskey",
+    "x-ray",
+    "xray",
+    "yankee",
+    "yes",
+    "zero",
+    "zulu"
+  ],
+  "commands": [
+    {
+      "Text": "ground, request gpu",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "GPU"
+        ]
+      }
+    },
+    {
+      "Text": "ground request jetway at b four",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "JETWAY"
+        ]
+      }
+    },
+    {
+      "Text": "ground ask ground crew",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "connect gpu",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "GPU"
+        ]
+      }
+    },
+    {
+      "Text": "pull the jet-way back",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "deboard please",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "DEBOARDING"
+        ]
+      }
+    },
+    {
+      "Text": "board and fuel",
+      "Route": {
+        "Kind": "ambiguous",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "ready to go",
+      "Route": {
+        "Kind": "preset",
+        "Preset": "Arrival",
+        "Services": [
+          "JETWAY",
+          "GPU",
+          "DEBOARDING"
+        ]
+      }
+    },
+    {
+      "Text": "push and go",
+      "Route": {
+        "Kind": "preset",
+        "Preset": "Push",
+        "Services": [
+          "CATERING",
+          "REFUELING",
+          "PUSHBACK"
+        ]
+      }
+    },
+    {
+      "Text": "disabled test",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "unknown speech",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "deice",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "DEICE"
+        ]
+      }
+    },
+    {
+      "Text": "request x j a",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "alpha2 b c d",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "cater, crew oxygen",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "CATERING"
+        ]
+      }
+    },
+    {
+      "Text": "cancel push",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "PUSHBACK"
+        ]
+      }
+    },
+    {
+      "Text": "good day ground cockpit",
+      "Route": {
+        "Kind": "greeting",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "request stair for c",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "STAIRS"
+        ]
+      }
+    },
+    {
+      "Text": "request lav",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "LAVATORY"
+        ]
+      }
+    },
+    {
+      "Text": "please do water",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "WATER"
+        ]
+      }
+    },
+    {
+      "Text": "agrounded ground _aground",
+      "Route": {
+        "Kind": "menu",
+        "Preset": "",
+        "Services": null
+      }
+    },
+    {
+      "Text": "close passenger stair",
+      "Route": {
+        "Kind": "service",
+        "Preset": "",
+        "Services": [
+          "STAIRS"
+        ]
+      }
+    }
+  ],
+  "menus": [
+    {
+      "Index": 1,
+      "Points": 283,
+      "Correction": "Disconnect jetway",
+      "Similarity": 1.0
+    },
+    {
+      "Index": 1,
+      "Points": 287,
+      "Correction": "Additional Services",
+      "Similarity": 1.0
+    },
+    {
+      "Index": 1,
+      "Points": 200,
+      "Correction": "",
+      "Similarity": 0.0
+    },
+    {
+      "Index": 1,
+      "Points": 55,
+      "Correction": "Stand Bravo",
+      "Similarity": 1.0
+    },
+    {
+      "Index": 0,
+      "Points": 204,
+      "Correction": "Request de-icing",
+      "Similarity": 1.0
+    },
+    {
+      "Index": 0,
+      "Points": 186,
+      "Correction": "Prepare for pushback",
+      "Similarity": 1.0
+    },
+    {
+      "Index": -1,
+      "Points": 0,
+      "Correction": "",
+      "Similarity": 0.0
+    },
+    {
+      "Index": 0,
+      "Points": 79,
+      "Correction": "Request refueling",
+      "Similarity": 0.8888888888888888
+    },
+    {
+      "Index": 0,
+      "Points": 175,
+      "Correction": "Remove front stairs",
+      "Similarity": 1.0
+    },
+    {
+      "Index": -1,
+      "Points": 0,
+      "Correction": "",
+      "Similarity": 0.0
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "parakeet": {
+    "Name": "parakeet",
+    "Repo": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+    "Revision": "1ab9323565ddb038682214b292f588070a538ce2",
+    "Files": [
+      {
+        "Path": "encoder.int8.onnx",
+        "Bytes": 652184296,
+        "SHA256": "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab"
+      },
+      {
+        "Path": "decoder.int8.onnx",
+        "Bytes": 7257753,
+        "SHA256": "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e"
+      },
+      {
+        "Path": "joiner.int8.onnx",
+        "Bytes": 1739080,
+        "SHA256": "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2"
+      },
+      {
+        "Path": "tokens.txt",
+        "Bytes": 9384,
+        "SHA256": "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"
+      }
+    ]
+  },
+  "orukeet": {
+    "Name": "orukeet",
+    "Repo": "oruk/orukeet",
+    "Revision": "b59c13a733fce5cf193230d0fa317ee7f145a108",
+    "Files": [
+      {
+        "Path": "onnx/sherpa-v0.1.0-int8/encoder.int8.onnx",
+        "Bytes": 653182378,
+        "SHA256": "7b55f2a504a20a8e462899f5befd45f4a1784948d76ed0127902d9cf39405487"
+      },
+      {
+        "Path": "onnx/sherpa-v0.1.0-int8/decoder.int8.onnx",
+        "Bytes": 11845332,
+        "SHA256": "c185c2afb4c77c94bb1314807ecb3dc1623057a3dc540b83e10301af9bf4cfca"
+      },
+      {
+        "Path": "onnx/sherpa-v0.1.0-int8/joiner.int8.onnx",
+        "Bytes": 6355335,
+        "SHA256": "1a7e90abf7172d926dd7e2edac2a5d5035c24dfb641a15e131d57b6a5f63cdd3"
+      },
+      {
+        "Path": "onnx/sherpa-v0.1.0-int8/tokens.txt",
+        "Bytes": 93939,
+        "SHA256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+      }
+    ]
+  },
+  "kokoro": {
+    "Name": "kokoro",
+    "Repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
+    "Revision": "1939ad2a8e416c0acfeecc08a694d14ef25f2231",
+    "Files": [
+      {
+        "Path": "onnx/model.onnx",
+        "Bytes": 325532232,
+        "SHA256": "8fbea51ea711f2af382e88c833d9e288c6dc82ce5e98421ea61c058ce21a34cb"
+      },
+      {
+        "Path": "voices/am_adam.bin",
+        "Bytes": 522240,
+        "SHA256": "162b035ed91cfc48b6046982184c645f72edcdd1b82843347f605d7bf7b15716"
+      },
+      {
+        "Path": "tokenizer.json",
+        "Bytes": 3497,
+        "SHA256": "77a02c8e164413299b4b4c403b14f8e0e1c1b727db4d46a09d6327b861060a34"
+      }
+    ]
+  }
+}

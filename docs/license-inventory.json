@@ -1,0 +1,256 @@
+{
+  "modules": {
+    "github.com/alecthomas/chroma/v2": {
+      "version": "v2.27.0",
+      "license": "MIT",
+      "files": [
+        "COPYING"
+      ]
+    },
+    "github.com/dlclark/regexp2/v2": {
+      "version": "v2.2.2",
+      "license": "MIT",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/ebitengine/purego": {
+      "version": "v0.11.1",
+      "license": "Apache-2.0",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/go-gui-org/go-glyph": {
+      "version": "v1.26.5",
+      "license": "MIT",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/go-gui-org/go-gui": {
+      "version": "v0.96.0",
+      "license": "MIT",
+      "files": [
+        "LICENSE",
+        "THIRD_PARTY_NOTICES",
+        "gui/assets/svg-spinners/LICENSE"
+      ]
+    },
+    "github.com/go-pdf/fpdf": {
+      "version": "v0.9.0",
+      "license": "MIT",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/go-text/typesetting": {
+      "version": "v0.3.5",
+      "license": "BSD-3-Clause (chosen from Unlicense OR BSD-3-Clause)",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/rivo/uniseg": {
+      "version": "v0.4.7",
+      "license": "MIT",
+      "files": [
+        "LICENSE.txt"
+      ]
+    },
+    "github.com/tdewolff/parse/v2": {
+      "version": "v2.8.16",
+      "license": "MIT",
+      "files": [
+        "LICENSE.md"
+      ]
+    },
+    "github.com/yuin/goldmark-emoji": {
+      "version": "v1.0.6",
+      "license": "MIT",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/yuin/goldmark": {
+      "version": "v1.8.5",
+      "license": "MIT",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "golang.org/x/image": {
+      "version": "v0.48.0",
+      "license": "BSD-3-Clause",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "golang.org/x/sys": {
+      "version": "v0.50.0",
+      "license": "BSD-3-Clause",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "golang.org/x/text": {
+      "version": "v0.44.0",
+      "license": "BSD-3-Clause",
+      "files": [
+        "LICENSE"
+      ]
+    },
+    "github.com/yalue/onnxruntime_go": {
+      "version": "v1.32.0",
+      "files": [
+        "LICENSE"
+      ],
+      "license": "MIT"
+    }
+  },
+  "components": [
+    {
+      "name": "Go standard library and runtime",
+      "version": "1.27.0",
+      "license": "BSD-3-Clause",
+      "source": "https://go.dev/LICENSE",
+      "mode": "linked"
+    },
+    {
+      "name": "NSIS setup engine and zlib compression",
+      "version": "3.12",
+      "license": "Zlib",
+      "source": "https://nsis.sourceforge.io/License",
+      "mode": "installer"
+    },
+    {
+      "name": "sherpa-onnx C ABI and C header",
+      "version": "v2.0.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/k2-fsa/sherpa-onnx-go-windows/tree/v2.0.1",
+      "mode": "bundled",
+      "sha256": "5dd36dbd3572846b72c4a40a4017c5a770160ee8e00da5053bebc8b2632501e8",
+      "runtimeFile": "sherpa-onnx-c-api.dll"
+    },
+    {
+      "name": "ONNX Runtime CPU, sherpa-onnx Windows build",
+      "version": "1.28.2",
+      "license": "MIT",
+      "source": "https://github.com/csukuangfj/onnxruntime-libs/releases/tag/1.28.2",
+      "mode": "bundled",
+      "sha256": "7f66f939a881baf4f46a2216496798edf4a1429878b646d12674aa62f27d8a25",
+      "runtimeFile": "onnxruntime.dll"
+    },
+    {
+      "name": "Parakeet TDT v2 0.6B INT8 (NVIDIA foundation, sherpa-onnx conversion)",
+      "version": "1ab9323565ddb038682214b292f588070a538ce2",
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tree/1ab9323565ddb038682214b292f588070a538ce2",
+      "mode": "download or verified local cache import",
+      "terms": "https://creativecommons.org/licenses/by/4.0/"
+    },
+    {
+      "name": "Orukeet INT8 weights (Oruk AI, based on NVIDIA Parakeet TDT v3)",
+      "version": "b59c13a733fce5cf193230d0fa317ee7f145a108",
+      "license": "CC-BY-SA-4.0",
+      "source": "https://huggingface.co/oruk/orukeet/tree/b59c13a733fce5cf193230d0fa317ee7f145a108",
+      "mode": "download or verified local cache import",
+      "terms": "https://creativecommons.org/licenses/by-sa/4.0/"
+    },
+    {
+      "name": "Kokoro 82M v1.0 ONNX and am_adam voice (hexgrad; ONNX Community export)",
+      "version": "1939ad2a8e416c0acfeecc08a694d14ef25f2231",
+      "license": "Apache-2.0",
+      "source": "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/tree/1939ad2a8e416c0acfeecc08a694d14ef25f2231",
+      "mode": "download or verified local cache import",
+      "terms": "https://huggingface.co/hexgrad/Kokoro-82M/blob/main/LICENSE"
+    },
+    {
+      "name": "GSXComms application icon, Aviationist101",
+      "version": "reference snapshot",
+      "license": "project-specific permission documented in reference attribution",
+      "source": "GSXComms reference attribution notice",
+      "mode": "bundled"
+    },
+    {
+      "name": "words, accent mappings, default configuration and Voxtral prompt, ziul510",
+      "version": "reference snapshot",
+      "license": "Apache-2.0 (project owner's authorization)",
+      "source": "GSXComms reference snapshot",
+      "mode": "bundled; user-authored vocabulary and mappings may also be imported"
+    },
+    {
+      "name": "SimConnect",
+      "version": "installed x64 GSX/MSFS library",
+      "license": "Microsoft Flight Simulator vendor terms",
+      "source": "https://docs.flightsimulator.com/msfs2024/retail/programming-apis/simconnect/simconnect-sdk/",
+      "mode": "load existing installed native client; vendor DLLs are excluded from the installer",
+      "terms": "https://docs.flightsimulator.com/msfs2024/html/1_Introduction/SDK_EULA.htm",
+      "alternative": "Verified on this PC using the existing MSFS 2024 native client deployed with Lorby AxisAndOhs. Vendor redistribution classification is still outstanding."
+    },
+    {
+      "name": "OpenPhonemizer code and checkpoint",
+      "version": "c949f6bc5d3c4a8f3d9babf221b49d8145eced0b",
+      "license": "BSD-3-Clause-Clear",
+      "source": "https://huggingface.co/openphonemizer/ckpt",
+      "mode": "pinned checkpoint export and tokenizer data bundled in Kokoro test builds",
+      "alternative": "The Go executable implements number expansion independently. No LGPL number expansion package is used by the rewrite.",
+      "terms": "https://github.com/NeuralVox/OpenPhonemizer/blob/main/LICENSE"
+    },
+    {
+      "name": "ElevenLabs legacy accent recordings",
+      "version": "reference snapshot",
+      "license": "generation-plan and voice rights are unverified",
+      "source": "https://elevenlabs.io/terms-of-use",
+      "mode": "blocked from bundle and import",
+      "alternative": "Use recordings from consenting speakers with documented redistribution terms."
+    },
+    {
+      "name": "GeoNames city coordinates and admin regions",
+      "version": "2026-11-18 snapshot",
+      "license": "CC-BY-4.0",
+      "source": "https://www.geonames.org/export/",
+      "mode": "bundled compact coordinate and region index; attribution to GeoNames",
+      "alternative": "The reference reverse-geocoder wrapper is LGPL. The rewrite reads the source GeoNames data directly.",
+      "terms": "https://creativecommons.org/licenses/by/4.0/"
+    },
+    {
+      "name": "Legacy Voxtral tutorial captures",
+      "version": "reference snapshot",
+      "license": "third-party UI screenshot redistribution unverified",
+      "source": "https://docs.mistral.ai/",
+      "mode": "blocked from bundle",
+      "alternative": "Use original tutorial copy with vendor links."
+    },
+    {
+      "name": "GPU provider DLLs",
+      "version": "pending CUDA/ORT pin",
+      "license": "redistribution review pending",
+      "source": "https://onnxruntime.ai/docs/install/",
+      "mode": "blocked pending review",
+      "alternative": "Use built-in CPU execution and document the GPU gate."
+    },
+    {
+      "version": "GSXComms Go rewrite",
+      "license": "Apache-2.0 project recordings generated with Kokoro am_adam",
+      "name": "English fallback crew cues",
+      "mode": "bundled",
+      "source": "scripts/crew-cues.py and pinned Kokoro model"
+    },
+    {
+      "version": "go-gui v0.96.0 font",
+      "license": "MIT",
+      "name": "Feather icons embedded by go-gui",
+      "mode": "bundled",
+      "source": "https://github.com/feathericons/feather"
+    },
+    {
+      "alternative": "Load a compatible, already-installed native SimConnect client.",
+      "name": "node-simconnect",
+      "source": "https://github.com/EvenAR/node-simconnect/blob/master/package.json",
+      "version": "upstream",
+      "mode": "blocked",
+      "license": "LGPL-3.0-or-later"
+    }
+  ]
+}

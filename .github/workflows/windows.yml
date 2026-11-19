@@ -1,0 +1,44 @@
+# Copyright 2026 ziul510
+# SPDX-License-Identifier: Apache-2.0
+name: Windows checks
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Secret scan
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'gitleaks-8.28.0.zip'
+          Invoke-WebRequest 'https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_windows_x64.zip' -OutFile $zip
+          if ((Get-FileHash $zip).Hash -ne 'DA6458E8864AF553807DE1C46A7A8EAC0880BD6B99BA56288E87E86A45AF884F') {
+            throw 'Gitleaks checksum mismatch'
+          }
+          $tools = Join-Path $env:RUNNER_TEMP 'gsxcomms-tools'
+          Expand-Archive -LiteralPath $zip -DestinationPath $tools
+          & (Join-Path $tools 'gitleaks.exe') git --redact .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Vet and test
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '1'
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -race ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CGO_ENABLED = '0'
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $modfile = & scripts/go-gui-overlay.ps1
+          go build -modfile $modfile ./...
