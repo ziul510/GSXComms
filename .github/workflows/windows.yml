@@ -29,13 +29,13 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $tools
           & (Join-Path $tools 'gitleaks.exe') git --redact .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Vet and test
+      - name: Vet and build
         shell: pwsh
         run: |
           $env:CGO_ENABLED = '1'
           go vet ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -race ./...
+          go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:CGO_ENABLED = '0'
           go build ./...

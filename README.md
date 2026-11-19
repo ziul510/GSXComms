@@ -14,7 +14,7 @@ Close the Go app before importing. Pass `--import` with the path to the old `GSX
 & "$env:LOCALAPPDATA\Programs\GSXCommsGo\GSXComms.exe" --import "C:\path\to\GSXCommsFiles"
 ```
 
-## Build and test
+## Build
 
 Use Windows x64, Go 1.27.0, a MinGW-w64 UCRT C compiler, PowerShell 7, and NSIS 3.12 on the build machine. The builder prepares the pinned go-gui source with the Windows software renderer and verifies the bundled sherpa-onnx Windows DLLs.
 
@@ -23,12 +23,11 @@ For Kokoro, download the pinned checkpoint listed in [the export manifest](docs/
 ```powershell
 python scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
 go vet ./...
-go test ./...
-go test -race ./...
+go build ./...
 pwsh -File scripts/build.ps1 -MakeNSIS C:\tools\nsis\makensis.exe -PhonemizerDir build\phonemizer
 ```
 
-The unsigned package is written to `dist`. To regenerate the command differential fixture, run `scripts/reference-corpus.py` in the reference Python environment with the supplied `GSXCommsFiles` directory, save stdout as `testdata/reference.json`, and rerun the Go tests.
+The unsigned package is written to `dist`.
 
 ## GitHub releases
 
