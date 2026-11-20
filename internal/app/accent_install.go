@@ -23,28 +23,23 @@ func accentPackInstalled(dir, name string) bool {
 }
 
 // Legacy archives can be unpacked by pack or flattened under Extracted.
-func legacyAccentPack(name string, accents []string, roots ...string) bool {
-	for _, root := range roots {
-		if root == "" {
-			continue
-		}
-		for _, relative := range []string{name, "Extracted", ""} {
-			complete := true
-			for _, accent := range accents {
-				for _, voice := range []string{"female", "male"} {
-					info, err := os.Stat(filepath.Join(root, relative, strings.ToLower(accent), "goahead", voice+"11.ai.mp3"))
-					if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-						complete = false
-						break
-					}
-				}
-				if !complete {
+func legacyAccentPack(root, name string, accents []string) bool {
+	for _, relative := range []string{name, "Extracted", ""} {
+		complete := true
+		for _, accent := range accents {
+			for _, voice := range []string{"female", "male"} {
+				info, err := os.Stat(filepath.Join(root, relative, strings.ToLower(accent), "goahead", voice+"11.ai.mp3"))
+				if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+					complete = false
 					break
 				}
 			}
-			if complete {
-				return true
+			if !complete {
+				break
 			}
+		}
+		if complete {
+			return true
 		}
 	}
 	return false
@@ -53,7 +48,7 @@ func legacyAccentPack(name string, accents []string, roots ...string) bool {
 func installAccentPacks(ctx context.Context, archives, recordings string, enabled []string) error {
 	for _, pack := range packs {
 		if !slices.Contains(enabled, pack.name) || accentPackInstalled(recordings, pack.name) ||
-			legacyAccentPack(pack.name, pack.accents, recordings, archives) {
+			legacyAccentPack(recordings, pack.name, pack.accents) {
 			continue
 		}
 		if err := installAccentPack(ctx, archives, recordings, pack.name, pack.accents); err != nil {

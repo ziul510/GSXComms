@@ -22,6 +22,7 @@ func (s *state) record(down bool) {
 	// A release ends capture The collected audio still has to pass the speech gate
 	if !down {
 		s.pttHeld = false
+		s.heldHIDPath = ""
 		if s.recording != nil {
 			s.recording()
 		}
@@ -173,7 +174,7 @@ func downloadModel(ctx context.Context, model models.Model, dir string, progress
 	return err
 }
 
-func (s *state) prepareSpeech(autoDownload bool) {
+func (s *state) prepareSpeech(autoDownload, reload bool) {
 	if s.recognizer == nil {
 		return
 	}
@@ -222,7 +223,12 @@ func (s *state) prepareSpeech(autoDownload bool) {
 				}
 				if err == nil {
 					s.sttMu.Lock()
-					err = s.loadRecognizer(ctx, model, vocab)
+					if err = ctx.Err(); err == nil {
+						if reload {
+							s.recognizer.Reset()
+						}
+						err = s.loadRecognizer(ctx, model, vocab)
+					}
 					s.sttMu.Unlock()
 				}
 			}

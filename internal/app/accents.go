@@ -83,7 +83,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 	fallback := config.Get[string](prefs, "default_accent")
 	available, selected := map[string]bool{}, map[string]bool{}
 	for _, pack := range packs {
-		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(pack.name, pack.accents, recordings, archives)
+		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(recordings, pack.name, pack.accents)
 		if extracted {
 			available[pack.name] = true
 		} else if archive, err := zip.OpenReader(filepath.Join(archives, pack.name+".zip")); err == nil {
@@ -278,17 +278,13 @@ func (s *state) regionalCue(next playback) ([]byte, int) {
 	installed := slices.Clone(accents)
 	slices.Sort(installed)
 	names = append(names, installed...)
+	recordings := filepath.Join(s.dir, "Accents")
 	for _, name := range names {
 		if name == "" {
 			continue
 		}
-		for _, dir := range []string{filepath.Join(s.dir, "Accents"), s.accentsDir} {
-			if dir == "" {
-				continue
-			}
-			if pcm, rate := accentCue(dir, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
-				return pcm, rate
-			}
+		if pcm, rate := accentCue(recordings, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
+			return pcm, rate
 		}
 	}
 	return nil, 0

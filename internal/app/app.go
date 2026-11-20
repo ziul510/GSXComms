@@ -96,6 +96,8 @@ type state struct {
 	settingsOpen, accentOpen, hotfixOpen             bool
 	binding                                          func(config.Binding)
 	hidPaths                                         map[string][]string
+	heldHIDPath                                      string
+	heldHIDButton                                    int
 }
 
 func Run(dir string) {
@@ -155,7 +157,7 @@ func Run(dir string) {
 			w.SetView(mainView)
 			// Start background work after the main window can accept UI callbacks
 			go s.simulator()
-			s.prepareSpeech(true)
+			s.prepareSpeech(true, false)
 			s.configureTray()
 			s.setTopmost()
 			// Load the active PTT key before the keyboard hook starts listening

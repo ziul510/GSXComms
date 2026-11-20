@@ -144,38 +144,51 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 	}
 }
 
-func TestPresetEmptyStateCreatesPreset(t *testing.T) {
+func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
 	parent := gui.NewTestWindow(t, gui.WindowCfg{})
-	draft := config.Defaults()
-	s.openPresets(draft, parent, func() {})
-	manager := gui.NewTestWindow(t, <-s.host.PendingOpen())
-	manager.TestRender(nil)
-	click := func(id string) {
+	open := func() *gui.Window {
+		s.openPresets(parent, func() {})
+		window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+		window.TestRender(nil)
+		return window
+	}
+	click := func(window *gui.Window, id string) {
 		t.Helper()
-		if err := manager.TestClick("presets-scroll:" + id); err != nil {
+		if err := window.TestClick(id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Use the actual empty-state action so this exercises the editor callbacks
-	click("create-preset")
-	if err := manager.TestType("presets-scroll:preset-name", "Arrival"); err != nil {
-		t.Fatal(err)
+	add := func(window *gui.Window, name string) *saveRequest {
+		t.Helper()
+		if err := window.TestType("presets-scroll:preset-name", name); err != nil {
+			t.Fatal(err)
+		}
+		if err := window.TestType("presets-scroll:preset-trigger", strings.ToLower(name)); err != nil {
+			t.Fatal(err)
+		}
+		click(window, "presets-scroll:add-service")
+		click(window, "presets-scroll:save-preset")
+		select {
+		case request := <-s.saves:
+			return request
+		default:
+			t.Fatal("saving the preset did not queue a disk write")
+			return nil
+		}
 	}
-	if err := manager.TestType("presets-scroll:preset-trigger", "arrival"); err != nil {
-		t.Fatal(err)
-	}
-	// A fresh form starts with GPU as the service picker value
-	click("add-service")
-	click("save-preset")
-	select {
-	case request := <-s.saves:
-		s.finishSave(request, nil)
-	default:
-		t.Fatal("saving the preset did not queue a disk write")
-	}
-	presets := config.Get[[]config.Preset](draft, "presets")
-	if len(presets) != 1 || presets[0].Codeword != "arrival" || !slices.Equal(presets[0].Services, []string{"GPU"}) {
+	first := open()
+	click(first, "presets-scroll:create-preset")
+	arrival := add(first, "Arrival")
+	click(first, "done")
+	// Reopen before the editor receives its first write completion.
+	second := open()
+	click(second, "new")
+	departure := add(second, "Departure")
+	s.finishSave(arrival, nil)
+	s.finishSave(departure, nil)
+	presets := config.Get[[]config.Preset](s.cfg, "presets")
+	if len(presets) != 2 || presets[0].Codeword != "arrival" || presets[1].Codeword != "departure" || !slices.Equal(presets[0].Services, []string{"GPU"}) {
 		t.Fatalf("unexpected presets: %+v", presets)
 	}
 }
@@ -363,6 +376,31 @@ func TestLaterSuccessfulSaveAppliesBinding(t *testing.T) {
 	s.finishSave(<-s.saves, nil)
 	if captureKey.Load() != 'N' || s.pttHeld || !config.Get[bool](s.cfg, "gsx_hotfix_completed") {
 		t.Fatal("successful save left runtime settings stale")
+	}
+}
+
+func TestHIDReleaseKeepsOriginalOwnerAfterHotplug(t *testing.T) {
+	index := 1
+	first := &hidDevice{path: "first", name: "Flight Stick"}
+	second := &hidDevice{path: "second", name: first.name}
+	s := &state{cfg: config.Defaults(), ctx: t.Context(), hidPaths: map[string][]string{"flight stick": {first.path}}}
+	s.cfg.Put("ptt_bind", config.Binding{Type: "joystick", JoyName: first.name, JoyButton: &index})
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.hidButton(first, index, true)
+	s.main.FrameFn()
+	if !s.pttHeld {
+		t.Fatal("the only matching device did not start PTT")
+	}
+	s.hidPaths["flight stick"] = append(s.hidPaths["flight stick"], second.path)
+	s.hidButton(second, index, false)
+	s.main.FrameFn()
+	if !s.pttHeld {
+		t.Fatal("a different device released PTT")
+	}
+	s.hidButton(first, index, false)
+	s.main.FrameFn()
+	if s.pttHeld {
+		t.Fatal("the device holding PTT could not release after hotplug")
 	}
 }
 

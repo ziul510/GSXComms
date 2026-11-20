@@ -399,7 +399,7 @@ func (s *state) openSettings() {
 			if s.binding != nil {
 				s.binding(config.Binding{})
 			}
-			// The preset editor shares this window's draft and can't outlive it
+			// Close the child editor with Settings.
 			if closePresets != nil {
 				closePresets()
 			}
@@ -515,7 +515,7 @@ func (s *state) openSettings() {
 		pick("default_accent", "Default accent", selectedAccents)
 		action("accent-setup", "Open Accent Setup", false, s.openAccents)
 		section("Presets", "Bundle multiple services behind a codeword and pick the run order")
-		presets := config.Get[[]config.Preset](draft, "presets")
+		presets := config.Get[[]config.Preset](s.cfg, "presets")
 		summary := "No presets yet. Open Preset Manager to create one."
 		if len(presets) == 1 {
 			summary = "1 preset"
@@ -523,9 +523,8 @@ func (s *state) openSettings() {
 			summary = fmt.Sprintf("%d presets", len(presets))
 		}
 		body = append(body, text(summary, 11, muted))
-		// Wait for the preset editor to close before saving the shared draft
 		action("presets", "Open Preset Manager", closePresets != nil || saving, func() {
-			closePresets = s.openPresets(draft, w, func() { closePresets = nil; w.InvalidateLayout() })
+			closePresets = s.openPresets(w, func() { closePresets = nil; w.InvalidateLayout() })
 		})
 		section("Behavior", "The behavior of the app")
 		toggle("enable_menu_matching", "Broader mode")

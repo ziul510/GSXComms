@@ -48,11 +48,11 @@ func Connect(ctx context.Context) (Transport, error) {
 		return nil, err
 	}
 	// Resolve the helper beside the executable so the ZIP can launch from any working directory.
-	return connectHelper(ctx, filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
+	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
+	return connectHelper(ctx, cmd)
 }
 
-func connectHelper(ctx context.Context, path string) (Transport, error) {
-	cmd := exec.Command(path)
+func connectHelper(ctx context.Context, cmd *exec.Cmd) (Transport, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -84,6 +84,12 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest) (hel
 	}
 	if err := ctx.Err(); err != nil {
 		return helperReply{}, err
+	}
+	if req != nil {
+		// Bound stalled pipe writes and reads even when the console supplies no deadline.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Second)
+		defer cancel()
 	}
 	type result struct {
 		reply helperReply

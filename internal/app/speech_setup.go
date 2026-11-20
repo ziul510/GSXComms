@@ -75,7 +75,7 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 			setup.running, setup.cancel = "", nil
 			setup.local[id] = next
 			if err == nil && operation == "Downloading" && config.Get[string](s.cfg, "speech_provider") == id {
-				s.prepareSpeech(false)
+				s.prepareSpeech(false, false)
 			}
 			if !w.CloseRequested() {
 				if then != nil {
@@ -129,19 +129,14 @@ func (setup *speechSetup) localCard(s *state, w *gui.Window, id, label string) g
 	if id == other {
 		other = "orukeet"
 	}
-	if id != "kokoro" && status.cached && (!status.ready || (!inUse && setup.local[other].ready)) {
+	if status.cached && (!status.ready || (id != "kokoro" && !inUse && setup.local[other].ready)) {
 		actions = append(actions, action("delete-"+id, "Delete", false, busy, func() {
 			setup.runLocal(s, w, id, "Deleting", nil)
 		}))
 	}
-	if id != "kokoro" && inUse && status.ready && !s.speechReady && !busy {
-		actions = append(actions, action("retry-"+id, "Retry loading", false, false, func() {
-			go func() {
-				s.sttMu.Lock()
-				s.recognizer.Reset()
-				s.sttMu.Unlock()
-				s.async(func() { s.prepareSpeech(false) })
-			}()
+	if id != "kokoro" && inUse && status.ready && !busy {
+		actions = append(actions, action("retry-"+id, "Reload", false, false, func() {
+			s.prepareSpeech(false, true)
 		}))
 	}
 	if setup.running == id && strings.HasPrefix(status.message, "Downloading") {
@@ -282,9 +277,12 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 		setup.useProvider(s, w, "mistral", func() {
 			// Recheck a previously selected provider when the user supplies its missing key.
 			if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
-				s.prepareSpeech(false)
+				s.prepareSpeech(false, false)
 			}
-			leave()
+			// A closed window's save must not dismiss a later tutorial.
+			if !w.CloseRequested() {
+				leave()
+			}
 		})
 	}
 	body := []gui.View{

@@ -60,18 +60,18 @@ func deviceNames(input bool) []string {
 }
 
 // Resolve the saved device by name each time because WinMM indices can change
-func deviceID(input bool, name string) uintptr {
+func deviceID(input bool, name string, allowTruncated bool) uintptr {
 	if name == "Default" || name == "" {
 		return defaultWaveDevice
 	}
-	return matchDeviceID(name, audioDevices(input))
+	return matchDeviceID(name, audioDevices(input), allowTruncated)
 }
 
-func matchDeviceID(name string, candidates []string) uintptr {
+func matchDeviceID(name string, candidates []string, allowTruncated bool) uintptr {
 	id := uintptr(defaultWaveDevice)
 	for i, candidate := range candidates {
 		// WAVEINCAPSW and WAVEOUTCAPSW reserve 31 UTF-16 units for a name.
-		truncated := len(utf16.Encode([]rune(candidate))) == 31 &&
+		truncated := allowTruncated && len(utf16.Encode([]rune(candidate))) == 31 &&
 			strings.HasPrefix(strings.ToLower(name), strings.ToLower(candidate))
 		if candidate != "" && (strings.EqualFold(name, candidate) || truncated) {
 			if id != defaultWaveDevice {
@@ -136,7 +136,8 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	}
 	defer windows.CloseHandle(event)
 	open := mm.NewProc("waveInOpen")
-	id := deviceID(true, name)
+	// Cloud transcription requires an exact microphone name before recording.
+	id := deviceID(true, name, allowFallback)
 	// CALLBACK_EVENT lets WinMM wake capture as buffers return
 	openDevice := func(id uintptr) error {
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
@@ -243,7 +244,7 @@ func playPCMBuffer(ctx context.Context, device string, pcm []byte, rate int, loo
 	openDevice := func(id uintptr) error {
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
-	id := deviceID(false, device)
+	id := deviceID(false, device, true)
 	err = openDevice(id)
 	// Playback can use the default speakers if the selected output fails
 	if err != nil && id != defaultWaveDevice {

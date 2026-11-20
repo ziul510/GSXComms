@@ -6,8 +6,20 @@ package app
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestCloudMicrophoneRejectsTruncatedMatch(t *testing.T) {
+	prefix := strings.Repeat("x", 31)
+	candidates := []string{prefix}
+	if got := matchDeviceID(prefix+" original microphone", candidates, false); got != defaultWaveDevice {
+		t.Fatalf("cloud capture matched a shared prefix to device %d", got)
+	}
+	if got := matchDeviceID(prefix+" original microphone", candidates, true); got != 0 {
+		t.Fatalf("local capture lost compatibility with truncated names: %d", got)
+	}
+}
 
 func TestOpenCaptureDeviceFallback(t *testing.T) {
 	for _, tc := range []struct {

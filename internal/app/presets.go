@@ -11,8 +11,9 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
-func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose func()) func() {
-	entries := config.Get[[]config.Preset](draft, "presets")
+func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
+	// Reopening can overlap the previous editor's pending write.
+	entries := config.Get[[]config.Preset](s.settingsDraft(), "presets")
 	form := config.Preset{Enabled: true}
 	selected := -1
 	editing, saving := false, false
@@ -25,17 +26,16 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 	var window *gui.Window
 	persist := func(updated []config.Preset) {
 		saving, message = true, ""
-		next := s.settingsDraft()
-		next.Put("presets", updated)
-		s.save(next, func(err error) {
+		s.saveSetting("presets", updated, func(err error) {
 			saving = false
 			if err != nil {
 				message = err.Error()
 			} else {
 				entries = updated
-				draft.Put("presets", entries)
 				selected, editing = -1, false
-				parent.InvalidateLayout()
+				if !parent.CloseRequested() {
+					parent.InvalidateLayout()
+				}
 			}
 			if window != nil && !window.CloseRequested() {
 				window.InvalidateLayout()

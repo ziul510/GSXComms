@@ -6,6 +6,7 @@ package gsx
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestLiveSimConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sim, err := connectHelper(ctx, helper)
+	sim, err := connectHelper(ctx, exec.Command(helper))
 	if err != nil {
 		t.Fatal(err)
 	}

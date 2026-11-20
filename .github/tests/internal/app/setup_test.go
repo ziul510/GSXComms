@@ -137,6 +137,13 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if !accentPackInstalled(accentsDir, pack.name) {
 		t.Fatal("no recordings alongside the archive")
 	}
+	otherDir := filepath.Join(t.TempDir(), "Accents")
+	if err := installAccentPacks(t.Context(), accentsDir, otherDir, []string{pack.name}); err != nil {
+		t.Fatal(err)
+	}
+	if !accentPackInstalled(otherDir, pack.name) {
+		t.Fatal("a separate data directory skipped extraction")
+	}
 }
 
 func TestRegionalCueUsesEnabledPacks(t *testing.T) {
@@ -247,5 +254,40 @@ func TestMistralTutorialStaysInSettings(t *testing.T) {
 	}
 	if s.settingUpMistral {
 		t.Fatal("leaving setup kept push-to-talk disabled")
+	}
+}
+
+func TestSpeechCardsExposeRecoveryActions(t *testing.T) {
+	s := &state{cfg: config.Defaults(), speechReady: true}
+	setup := speechSetup{local: map[string]localModelStatus{
+		"parakeet": {ready: true, cached: true},
+		"kokoro":   {cached: true},
+	}}
+	w := gui.NewTestWindow(t, gui.WindowCfg{})
+	for id, action := range map[string]string{"parakeet": "retry-parakeet", "kokoro": "delete-kokoro"} {
+		layout := w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, id, id) })
+		if _, ok := layout.FindByID(action); !ok {
+			t.Errorf("missing recovery action %s", action)
+		}
+	}
+}
+
+func TestMistralSaveFromClosedWindowKeepsNewTutorialActive(t *testing.T) {
+	s := &state{cfg: config.Defaults(), settingUpMistral: true, saves: make(chan *saveRequest, 1)}
+	setup := speechSetup{step: len(mistralSteps) + 1, hasKey: true}
+	w := gui.NewTestWindow(t, gui.WindowCfg{Width: 560, Height: 720})
+	w.TestRender(func(w *gui.Window) gui.View { return setup.mistralPage(s, w) })
+	if err := w.TestClick("mistral-key:use-saved-key"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	select {
+	case req := <-s.saves:
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("selecting Mistral did not queue a save")
+	}
+	if !s.settingUpMistral {
+		t.Fatal("an old save closed the active tutorial")
 	}
 }

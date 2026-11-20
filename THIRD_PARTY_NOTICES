@@ -33,7 +33,7 @@ Use: bundled
 Source: GSXComms reference attribution notice
 
 words, accent mappings, default configuration and Voxtral prompt, ziul510 reference snapshot — Apache-2.0 (project owner's authorization)
-Use: bundled; user-authored vocabulary and mappings may also be imported
+Use: bundled with optional local vocabulary and mapping overrides
 Source: GSXComms reference snapshot
 
 flybywireless-simconnect 0.2.1 — MIT

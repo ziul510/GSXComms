@@ -264,27 +264,31 @@ func (s *state) hidReport(d *hidDevice, report []byte) {
 func (s *state) hidButton(device *hidDevice, index int, down bool) {
 	path, name := device.path, device.name
 	s.async(func() {
-		if s.binding != nil && down {
+		if !down {
+			// A hotplug can change name resolution while the original button is held.
+			if s.heldHIDPath != "" && strings.EqualFold(s.heldHIDPath, path) && s.heldHIDButton == index {
+				s.record(false)
+			}
+			return
+		}
+		if s.binding != nil {
 			id, _ := json.Marshal(path)
 			s.binding(config.Binding{Type: "joystick", JoyID: id, JoyName: name, JoyButton: &index, Description: fmt.Sprintf("%s Button %d", name, index+1)})
 			return
 		}
 		b := config.Get[config.Binding](s.cfg, "ptt_bind")
-		if b.Type != "joystick" || b.JoyButton == nil || *b.JoyButton != index {
+		if s.pttHeld || b.Type != "joystick" || b.JoyButton == nil || *b.JoyButton != index {
 			return
 		}
 		var id string
 		_ = json.Unmarshal(b.JoyID, &id)
-		// An explicit device path must match exactly apart from case Names are for legacy bindings
-		if strings.HasPrefix(id, `\\?\`) {
-			if strings.EqualFold(id, path) {
-				s.record(down)
-			}
-			return
-		}
 		// A legacy product name is safe only if one attached device matches.
-		if legacyPath := s.legacyHIDPath(b); legacyPath != "" && strings.EqualFold(legacyPath, path) {
-			s.record(down)
+		if !strings.HasPrefix(id, `\\?\`) {
+			id = s.legacyHIDPath(b)
+		}
+		if id != "" && strings.EqualFold(id, path) {
+			s.heldHIDPath, s.heldHIDButton = path, index
+			s.record(true)
 		}
 	})
 }

@@ -69,7 +69,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 			s.setTopmost()
 		}
 		if config.Get[string](previous, "speech_provider") != config.Get[string](s.cfg, "speech_provider") {
-			s.prepareSpeech(true)
+			s.prepareSpeech(true, false)
 		}
 	}
 	// Tell the originating dialog when it can close or show a write error
