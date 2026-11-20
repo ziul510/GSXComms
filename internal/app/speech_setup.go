@@ -157,9 +157,13 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 	control.Padding, control.SizeBorder = gui.PadAll(12), gui.BorderPx(1)
 	control.Colors.Border, control.Colors.BorderFocus = elevated, accent
 	control.A11YCfg.A11YLabel = "Set up Mistral"
+	status := "Cloud transcription · Requires an API key"
+	if setup.hasKey {
+		status = "API key saved in Windows Credential Manager"
+	}
 	control.Content = []gui.View{gui.Column(gui.ContainerCfg{
 		Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8),
-		Content: []gui.View{speechRow(heading...), wrapped("Cloud transcription · Requires an API key", 13, muted), bold("Set up Mistral", 14, accent)},
+		Content: []gui.View{speechRow(heading...), wrapped(status, 13, muted), bold("Set up Mistral", 14, accent)},
 	})}
 	return gui.Button(control)
 }
@@ -222,7 +226,9 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 			go func() {
 				err := speech.ValidateMistral(s.ctx, token)
 				if err == nil {
-					err = config.SaveKey(token)
+					if saveErr := config.SaveKey(token); saveErr != nil {
+						err = fmt.Errorf("Could not save key in Windows Credential Manager: %w", saveErr)
+					}
 				}
 				s.async(func() {
 					s.savingKey = false

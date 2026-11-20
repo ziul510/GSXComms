@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -78,10 +79,23 @@ func Run(dir string) {
 	// Load the effective settings even if migration returned an error to report
 	settings, err := config.Load(dir)
 	icon, _ := assets.Files.ReadFile("app.png")
+	archives := assetDir("Accents")
+	theme := gui.ThemeDark
+	theme.ColorBackground = bg
+	theme.ColorPanel = panel
+	theme.ColorAccent = accent
+	gui.SetTheme(theme)
+	if !config.Get[bool](settings, "accent_setup_complete") {
+		var complete bool
+		settings, complete = runFirstAccentSetup(dir, archives, settings, icon)
+		if !complete {
+			return
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
-	s.accentsDir = assetDir("Accents")
+	s.accentsDir = archives
 	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
 	// Use separate native workers for input transcription and menu readout
 	s.recognizer = speech.NewWorker("sherpa")
@@ -107,11 +121,10 @@ func Run(dir string) {
 	if err != nil {
 		s.log("SYS", err.Error())
 	}
-	theme := gui.ThemeDark
-	theme.ColorBackground = bg
-	theme.ColorPanel = panel
-	theme.ColorAccent = accent
-	gui.SetTheme(theme)
+	// Upgrade users whose earlier setup selected packs before extraction was implemented
+	if err := installAccentPacks(ctx, archives, filepath.Join(dir, "Accents"), config.Get[[]string](settings, "installed_packs")); err != nil {
+		s.log("ERR", err.Error())
+	}
 	w := gui.NewWindow(gui.WindowCfg{
 		Title: "GSXComms", Width: 420, Height: 680, MinWidth: 380, MinHeight: 560, State: s, IconPNG: icon,
 		OnInit: func(w *gui.Window) {
@@ -135,10 +148,6 @@ func Run(dir string) {
 					w.Minimize()
 				}
 			}
-			// First launch shows the accent choices before an optional simulator connection
-			if !config.Get[bool](s.cfg, "accent_setup_complete") {
-				s.openAccents()
-			}
 			if config.Get[bool](s.cfg, "auto_connect_sim") {
 				s.toggleConnect()
 			}
@@ -160,6 +169,37 @@ func Run(dir string) {
 		case <-time.After(2500 * time.Millisecond):
 		}
 	}
+}
+
+func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte) (config.Values, bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var complete bool
+	cfg := firstAccentWindow(ctx, dir, archives, prefs, func(saved config.Values) {
+		prefs, complete = saved, true
+	})
+	cfg.IconPNG = icon
+	backend.RunApp(gui.NewApp(), gui.NewWindow(cfg))
+	return prefs, complete
+}
+
+func firstAccentWindow(ctx context.Context, dir, archives string, prefs config.Values, onSaved func(config.Values)) gui.WindowCfg {
+	recordings := filepath.Join(dir, "Accents")
+	var saved config.Values
+	view := accentSetupView(ctx, archives, recordings, prefs, func(enabled []string, then func(error)) {
+		saved = accentPreferences(prefs.Copy(), enabled)
+		then(config.Save(dir, saved))
+	}, func(w *gui.Window) {
+		onSaved(saved)
+		w.Close()
+	})
+	cfg := accentWindow()
+	cfg.OnInit = func(w *gui.Window) {
+		w.TitlebarDark(true)
+		w.SetView(view)
+	}
+	cfg.OnCloseRequest = func(w *gui.Window) { w.Close() }
+	return cfg
 }
 
 // Cancel background work before closing the main window and dropping its tray actions

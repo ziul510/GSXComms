@@ -6,7 +6,7 @@ Extract the Windows ZIP and run **GSXComms.exe** from the extracted folder. You 
 
 In **Settings**, use the speech model cards to download or reload local models. Choose **Set up Mistral** for the illustrated API key tutorial. After validating your key, choose **Save Changes** to activate Mistral. Windows Credential Manager stores the key. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
 
-Use **Accent Setup** to enable regional crew voices generated with ElevenLabs. The app uses enabled voices based on aircraft location or the forced accent in Settings. If a regional clip is unavailable, it tries your default accent and then the built-in English cue.
+On first launch, **Accent Setup** opens before the main window. Save to extract the selected regional voice packs to `%LOCALAPPDATA%\GSXCommsGo\Accents` and write your selection to `%LOCALAPPDATA%\GSXCommsGo\user_settings.json`. You can reopen Accent Setup from Settings. Deselected packs stay on disk for reuse. The recordings were generated with ElevenLabs. Crew voice selection uses aircraft location or the forced accent. If a regional clip is unavailable, the app tries your default accent and then the built-in English cue.
 
 ## Import legacy settings
 

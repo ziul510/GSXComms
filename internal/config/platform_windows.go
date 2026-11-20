@@ -31,8 +31,9 @@ var (
 	credWrite  = advapi.NewProc("CredWriteW")
 	credDelete = advapi.NewProc("CredDeleteW")
 	credFree   = advapi.NewProc("CredFree")
-	target     = windows.StringToUTF16Ptr("GSXCommsGo/Voxtral")
 )
+
+const keyTarget = "GSXCommsGo/Voxtral"
 
 // Match CREDENTIALW layout for the Windows credential calls
 type credential struct {
@@ -56,12 +57,12 @@ var credentialWrites sync.Mutex
 func SaveKey(token string) error {
 	credentialWrites.Lock()
 	defer credentialWrites.Unlock()
-	return writeKey(token)
+	return writeKey(keyTarget, token)
 }
 
 // Only seed the vault when no current credential exists
 func migrateLegacyKey(token string) error {
-	return migrateKeyIfMissing(token, ReadKey, writeKey)
+	return migrateKeyIfMissing(token, ReadKey, func(key string) error { return writeKey(keyTarget, key) })
 }
 
 func migrateKeyIfMissing(token string, read func() (string, error), write func(string) error) error {
@@ -75,9 +76,10 @@ func migrateKeyIfMissing(token string, read func() (string, error), write func(s
 	return write(token)
 }
 
-func writeKey(token string) error {
+func writeKey(name, token string) error {
 	const generic = 1
 	const localMachine = 2
+	target := windows.StringToUTF16Ptr(name)
 	// An empty value removes the stored credential An absent entry is already clear
 	if token == "" {
 		ok, _, err := credDelete.Call(uintptr(unsafe.Pointer(target)), generic, 0)
@@ -103,6 +105,11 @@ func writeKey(token string) error {
 }
 
 func ReadKey() (string, error) {
+	return readKey(keyTarget)
+}
+
+func readKey(name string) (string, error) {
+	target := windows.StringToUTF16Ptr(name)
 	var entry *credential
 	ok, _, err := credRead.Call(uintptr(unsafe.Pointer(target)), 1, 0, uintptr(unsafe.Pointer(&entry)))
 	if ok == 0 {

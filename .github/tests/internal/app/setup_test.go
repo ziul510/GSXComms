@@ -4,10 +4,14 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
@@ -16,7 +20,7 @@ import (
 
 func TestAccentSetupSavesPackSelection(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
-	s := &state{cfg: config.Defaults(), host: gui.NewApp(), saves: make(chan *saveRequest, 1)}
+	s := &state{ctx: t.Context(), dir: t.TempDir(), accentsDir: "Accents", cfg: config.Defaults(), host: gui.NewApp(), saves: make(chan *saveRequest, 1)}
 	s.openAccents()
 	w := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
@@ -26,27 +30,96 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	save := func() config.Values {
+		t.Helper()
+		click("save-accents")
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			w.FrameFn()
+			select {
+			case request := <-s.saves:
+				if err := config.Save(s.dir, request.values); err != nil {
+					t.Fatal(err)
+				}
+				s.finishSave(request, nil)
+				if !w.CloseRequested() {
+					t.Fatal("setup stayed open after a successful save")
+				}
+				saved, err := config.Load(s.dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return saved
+			default:
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		t.Fatal("accent setup never saved its selection")
+		return nil
+	}
 	click("select-all")
 	click("accent-packs:pack-" + packs[0].name)
-	click("save-accents")
-	saved := config.Get[[]string]((<-s.saves).values, "installed_packs")
+	saved := config.Get[[]string](save(), "installed_packs")
 	if len(saved) != len(packs)-1 || slices.Contains(saved, packs[0].name) {
 		t.Fatalf("unexpected pack selection: %v", saved)
 	}
-	s.accentOpen = false
+	recordings := filepath.Join(s.dir, "Accents")
+	for _, pack := range packs {
+		if accentPackInstalled(recordings, pack.name) != slices.Contains(saved, pack.name) {
+			t.Errorf("extracted packs do not match settings for %s", pack.name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); err != nil {
+		t.Fatal(err)
+	}
 	s.openAccents()
 	w = gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
 	click("deselect-all")
-	click("save-accents")
-	next := (<-s.saves).values
+	next := save()
 	if len(config.Get[[]string](next, "installed_packs")) != 0 || !config.Get[bool](next, "accent_setup_complete") {
 		t.Fatal("deselect all did not save an empty, completed selection")
 	}
 }
 
+func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
+	dir := t.TempDir()
+	complete := false
+	cfg := firstAccentWindow(t.Context(), dir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
+		complete = config.Get[bool](prefs, "accent_setup_complete")
+	})
+	w := gui.NewTestWindow(t, cfg)
+	w.TestRender(nil)
+	if complete || w.CloseRequested() {
+		t.Fatal("setup completed before the user saved")
+	}
+	if err := w.TestClick("save-accents"); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !complete && time.Now().Before(deadline); {
+		w.FrameFn()
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, config.SettingsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete || !w.CloseRequested() || !bytes.Contains(data, []byte(`"accent_setup_complete": true`)) {
+		t.Fatal("setup did not finish after writing the completed setting")
+	}
+}
+
 func TestRegionalCueUsesEnabledPacks(t *testing.T) {
-	dir := filepath.Join("..", "..", "Accents")
+	archives := filepath.Join("..", "..", "Accents")
+	dataDir := t.TempDir()
+	dir := filepath.Join(dataDir, "Accents")
+	var enabled []string
+	for _, pack := range packs {
+		enabled = append(enabled, pack.name)
+	}
+	if err := installAccentPacks(t.Context(), archives, dir, enabled); err != nil {
+		t.Fatal(err)
+	}
 	for _, pack := range packs {
 		for _, name := range pack.accents {
 			pcm, rate := accentCue(dir, []string{pack.name}, name, "greeting", "", "female")
@@ -57,7 +130,7 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	}
 	prefs := config.Defaults()
 	prefs.Put("installed_packs", []string{packs[0].name})
-	s := &state{dir: t.TempDir(), accentsDir: dir, crewVoice: "male"}
+	s := &state{dir: dataDir, crewVoice: "male"}
 	request := playback{prefs: prefs, location: &geo.Position{Country: "FR"}, cue: "jetway"}
 	american, _ := s.regionalCue(request)
 	request.option = "Disconnect jetway"
@@ -74,6 +147,35 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	prefs.Put("installed_packs", []string{})
 	if pcm, _ := s.regionalCue(request); len(pcm) != 0 {
 		t.Fatal("disabled pack was played")
+	}
+}
+
+func TestFailedAccentExtractionLeavesNoInstalledPack(t *testing.T) {
+	archives, recordings := t.TempDir(), t.TempDir()
+	name := packs[0].name
+	file, err := os.Create(filepath.Join(archives, name+".zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	for _, path := range []string{"american/goahead/female11.ai.mp3", "../outside/female11.ai.mp3"} {
+		entry, err := archive.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte("incomplete pack")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := errors.Join(archive.Close(), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if err := installAccentPacks(t.Context(), archives, recordings, []string{name}); err == nil {
+		t.Fatal("incomplete pack installed")
+	}
+	entries, err := os.ReadDir(recordings)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed extraction left files behind: %v, %v", entries, err)
 	}
 }
 
