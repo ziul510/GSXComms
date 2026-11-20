@@ -103,6 +103,8 @@ func Nearest(lat, lon float64) (Position, error) {
 	return result, nil
 }
 
+var stockNames map[string]string
+
 func init() {
 	if err := json.Unmarshal(countryMap, &mapping); err != nil {
 		panic(err)
@@ -111,12 +113,20 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	stock := parseOverrides(raw)
+	stockNames = parseOverrides(raw)
 	// Fill gaps in the country-code map from the bundled name-based table
 	for code, name := range mapping.Names {
 		if mapping.Country[code] == "" {
-			mapping.Country[code] = stock[strings.ToLower(name)]
+			mapping.Country[code] = stockNames[strings.ToLower(name)]
 		}
+	}
+}
+
+func AccentCandidates(pos Position, overrides map[string]string) []string {
+	name := strings.ToLower(mapping.Names[pos.Country])
+	return []string{
+		overrides[strings.ToLower(pos.Country)], overrides[name], stockNames[name],
+		mapping.Regions[pos.Country][strings.ToLower(pos.Region)], mapping.Country[pos.Country],
 	}
 }
 

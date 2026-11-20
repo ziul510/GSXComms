@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 )
 
-//go:embed words.json accent_mappings.json app.png cues/*.pcm.gz
+//go:embed words.json accent_mappings.json app.png
 var Files embed.FS
 
 // Imports and runtime lookup share the legacy override filename

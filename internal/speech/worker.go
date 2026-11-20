@@ -33,6 +33,7 @@ type Frame struct {
 	PCM        []byte            `json:"pcm,omitempty"`
 	Text       string            `json:"text,omitempty"`
 	SampleRate int               `json:"sample_rate,omitempty"`
+	Runtime    string            `json:"runtime,omitempty"`
 	Error      string            `json:"error,omitempty"`
 }
 
@@ -89,6 +90,7 @@ type Worker struct {
 	job      windows.Handle
 	sequence uint64
 	loaded   string
+	runtime  string
 	failed   time.Time
 	failures int
 }
@@ -120,7 +122,14 @@ func (w *Worker) Load(ctx context.Context, signature string, paths map[string]st
 	}
 	// Only cache the signature after the worker confirms it opened the model
 	w.loaded = signature
+	w.runtime = r.Runtime
 	return nil
+}
+
+func (w *Worker) Runtime() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.runtime
 }
 
 func (w *Worker) Transcribe(ctx context.Context, pcm []byte) (string, error) {
@@ -284,6 +293,7 @@ func (w *Worker) stop() {
 	_ = w.cmd.Wait()
 	// Clear the signature along with the child so the next request loads a fresh model
 	w.cmd, w.in, w.out, w.job, w.loaded = nil, nil, nil, 0, ""
+	w.runtime = ""
 }
 
 // Reset waits for the current pipe exchange before asking the worker to shut down

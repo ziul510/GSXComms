@@ -112,7 +112,7 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 }
 
 func TestPresetEmptyStateCreatesPreset(t *testing.T) {
-	s := &state{host: gui.NewApp()}
+	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
 	parent := gui.NewTestWindow(t, gui.WindowCfg{})
 	draft := config.Defaults()
 	s.openPresets(draft, parent, func() {})
@@ -135,6 +135,12 @@ func TestPresetEmptyStateCreatesPreset(t *testing.T) {
 	// A fresh form starts with GPU as the service picker value
 	click("add-service")
 	click("save-preset")
+	select {
+	case request := <-s.saves:
+		s.finishSave(request, nil)
+	default:
+		t.Fatal("saving the preset did not queue a disk write")
+	}
 	presets := config.Get[[]config.Preset](draft, "presets")
 	if len(presets) != 1 || presets[0].Codeword != "arrival" || !slices.Equal(presets[0].Services, []string{"GPU"}) {
 		t.Fatalf("unexpected presets: %+v", presets)
@@ -164,9 +170,30 @@ func TestTransmissionSpeedGate(t *testing.T) {
 	}
 }
 
+func TestOfflineAutoConnectWaitsAndQueuesOneAttempt(t *testing.T) {
+	s := &state{cfg: config.Defaults(), jobs: make(chan func(context.Context, *gsx.Session), 2), lastConnect: time.Now()}
+	s.retryConnection()
+	if len(s.jobs) != 0 {
+		t.Fatal("retried within the connection cooldown")
+	}
+	s.lastConnect = time.Now().Add(-16 * time.Second)
+	s.cfg.Put("auto_connect_sim", false)
+	s.retryConnection()
+	if len(s.jobs) != 0 {
+		t.Fatal("queued an automatic connection after the user disabled it")
+	}
+	s.cfg.Put("auto_connect_sim", true)
+	s.retryConnection()
+	s.retryConnection()
+	if !s.busy || len(s.jobs) != 1 {
+		t.Fatalf("queued %d attempts, busy=%v", len(s.jobs), s.busy)
+	}
+}
+
 type menuChoices struct {
 	selected    []int
 	afterChoice func()
+	open        bool
 }
 
 // Zero lets the session exercise its normal closed-menu sequence in tests
@@ -182,14 +209,19 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 			m.afterChoice()
 		}
 	}
+	if name == gsx.MenuOpen {
+		m.open = value > 0
+	}
 	return nil
 }
 func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
-	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, jobs: make(chan func(context.Context, *gsx.Session), 1), audioPriority: make(chan playback, 3)}
+	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, speechReady: true,
+		menuWatch: true, services: make(map[string]bool), jobs: make(chan func(context.Context, *gsx.Session), 1), audioQueue: make(chan playback, 3)}
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
 	s.cfg.Put("enable_gsx_menu_text_correction", true)
 	s.menu = gsx.ParseMenu("Ramp\nJetway")
 	current := gsx.ParseMenu("Ramp\nRefuel\nJetway")
@@ -207,7 +239,13 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 
 	s.cfg.Put("enable_menu_matching", false)
 	// Text correction must fetch the current page even when broader matching is disabled
-	current = gsx.ParseMenu("Operators\nSwissport")
+	current = gsx.Menu{}
+	session.ReadMenu = func() gsx.Menu {
+		if tr.open {
+			return gsx.ParseMenu("Operators\nSwissport")
+		}
+		return current
+	}
 	s.submit("Swissport")
 	(<-s.jobs)(s.ctx, session)
 	if !slices.Equal(tr.selected, []int{0}) {
@@ -215,6 +253,8 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 	tr.selected = nil
 	current = gsx.ParseMenu("Ramp\nRefuel\nJetway")
+	session.ReadMenu = func() gsx.Menu { return current }
+	s.cfg.Put("enable_gsx_menu_text_correction", false)
 	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "turnaround", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()

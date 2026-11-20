@@ -1,14 +1,10 @@
 # Copyright 2026 ziul510
 # SPDX-License-Identifier: Apache-2.0
 
-param([string]$MakeNSIS, [string]$PhonemizerDir = 'build/phonemizer')
+param([string]$PhonemizerDir = 'build/phonemizer')
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $repo = $PWD.Path
-if (!$MakeNSIS) { $MakeNSIS = (Get-Command makensis.exe -ErrorAction Stop).Source }
-$MakeNSIS = (Resolve-Path -LiteralPath $MakeNSIS).Path
-# Build the installer with the NSIS version the release workflow pins
-if ((& $MakeNSIS /VERSION) -notmatch '^v3\.12(?:$|\.)') { throw 'Use NSIS 3.12' }
 $PhonemizerDir = (Resolve-Path -LiteralPath $PhonemizerDir).Path
 $tts = Join-Path $repo 'build/workers/kokoro'
 New-Item -ItemType Directory -Path $tts -Force | Out-Null
@@ -60,13 +56,8 @@ go build -trimpath -o 'build/gsxremotecontrol.exe' ./cmd/gsxremotecontrol
 if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
 go build -trimpath -o 'build/gsxmute.exe' ./cmd/gsxmute
 if ($LASTEXITCODE -ne 0) { throw 'GSX mute watchdog build failed' }
-# Generate notices before the installer reads the packaged license files
-& "$PSScriptRoot/notices.ps1" -Output 'THIRD_PARTY_NOTICES' -NSISRoot (Split-Path -Parent $MakeNSIS)
-# NSIS uses a single file for the license page
-Set-Content -LiteralPath 'build/setup-notices.txt' -Encoding utf8 -Value @(
-    (Get-Content -LiteralPath 'LICENSE' -Raw),
-    (Get-Content -LiteralPath 'THIRD_PARTY_NOTICES' -Raw)
-)
-& $MakeNSIS /V2 (Join-Path $repo 'installer/GSXComms.nsi')
-if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-Get-Item -LiteralPath 'dist/GSXCommsGo-win-x64-unsigned-test.exe'
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
+cargo +1.98.0 build --locked --release --manifest-path cmd/gsxsimconnect/Cargo.toml --target x86_64-pc-windows-msvc --target-dir build/rust
+if ($LASTEXITCODE -ne 0) { throw 'SimConnect helper build failed' }
+Copy-Item -LiteralPath 'build/rust/x86_64-pc-windows-msvc/release/gsxsimconnect.exe' -Destination 'build/gsxsimconnect.exe' -Force
+& "$PSScriptRoot/notices.ps1" -Output 'build/THIRD_PARTY_NOTICES'

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -75,6 +76,15 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		log("SYS", "SimConnect handshake required to read the GSX menu")
 		return
 	}
+	if since := time.Since(s.menuActivity); since < 4*time.Second {
+		timer := time.NewTimer(4*time.Second - since)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+	}
 	m, _ := models.Lookup("kokoro")
 	if !m.Ready(s.dir) {
 		log("ERR", "Kokoro menu-reader model is unavailable. Download it under Behavior in Settings")
@@ -90,12 +100,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	// Reuse the menu if it is already populated Open a temporary one only when needed
 	options := session.ReadMenu().Options
 	if len(options) == 0 {
-		if err := session.Open(ctx); err != nil {
-			<-s.speaking
-			log("ERR", err.Error())
-			return
-		}
-		menu, err := session.WaitMenu(ctx)
+		menu, err := session.OpenMenuPage(ctx)
 		// Release the menu opened for readout before starting the slower speech work
 		_ = session.Release(ctx)
 		if err != nil {
@@ -118,38 +123,51 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 			log("ERR", "GSX menu readout failed: "+err.Error())
 			return
 		}
-		log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud", len(options)))
+		log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud (%s)", len(options), s.reader.Runtime()))
 		// Queue readout audio behind waiting priority crew cues
-		s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate}, false)
+		s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
 	}()
 }
 
-func (s *state) output(prefs config.Values, pcm []byte, rate int) error {
-	// Apply separate gains to voice and static before playback
-	change := config.Get[float64](prefs, "volume_voice")
+func (s *state) output(ctx context.Context, next playback) error {
+	if !next.dry && next.cue != "error" {
+		defer s.muteCrew(ctx, next.prefs)()
+	}
+	gain := min(1, config.Get[float64](next.prefs, "volume_voice")*normalizationGain(next.pcm))
 	static := 0.0
-	if config.Get[bool](prefs, "enable_static") {
-		static = config.Get[float64](prefs, "volume_static")
-	}
-	prev := 0.0
-	for i := 0; i+1 < len(pcm); i += 2 {
-		noise := (rand.Float64()*2 - 1) * 1300
-		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:])))
-		// Use the change in noise samples to give the static a sharper sound
-		combined := sample*change + (noise-prev)*static
-		// Clamp the mixed sample before converting back to PCM16
-		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(max(-32768, min(32767, combined)))))
-		prev = noise
-	}
-	// Request mute only for the duration of this clip and still play if setup fails
-	if config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice") {
-		if release, err := startMute(s.ctx, s.dir); err == nil {
-			defer release()
-		} else {
-			s.async(func() { s.log("SYS", "Could not mute Couatl/GSX audio") })
+	if !next.dry {
+		if config.Get[bool](next.prefs, "enable_static") {
+			static = config.Get[float64](next.prefs, "volume_static")
 		}
 	}
-	return playPCM(s.ctx, config.Get[string](prefs, "output_device_name"), pcm, rate)
+	mixRadio(next.pcm, gain, static)
+	return playPCM(ctx, config.Get[string](next.prefs, "output_device_name"), next.pcm, next.rate)
+}
+
+func normalizationGain(pcm []byte) float64 {
+	var sum float64
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:])))
+		sum += sample * sample
+	}
+	if sum == 0 {
+		return 1
+	}
+	return max(0.5, min(2.5, 3000/math.Sqrt(sum/float64(len(pcm)/2))))
+}
+
+func mixRadio(pcm []byte, gain, static float64) {
+	prev := 0.0
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:])))
+		combined := sample * gain
+		if static > 0 {
+			noise := (rand.Float64()*2 - 1) * 1300
+			combined += (noise - prev) * static
+			prev = noise
+		}
+		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(max(-32768, min(32767, combined)))))
+	}
 }
 
 // Run a separate process so GSX audio recovery can survive the player exiting

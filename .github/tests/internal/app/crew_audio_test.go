@@ -4,19 +4,35 @@
 package app
 
 import (
-	"strings"
+	"encoding/binary"
 	"testing"
-
-	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
-func TestFallbackCrewCues(t *testing.T) {
-	// Cover both the fixed status cues and every selectable service
-	for _, cue := range append([]string{"connected", "greeting", "error"}, config.Services...) {
-		b, err := loadCue(strings.ToLower(cue))
-		// A cue needs at least a quarter second of PCM16 and no partial sample
-		if err != nil || len(b) < 12000 || len(b)%2 != 0 {
-			t.Errorf("%s: %d bytes, %v", cue, len(b), err)
+func TestCrewServiceTransitions(t *testing.T) {
+	for _, test := range []struct {
+		label            string
+		was, next, known bool
+	}{
+		{"Operate stairs", false, true, true},
+		{"Operate stairs", true, false, true},
+		{"Disconnect GPU", true, false, true},
+		{"Request jetway", false, true, true},
+		{"Jetway unavailable", true, true, false},
+	} {
+		if next, known := serviceConnected(test.was, test.label); next != test.next || known != test.known {
+			t.Errorf("%q from %v = %v, %v", test.label, test.was, next, known)
+		}
+	}
+}
+
+func TestCrewLoudnessGain(t *testing.T) {
+	for _, test := range []struct {
+		amplitude uint16
+		gain      float64
+	}{{0, 1}, {600, 2.5}, {3000, 1}, {12000, 0.5}} {
+		pcm := binary.LittleEndian.AppendUint16(nil, test.amplitude)
+		if gain := normalizationGain(pcm); gain != test.gain {
+			t.Errorf("gain for %d = %f, want %f", test.amplitude, gain, test.gain)
 		}
 	}
 }

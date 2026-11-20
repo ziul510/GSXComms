@@ -30,73 +30,99 @@ type speechSetup struct {
 	cancel      context.CancelFunc
 	step        int
 	key         string
+	showKey     bool
 	hasKey      bool
 	keyMessage  string
 	tutorialDir string
 	images      []tutorialImage
 }
 
-func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values, id, label string) gui.View {
+func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string, then func(error)) {
+	if setup.running != "" || s.speechLoading == id {
+		return
+	}
 	m, _ := models.Lookup(id)
+	ctx, cancel := context.WithCancel(s.ctx)
+	setup.running, setup.cancel = id, cancel
+	status := setup.local[id]
+	status.message = operation + "…"
+	setup.local[id] = status
+	go func() {
+		defer cancel()
+		var err error
+		var result string
+		if operation == "Downloading" {
+			err = downloadModel(ctx, m, s.dir, func(done, total int64) {
+				w.QueueCommand(func(w *gui.Window) {
+					status := setup.local[id]
+					status.message = fmt.Sprintf("Downloading %.1f / %.1f MiB", float64(done)/(1<<20), float64(total)/(1<<20))
+					setup.local[id] = status
+					w.InvalidateLayout()
+				})
+			})
+			result = "Downloaded"
+		} else {
+			err = m.Delete(s.dir)
+			result = "Model deleted"
+		}
+		if err != nil {
+			result = err.Error()
+		}
+		next := localModelStatus{ready: m.Ready(s.dir), cached: m.Cached(s.dir), message: result}
+		s.async(func() {
+			setup.running, setup.cancel = "", nil
+			setup.local[id] = next
+			if err == nil && operation == "Downloading" && config.Get[string](s.cfg, "speech_provider") == id {
+				s.prepareSpeech(false)
+			}
+			if !w.CloseRequested() {
+				if then != nil {
+					then(err)
+				}
+				w.InvalidateLayout()
+			}
+		})
+	}()
+}
+
+func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values, id, label string) gui.View {
 	status := setup.local[id]
 	note := "Not downloaded"
 	if status.ready {
 		note = "Downloaded"
 	}
 	current := config.Get[string](draft, "speech_provider") == id
-	busy := setup.running != ""
-	run := func(operation string) {
-		ctx, cancel := context.WithCancel(s.ctx)
-		setup.running = id
-		setup.cancel = cancel
-		status.message = operation + "…"
-		setup.local[id] = status
-		go func() {
-			defer cancel()
-			var err error
-			var result string
-			if operation == "Downloading" {
-				err = m.Download(ctx, s.dir, func(done, total int64) {
-					w.QueueCommand(func(w *gui.Window) {
-						status := setup.local[id]
-						status.message = fmt.Sprintf("Downloading %.1f / %.1f MiB", float64(done)/(1<<20), float64(total)/(1<<20))
-						setup.local[id] = status
-						w.InvalidateLayout()
-					})
-				})
-				result = "Downloaded"
-			} else {
-				if id == "kokoro" {
-					s.reader.Reset()
-				} else {
-					s.recognizer.Reset()
-				}
-				result = "Model will reload next time it is used"
-				if operation == "Deleting" {
-					err = m.Delete(s.dir)
-					result = "Model deleted"
-				}
-			}
-			if err != nil {
-				result = err.Error()
-			}
-			next := localModelStatus{ready: m.Ready(s.dir), cached: m.Cached(s.dir), message: result}
-			w.QueueCommand(func(w *gui.Window) {
-				setup.running, setup.cancel = "", nil
-				setup.local[id] = next
-				w.InvalidateLayout()
-			})
-		}()
-	}
+	inUse := config.Get[string](s.cfg, "speech_provider") == id
+	busy := setup.running != "" || s.speechLoading == id
 	action := func(id, label string, primary, disabled bool, click func()) gui.View {
 		control := buttonConfig(id, label, 0, primary, disabled, click)
 		control.Height = 30
 		return gui.Button(control)
 	}
-	actions := []gui.View{
-		action("download-"+id, "Download", !status.ready, busy || status.ready, func() { run("Downloading") }),
-		action("reload-"+id, "Reload", false, busy || !status.ready, func() { run("Reloading") }),
-		action("delete-"+id, "Delete", false, busy || !status.cached, func() { run("Deleting") }),
+	var actions []gui.View
+	if id != "kokoro" && !status.ready {
+		actions = append(actions, action("download-"+id, "Download", true, busy, func() {
+			setup.runLocal(s, w, id, "Downloading", nil)
+		}))
+	}
+	other := "parakeet"
+	if id == other {
+		other = "orukeet"
+	}
+	if id != "kokoro" && status.cached && ((!status.ready) || (!current && !inUse && setup.local[other].ready)) {
+		actions = append(actions, action("delete-"+id, "Delete", false, busy, func() {
+			setup.runLocal(s, w, id, "Deleting", nil)
+		}))
+	}
+	if id != "kokoro" && inUse && status.ready && !s.speechReady && !busy {
+		actions = append(actions, action("retry-"+id, "Retry loading", false, false, func() {
+			go func() {
+				s.sttMu.Lock()
+				s.recognizer.Reset()
+				s.sttMu.Unlock()
+				s.async(func() { s.prepareSpeech(false) })
+			}()
+		}))
 	}
 	if setup.running == id && strings.HasPrefix(status.message, "Downloading") {
 		actions = append(actions, action("stop-download", "Cancel", false, false, setup.cancel))
@@ -104,10 +130,19 @@ func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values
 	heading := []gui.View{bold(label, 15, ink), spacer(), text(note, 13, muted)}
 	if current {
 		heading = append(heading, text("Active", 13, accent))
-	} else if id != "kokoro" {
+	} else if id != "kokoro" && status.ready {
 		heading = append(heading, action("provider-"+id, "Use", true, false, func() { draft.Put("speech_provider", id) }))
 	}
-	content := []gui.View{speechRow(heading...), speechRow(actions...)}
+	if s.speechLoading == id {
+		note = s.speechStatus
+	}
+	content := []gui.View{speechRow(heading...)}
+	if len(actions) > 0 {
+		content = append(content, speechRow(actions...))
+	}
+	if s.speechLoading == id {
+		content = append(content, wrapped(note, 13, muted))
+	}
 	if status.message != "" && status.message != note {
 		content = append(content, wrapped(status.message, 13, muted))
 	}
@@ -178,7 +213,7 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Values) gui.View {
 	header := []gui.View{bold("Set up Mistral", 20, ink)}
 	leave := func() {
-		setup.step, setup.key, setup.keyMessage = 0, "", ""
+		setup.step, setup.key, setup.keyMessage, setup.showKey = 0, "", "", false
 		s.settingUpMistral = false
 	}
 	back := button("mistral-back", "Back to Settings", 0, false, s.savingKey, leave)
@@ -225,8 +260,13 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 	body := []gui.View{
 		bold("Voice privacy", 16, ink), wrapped(mistralWarning, 14, orange),
 		wrapped("Paste your key below. Windows Credential Manager stores it after validation.", 14, muted),
-		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: true, Disabled: s.savingKey,
+		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: !setup.showKey, Disabled: s.savingKey,
 			OnTextChanged: func(v string, _ gui.EventCtx) { setup.key = v; w.InvalidateLayout() }}),
+		toggleControl("show-mistral-key", "Show API key", setup.showKey, func(ctx gui.EventCtx) {
+			setup.showKey = !setup.showKey
+			ctx.Consume()
+			w.InvalidateLayout()
+		}),
 		button("save-key", "Validate key and select Mistral", 0, true, s.savingKey || strings.TrimSpace(setup.key) == "", func() {
 			token := strings.TrimSpace(setup.key)
 			setup.key, setup.keyMessage, s.savingKey = "", "Validating key…", true
@@ -243,6 +283,9 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 						setup.keyMessage = err.Error()
 					} else {
 						setup.hasKey = true
+						if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
+							s.prepareSpeech(false)
+						}
 						if setup.step > 0 {
 							useMistral()
 						}

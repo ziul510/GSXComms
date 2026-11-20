@@ -61,6 +61,9 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		if config.Get[bool](previous, "topmost_active") != config.Get[bool](s.cfg, "topmost_active") {
 			s.setTopmost()
 		}
+		if config.Get[string](previous, "speech_provider") != config.Get[string](s.cfg, "speech_provider") {
+			s.prepareSpeech(true)
+		}
 	}
 	// Tell the originating dialog when it can close or show a write error
 	if req.then != nil {

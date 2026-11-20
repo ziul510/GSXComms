@@ -1,7 +1,7 @@
 # Copyright 2026 ziul510
 # SPDX-License-Identifier: Apache-2.0
 
-param([string]$Output = 'THIRD_PARTY_NOTICES', [string]$NSISRoot)
+param([string]$Output = 'THIRD_PARTY_NOTICES')
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $inventory = Get-Content -LiteralPath 'docs/license-inventory.json' -Raw | ConvertFrom-Json -AsHashtable
@@ -50,9 +50,20 @@ foreach ($file in (Get-ChildItem 'docs/licenses' -File | Sort-Object Name)) {
     Add-Notice "========== $($file.Name) =========="
     Add-Notice (Get-Content -LiteralPath $file.FullName -Raw)
 }
-# Include NSIS's terms when the notice file is being prepared for an installer
-if ($NSISRoot) {
-    Add-Notice '========== NSIS installer =========='
-    Add-Notice (Get-Content -LiteralPath (Join-Path $NSISRoot 'COPYING') -Raw)
+$rust = cargo +1.98.0 metadata --locked --manifest-path cmd/gsxsimconnect/Cargo.toml --filter-platform x86_64-pc-windows-msvc --format-version 1 | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or !$rust.packages) { throw 'Failed to inventory Rust dependencies' }
+foreach ($crate in ($rust.packages | Where-Object source | Sort-Object name)) {
+    Add-Notice "========== $($crate.name) $($crate.version) ($($crate.license)) =========="
+    $licenses = @(Get-ChildItem -LiteralPath (Split-Path -Parent $crate.manifest_path) -File |
+        Where-Object { $_.Name -match '^(LICENSE|COPYING|NOTICE)' } | Sort-Object Name)
+    if (!$licenses.Count) {
+        if ($crate.name -notmatch '^flybywireless-simconnect(-derive|-proto)?$' -or $crate.license -ne 'MIT') {
+            throw "Missing Rust license for $($crate.name) $($crate.version)"
+        }
+        Add-Notice 'See FlyByWireless-LICENSE above.'
+    }
+    foreach ($license in $licenses) {
+        Add-Notice (Get-Content -LiteralPath $license.FullName -Raw)
+    }
 }
 Set-Content -LiteralPath $Output -Value $notice.ToString() -Encoding utf8

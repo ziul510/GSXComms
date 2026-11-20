@@ -1,5 +1,6 @@
 /dist/
 /build/
+/cmd/gsxsimconnect/target/
 /.evidence/
 /.local/
 /user_settings.json

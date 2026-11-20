@@ -12,16 +12,35 @@ import (
 )
 
 func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose func()) func() {
-	// Edit the parent's draft while Settings owns the dialog
 	entries := config.Get[[]config.Preset](draft, "presets")
 	form := config.Preset{Enabled: true}
 	selected := -1
-	editing := false
+	editing, saving := false, false
 	message := ""
 	available := config.Services[0]
 	startNew := func() {
 		selected, form, message = -1, config.Preset{Enabled: true}, ""
 		editing = true
+	}
+	var window *gui.Window
+	persist := func(updated []config.Preset) {
+		saving, message = true, ""
+		next := s.settingsDraft()
+		next.Put("presets", updated)
+		s.save(next, func(err error) {
+			saving = false
+			if err != nil {
+				message = err.Error()
+			} else {
+				entries = updated
+				draft.Put("presets", entries)
+				selected, editing = -1, false
+				parent.InvalidateLayout()
+			}
+			if window != nil && !window.CloseRequested() {
+				window.InvalidateLayout()
+			}
+		})
 	}
 	save := func() {
 		// Check duplicates against every other draft entry before inserting or replacing one
@@ -30,25 +49,20 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 			message = err.Error()
 			return
 		}
+		updated := slices.Clone(entries)
 		if selected >= 0 {
-			entries[selected] = value
+			updated[selected] = value
 		} else {
-			entries = append(entries, value)
+			updated = append(updated, value)
 		}
-		// Save the edit to the Settings draft so the parent dialog controls persistence
-		draft.Put("presets", entries)
-		form = config.Preset{Enabled: true}
-		selected = -1
-		editing = false
-		message = ""
-		// Refresh the preset count shown in the Settings window
-		parent.InvalidateLayout()
+		persist(updated)
 	}
 	var closeDialog func()
 	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, onClose, func(w *gui.Window) gui.View {
+		window = w
 		var body []gui.View
 		for i, p := range entries {
-			entry := buttonConfig("preset-"+strconv.Itoa(i), p.Name, 0, false, false, func() {
+			entry := buttonConfig("preset-"+strconv.Itoa(i), p.Name, 0, false, saving, func() {
 				selected, form, message, editing = i, p, "", true
 				// Editing the service order must leave the saved entry intact until Save preset
 				form.Services = slices.Clone(p.Services)
@@ -109,22 +123,27 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 			var actions []gui.View
 			// Deletion is available only when the form refers to an existing preset
 			if selected >= 0 {
-				actions = append(actions, button("delete", "Delete", 0, false, false, func() {
-					entries = slices.Delete(entries, selected, selected+1)
-					draft.Put("presets", entries)
-					editing = false
-					parent.InvalidateLayout()
+				actions = append(actions, button("delete", "Delete", 0, false, saving, func() {
+					index := selected
+					w.NativeConfirmDialog(gui.NativeConfirmDialogCfg{
+						Title: "Delete preset?", Body: "Delete " + entries[index].Name + "?", Level: gui.AlertWarning,
+						OnDone: func(result gui.NativeAlertResult, _ *gui.Window) {
+							if result.Status == gui.DialogOK && !saving && index == selected {
+								persist(slices.Delete(slices.Clone(entries), index, index+1))
+							}
+						},
+					})
 				}))
 			}
-			actions = append(actions, spacer(), button("cancel-edit", "Cancel", 0, false, false, func() { editing = false }),
-				button("save-preset", "Save preset", 100, true, false, save))
+			actions = append(actions, spacer(), button("cancel-edit", "Cancel", 0, false, saving, func() { editing = false }),
+				button("save-preset", "Save preset", 100, true, saving, save))
 			editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, Content: actions}))
 			editorCard := outlinedCard(card, gui.PadAll(12), 10, editor...)
 			editorCard.ColorBorder = accent
 			// Insert below the selected row, or at the top when creating a preset
 			body = slices.Insert(body, selected+1, gui.Column(editorCard))
 		}
-		newPreset := buttonConfig("new", "+ New", 96, true, false, func() {
+		newPreset := buttonConfig("new", "+ New", 96, true, saving, func() {
 			startNew()
 			w.ScrollVerticalTo("presets-scroll", 0)
 		})

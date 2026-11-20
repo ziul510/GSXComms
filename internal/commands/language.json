@@ -99,58 +99,6 @@
     "yankee": "y",
     "zulu": "z"
   },
-  "GSX_SERVICE_ALIASES": {
-    "CATERING": [
-      "catering"
-    ],
-    "REFUELING": [
-      "refueling",
-      "refuel"
-    ],
-    "BOARDING": [
-      "boarding"
-    ],
-    "DEBOARDING": [
-      "deboarding",
-      "deboard"
-    ],
-    "PUSHBACK": [
-      "pushback",
-      "push back"
-    ],
-    "JETWAY": [
-      "jetway",
-      "jet way"
-    ],
-    "STAIRS": [
-      "stairs",
-      "stair"
-    ],
-    "GPU": [
-      "gpu",
-      "external power",
-      "ground power",
-      "ground power unit",
-      "pmdg ground power unit"
-    ],
-    "DEICE": [
-      "deice",
-      "de icing",
-      "deicing",
-      "de ice"
-    ],
-    "LAVATORY": [
-      "lavatory",
-      "toilet"
-    ],
-    "WATER": [
-      "water"
-    ],
-    "CLEANING": [
-      "cleaning",
-      "clean"
-    ]
-  },
   "NUMBER_WORDS": {
     "one": "1",
     "two": "2",

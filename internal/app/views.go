@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/go-gui-org/go-gui/gui"
@@ -119,15 +118,18 @@ func mainView(w *gui.Window) gui.View {
 		bar = append(bar, gui.Button(topmost), gap(4, 1))
 	}
 	bar = append(bar, bold(speed, 12, speedColor))
-	pttColor := ink
-	if s.ptt != "Idle" {
+	ptt, pttColor := s.ptt, ink
+	if s.speechStatus != "" && s.ptt == "Idle" {
+		ptt = s.speechStatus
+	}
+	if ptt != "Idle" {
 		pttColor = orange
 	}
-	binding := config.Get[config.Binding](s.cfg, "ptt_bind").Description
+	binding := s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind"))
 	body := []gui.View{gui.Row(gui.ContainerCfg{
 		Sizing: gui.FillFixed, Height: 48, Color: card, ColorBorder: elevated, Radius: gui.RadiusPx(6),
 		Padding: gui.PadVH(0, 11), SizeBorder: gui.BorderPx(1), VAlign: gui.VAlignMiddle, Spacing: gui.SpacingPx(6),
-		Content: []gui.View{text("PTT", 11, muted), bold(s.ptt, 13, pttColor), spacer(), text(binding, 11, muted)},
+		Content: []gui.View{text("PTT", 11, muted), bold(ptt, 13, pttColor), spacer(), text(binding, 11, muted)},
 	})}
 	// Only show the command field when typed input is enabled
 	if config.Get[bool](s.cfg, "enable_keyboard_input") {
@@ -175,36 +177,34 @@ func mainView(w *gui.Window) gui.View {
 		for i, item := range s.menu.Options {
 			// Display one-based labels but pass the original zero-based slot back to GSX
 			label := fmt.Sprintf("%d. %s", i+1, item)
-			option := buttonConfig("option-"+strconv.Itoa(i), label, 0, i == s.highlight, false, func() { s.choose(i) })
-			fg := ink
-			if i == s.highlight {
-				fg = bg
+			fill, fg := card, ink
+			if i == s.highlight && s.highlightPage.Same(s.menu) {
+				fill, fg = accent, bg
 			}
-			option.Sizing, option.Height, option.Radius = gui.FillFit, 0, gui.RadiusPx(4)
-			option.Padding, option.HAlign = gui.PadVH(7, 16), gui.Some(gui.HAlignLeft)
-			option.Content = []gui.View{wrapped(label, controlTextSize, fg)}
-			logArea.Content = append(logArea.Content, gui.Button(option))
+			logArea.Content = append(logArea.Content, gui.Row(gui.ContainerCfg{
+				Sizing: gui.FillFit, Color: fill, Radius: gui.RadiusPx(4), Padding: gui.PadVH(7, 16),
+				Content: []gui.View{wrapped(label, controlTextSize, fg)},
+			}))
 		}
 	} else {
 		logArea.Content = []gui.View{gui.Text(gui.TextCfg{ID: "log-content", Text: strings.Join(s.lines, "\n"), Mode: gui.TextModeWrap, TextStyle: gui.TextStyle{Size: 12, Family: "Consolas", Color: terminalInk, LetterSpacing: 0.4}, Focusable: true})}
 	}
 	body = append(body, gui.Column(logArea))
-	// Use the same control for connect and disconnect while disabling it during a handshake
-	connect := buttonConfig("connect", "Connect", 120, true, s.busy, s.toggleConnect)
+	connect := buttonConfig("connect", "Connect", 120, true, s.busy || s.connected, s.toggleConnect)
 	switch {
 	case s.busy:
 		connect.Content = []gui.View{bold("Connecting…", controlTextSize, bg)}
 		connect.Colors = gui.ColorSet{Base: orange, Disabled: orange}
 	case s.connected:
-		connect.Content = []gui.View{bold("Disconnect", controlTextSize, bg)}
-		connect.Colors = gui.ColorSet{Base: green, Hover: gui.Hex(0x48df85)}
+		connect.Content = []gui.View{bold("Connected", controlTextSize, bg)}
+		connect.Colors = gui.ColorSet{Base: green, Disabled: green}
 	}
 	connect.Height = 36
 	menuLabel := "Show GSX Menu"
 	if s.overlay {
 		menuLabel = "Hide GSX Menu"
 	}
-	menu := buttonConfig("gsx-menu", menuLabel, 120, false, !s.ready, s.toggleMenu)
+	menu := buttonConfig("gsx-menu", menuLabel, 120, false, !s.ready && !s.overlay, s.toggleMenu)
 	settings := buttonConfig("settings", "Settings", 80, false, false, s.openSettings)
 	for _, control := range []*gui.ButtonCfg{&menu, &settings} {
 		control.Height = 36
@@ -227,12 +227,18 @@ func mainView(w *gui.Window) gui.View {
 }
 
 func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) func() {
+	s.dialogID++
+	id := s.dialogID
+	if s.dialogs == nil {
+		s.dialogs = make(map[uint64]func())
+	}
 	var window *gui.Window
 	closed := false
 	closeDialog := func() {
 		// Run cleanup once even if both the parent and the window request closure
 		if !closed {
 			closed = true
+			delete(s.dialogs, id)
 			onClose()
 		}
 		if window != nil {
@@ -251,6 +257,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 		w.SetView(view)
 	}
 	cfg.OnCloseRequest = func(*gui.Window) { closeDialog() }
+	s.dialogs[id] = closeDialog
 	s.host.OpenWindow(cfg)
 	return closeDialog
 }
@@ -370,9 +377,15 @@ func (s *state) openSettings() {
 		model, _ := models.Lookup(id)
 		setup.local[id] = localModelStatus{ready: model.Ready(s.dir), cached: model.Cached(s.dir)}
 	}
+	s.speechChanged = func(id string) {
+		if model, ok := models.Lookup(id); ok {
+			setup.local[id] = localModelStatus{ready: model.Ready(s.dir), cached: model.Cached(s.dir)}
+		}
+	}
 	var message string
 	var saving, closed bool
 	var closePresets func()
+	var closeWindow func()
 	closeSettings := func() {
 		if !closed {
 			closed = true
@@ -390,9 +403,17 @@ func (s *state) openSettings() {
 				closePresets()
 			}
 			s.settingsOpen = false
+			s.speechChanged = nil
 		}
 	}
 	inputs, outputs := []string{"Default"}, []string{"Default"}
+	help := map[string]string{
+		"enable_menu_matching":             "Match unmatched phrases against the current GSX menu.",
+		"enable_gsx_menu_text_correction":  "Use GSX menu labels to correct similar speech.",
+		"mute_gsx_audio_during_crew_voice": "Mute Couatl while GSXComms speaks or sends a service command.",
+		"simulation_mode":                  "Allow speech testing while Microsoft Flight Simulator is disconnected.",
+		"ignore_speed_restriction":         "Allow transmissions above 50 knots.",
+	}
 	view := func(w *gui.Window) gui.View {
 		if setup.step > 0 {
 			return setup.mistralPage(s, w, draft)
@@ -405,11 +426,15 @@ func (s *state) openSettings() {
 		}
 		// Control changes update the draft immediately Disk writes wait for Save
 		toggle := func(key, label string) {
-			body = append(body, labelRow(toggleControl(key, label, config.Get[bool](draft, key), func(ctx gui.EventCtx) {
+			control := toggleControl(key, label, config.Get[bool](draft, key), func(ctx gui.EventCtx) {
 				draft.Put(key, !config.Get[bool](draft, key))
 				ctx.Consume()
 				ctx.Window.InvalidateLayout()
-			}), 24))
+			})
+			if hint := help[key]; hint != "" {
+				control = gui.WithTooltip(w, gui.WithTooltipCfg{ID: key + "-help", Text: hint, Content: []gui.View{control}})
+			}
+			body = append(body, labelRow(control, 24))
 		}
 		pick := func(key, label string, items []string) {
 			value := config.Get[string](draft, key)
@@ -440,9 +465,14 @@ func (s *state) openSettings() {
 						draft.Put(key, v)
 					}
 					ctx.Consume()
+					ctx.Window.InvalidateLayout()
 				},
 			})
-			body = append(body, settingsField(label, gui.Row(gui.ContainerCfg{
+			value := fmt.Sprintf("%.0f%%", config.Get[float64](draft, key)*100)
+			if step == 1 {
+				value = fmt.Sprintf("%d s", config.Get[int](draft, key))
+			}
+			body = append(body, settingsField(label+"  "+value, gui.Row(gui.ContainerCfg{
 				Sizing: gui.FillFixed, Height: 16, Padding: gui.PadVH(0, 6), SizeBorder: gui.NoBorder,
 				Content: []gui.View{control},
 			})))
@@ -470,7 +500,15 @@ func (s *state) openSettings() {
 			},
 		}))
 		section("Accent", "Default accent and regional packs")
-		pick("default_accent", "Default accent", accents)
+		var selectedAccents []string
+		enabled := config.Get[[]string](s.cfg, "installed_packs")
+		for _, pack := range packs {
+			if slices.Contains(enabled, pack.name) {
+				selectedAccents = append(selectedAccents, pack.accents...)
+			}
+		}
+		slices.Sort(selectedAccents)
+		pick("default_accent", "Default accent", selectedAccents)
 		action("accent-setup", "Open Accent Setup", false, s.openAccents)
 		section("Presets", "Bundle multiple services behind a codeword and pick the run order")
 		presets := config.Get[[]config.Preset](draft, "presets")
@@ -488,7 +526,22 @@ func (s *state) openSettings() {
 		section("Behavior", "The behavior of the app")
 		toggle("enable_menu_matching", "Broader mode")
 		toggle("enable_gsx_menu_text_correction", "Match STT to GSX menu options")
-		toggle("read_gsx_menus_aloud_after_keyword", "Read GSX menus aloud after a keyword")
+		const readKey = "read_gsx_menus_aloud_after_keyword"
+		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", config.Get[bool](draft, readKey), func(ctx gui.EventCtx) {
+			ctx.Consume()
+			if config.Get[bool](draft, readKey) {
+				draft.Put(readKey, false)
+			} else if setup.local["kokoro"].ready {
+				draft.Put(readKey, true)
+			} else {
+				setup.runLocal(s, w, "kokoro", "Downloading", func(err error) {
+					if err == nil && !closed {
+						draft.Put(readKey, true)
+					}
+				})
+			}
+			w.InvalidateLayout()
+		}), 24))
 		// Show the keyword field only when menu readout is enabled
 		if config.Get[bool](draft, "read_gsx_menus_aloud_after_keyword") {
 			body = append(body, formInput(gui.InputCfg{ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) }}))
@@ -500,17 +553,20 @@ func (s *state) openSettings() {
 		section("Controls", "PTT binding, live input handling and typing")
 		toggle("enable_keyboard_input", "Enable keyboard typing")
 		toggle("minimize_to_tray", "Minimize to tray")
-		toggle("start_minimized", "Start minimized")
+		if config.Get[bool](draft, "minimize_to_tray") {
+			toggle("start_minimized", "Start minimized")
+		}
 		toggle("show_topmost", "Show Top Most")
-		body = append(body, settingsField("Current PTT binding", bold(config.Get[config.Binding](draft, "ptt_bind").Description, 13, ink)))
+		body = append(body, settingsField("Current PTT binding", bold(s.bindingDescription(config.Get[config.Binding](draft, "ptt_bind")), 13, ink)))
 		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(draft, w) })
 		section("Developer", "Debug mode opens a console and writes a debug.log file")
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
+		action("randomize-gender", "Randomize gender", false, s.randomizeVoice)
 		// Disabled leaves accent selection to the user's defaults and the aircraft location
 		pick("force_accent", "Force accent", append([]string{"Disabled"}, accents...))
-		save := buttonConfig("save", "Save Changes", 130, true, saving || closePresets != nil || s.binding != nil, func() {
+		save := buttonConfig("save", "Save Changes", 130, true, saving || closePresets != nil || s.binding != nil || setup.running == "kokoro", func() {
 			message = "Saving…"
 			saving = true
 			// Merge only edits made in this window onto the latest queued settings
@@ -523,8 +579,7 @@ func (s *state) openSettings() {
 					w.InvalidateLayout()
 					return
 				}
-				closeSettings()
-				w.Close()
+				closeWindow()
 				s.main.InvalidateLayout()
 			})
 		})
@@ -553,7 +608,7 @@ func (s *state) openSettings() {
 		})
 	}
 	message = "Changes applied on save"
-	s.dialog(gui.WindowCfg{Title: "Settings", Width: 520, Height: 820, MinWidth: 480, MinHeight: 680}, closeSettings, view)
+	closeWindow = s.dialog(gui.WindowCfg{Title: "Settings", Width: 520, Height: 820, MinWidth: 480, MinHeight: 680}, closeSettings, view)
 	go func() {
 		// Enumerating audio devices can block, so open Settings with its defaults first
 		in, out := deviceNames(true), deviceNames(false)
@@ -567,17 +622,30 @@ func (s *state) showHotfix() {
 		return
 	}
 	s.hotfixOpen = true
+	var message string
+	var saving bool
 	close := func() { s.hotfixOpen = false }
-	s.dialog(gui.WindowCfg{Title: "GSX hotfix required", Width: 470, Height: 250}, close, func(w *gui.Window) gui.View {
-		return page("hotfix-text", []gui.View{bold("GSX hotfix required", 18, ink)}, []gui.View{wrapped("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms", 14, ink)}, []gui.View{
-			spacer(), button("hotfix-close", "Close", 0, false, false, func() { close(); w.Close() }),
-			button("hotfix-ack", "I applied the hotfix", 0, true, false, func() {
+	var closeWindow func()
+	closeWindow = s.dialog(gui.WindowCfg{Title: "GSX hotfix required", Width: 470, Height: 250}, close, func(w *gui.Window) gui.View {
+		body := []gui.View{wrapped("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms", 14, ink)}
+		if message != "" {
+			body = append(body, wrapped(message, 12, red))
+		}
+		return page("hotfix-text", []gui.View{bold("GSX hotfix required", 18, ink)}, body, []gui.View{
+			spacer(), button("hotfix-close", "Close", 0, false, saving, closeWindow),
+			button("hotfix-ack", "I applied the hotfix", 0, true, saving, func() {
 				next := s.settingsDraft()
-				// Remember the acknowledgment so future stuck menus won't reopen this prompt
 				next.Put("gsx_hotfix_completed", true)
-				s.save(next, nil)
-				close()
-				w.Close()
+				saving = true
+				s.save(next, func(err error) {
+					saving = false
+					if err != nil {
+						message = "Could not save the acknowledgment"
+						w.InvalidateLayout()
+						return
+					}
+					closeWindow()
+				})
 			}),
 		})
 	})

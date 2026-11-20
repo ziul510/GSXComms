@@ -41,6 +41,17 @@ func TestLegacySettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLegacyControllerBindingDropsSDLIndex(t *testing.T) {
+	v, _, err := decode([]byte(`{"ptt_bind":{"type":"joy","joy_id":0,"joy_name":"Flight Stick","button":3,"desc":"Flight Stick Btn 3"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := Get[Binding](v, "ptt_bind")
+	if b.Type != "joystick" || b.JoyID != nil || b.JoyName != "Flight Stick" || b.JoyButton == nil || *b.JoyButton != 3 {
+		t.Fatalf("legacy binding = %+v", b)
+	}
+}
+
 func TestInvalidImportPreservesDestination(t *testing.T) {
 	source, dest := t.TempDir(), t.TempDir()
 	for name, value := range map[string]string{

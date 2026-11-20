@@ -166,6 +166,12 @@ func decode(data []byte) (Values, string, error) {
 		values.Put("speech_provider", "parakeet")
 	}
 	values.Put("presets", migratePresets(values["presets"]))
+	if binding := Get[Binding](values, "ptt_bind"); binding.Type == "joy" {
+		binding.Type = "joystick"
+		// SDL indexes identify a device only within the legacy process.
+		binding.JoyID = nil
+		values.Put("ptt_bind", binding)
+	}
 	return values, key, nil
 }
 
@@ -197,6 +203,12 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	values, key, err := decode(data)
 	if err != nil {
 		return nil, err
+	}
+	legacyAccents, err := filepath.Abs(filepath.Join(source, "Accents"))
+	if err == nil {
+		if info, statErr := os.Stat(legacyAccents); statErr == nil && info.IsDir() {
+			values.Put("legacy_accent_dir", legacyAccents)
+		}
 	}
 	type asset struct {
 		name string

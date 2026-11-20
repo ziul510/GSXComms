@@ -124,13 +124,6 @@
       "mode": "linked"
     },
     {
-      "name": "NSIS setup engine and zlib compression",
-      "version": "3.12",
-      "license": "Zlib",
-      "source": "https://nsis.sourceforge.io/License",
-      "mode": "installer"
-    },
-    {
       "name": "sherpa-onnx C ABI and C header",
       "version": "v2.0.1",
       "license": "Apache-2.0",
@@ -187,13 +180,11 @@
       "mode": "bundled; user-authored vocabulary and mappings may also be imported"
     },
     {
-      "name": "SimConnect",
-      "version": "installed x64 GSX/MSFS library",
-      "license": "Microsoft Flight Simulator vendor terms",
-      "source": "https://docs.flightsimulator.com/msfs2024/retail/programming-apis/simconnect/simconnect-sdk/",
-      "mode": "load existing installed native client; vendor DLLs are excluded from the installer",
-      "terms": "https://docs.flightsimulator.com/msfs2024/html/1_Introduction/SDK_EULA.htm",
-      "alternative": "Verified on this PC using the existing MSFS 2024 native client deployed with Lorby AxisAndOhs. Vendor redistribution classification is still outstanding."
+      "name": "flybywireless-simconnect",
+      "version": "0.2.1",
+      "license": "MIT",
+      "source": "https://github.com/wegylexy/SimConnect",
+      "mode": "statically linked in the bundled gsxsimconnect helper"
     },
     {
       "name": "OpenPhonemizer code and checkpoint",
@@ -236,13 +227,6 @@
       "alternative": "Use built-in CPU execution and document the GPU gate."
     },
     {
-      "version": "GSXComms Go rewrite",
-      "license": "Apache-2.0 project recordings generated with Kokoro am_adam",
-      "name": "English fallback crew cues",
-      "mode": "bundled",
-      "source": "scripts/crew-cues.py and pinned Kokoro model"
-    },
-    {
       "version": "go-gui v0.96.0 font",
       "license": "MIT",
       "name": "Feather icons embedded by go-gui",
@@ -250,7 +234,7 @@
       "source": "https://github.com/feathericons/feather"
     },
     {
-      "alternative": "Load a compatible, already-installed native SimConnect client.",
+      "alternative": "Use the FlyByWireless Windows helper.",
       "name": "node-simconnect",
       "source": "https://github.com/EvenAR/node-simconnect/blob/master/package.json",
       "version": "upstream",

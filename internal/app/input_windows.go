@@ -33,7 +33,7 @@ type keyboardMsg struct {
 	private        uint32
 }
 
-func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
+func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func(uintptr)) {
 	// The message pump has to run on the thread that owns the keyboard hook
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -74,10 +74,21 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	_, _, _ = peek.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 0)
 	id := windows.GetCurrentThreadId()
 	handle, _, _ := set.Call(13, callback, uintptr(module), 0)
-	if handle == 0 {
-		return
+	if handle != 0 {
+		defer unhook.Call(handle)
 	}
-	defer unhook.Call(handle)
+	// The same message pump can receive minimize notifications for this process.
+	const minimizeStart = 0x0016
+	minimized := windows.NewCallback(func(_, _, hwnd, objectID, childID, _, _ uintptr) uintptr {
+		if hwnd != 0 && objectID == 0 && childID == 0 {
+			minimize(hwnd)
+		}
+		return 0
+	})
+	hook, _, _ := user.NewProc("SetWinEventHook").Call(minimizeStart, minimizeStart, 0, minimized, uintptr(os.Getpid()), 0, 0)
+	if hook != 0 {
+		defer user.NewProc("UnhookWinEvent").Call(hook)
+	}
 	// Wake GetMessage on cancellation so the hook can be removed on its owning thread
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x0012, 0, 0) }()
 	for {
@@ -105,11 +116,20 @@ func bindingKey(b config.Binding) uint32 {
 		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 			return uint32(c)
 		}
+		if key, _, _ := user.NewProc("VkKeyScanW").Call(uintptr(name[0])); uint16(key) < 0x0100 {
+			return uint32(key & 0xff)
+		}
 	}
 	if n, err := strconv.Atoi(strings.TrimPrefix(name, "F")); strings.HasPrefix(name, "F") && err == nil && n >= 1 && n <= 24 {
 		return uint32(0x6f + n)
 	}
-	return map[string]uint32{"SPACE": 0x20, "ENTER": 0x0d, "TAB": 0x09, "LEFT CTRL": 0xa2, "RIGHT CTRL": 0xa3, "LEFT SHIFT": 0xa0, "RIGHT SHIFT": 0xa1, "LEFT ALT": 0xa4, "RIGHT ALT": 0xa5}[name]
+	return map[string]uint32{
+		"SPACE": 0x20, "ENTER": 0x0d, "TAB": 0x09, "BACKSPACE": 0x08, "CAPS LOCK": 0x14,
+		"LEFT CTRL": 0xa2, "RIGHT CTRL": 0xa3, "CTRL": 0xa2, "LEFT SHIFT": 0xa0, "RIGHT SHIFT": 0xa1, "SHIFT": 0xa0,
+		"LEFT ALT": 0xa4, "RIGHT ALT": 0xa5, "ALT": 0xa4, "ALT GR": 0xa5, "LEFT WINDOWS": 0x5b, "RIGHT WINDOWS": 0x5c,
+		"PAGE UP": 0x21, "PAGE DOWN": 0x22, "END": 0x23, "HOME": 0x24, "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28,
+		"PRINT SCREEN": 0x2c, "INSERT": 0x2d, "DELETE": 0x2e, "NUM LOCK": 0x90, "SCROLL LOCK": 0x91, "PAUSE": 0x13,
+	}[name]
 }
 
 // Store the numeric Windows key code and keep a separate description for the UI
@@ -149,7 +169,7 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 			if down {
 				if key == 0x1b {
 					s.binding(config.Binding{})
-				} else {
+				} else if key != 0x0d {
 					s.binding(bindingForKey(key))
 				}
 			}
@@ -167,6 +187,7 @@ func (s *state) rebind(draft config.Values, parent *gui.Window) {
 		return
 	}
 	var closeDialog func()
+	var timeout *time.Timer
 	finished := false
 	finish := func(b config.Binding) {
 		// Both closing the dialog and capturing a key can call finish
@@ -174,6 +195,9 @@ func (s *state) rebind(draft config.Values, parent *gui.Window) {
 			return
 		}
 		finished = true
+		if timeout != nil {
+			timeout.Stop()
+		}
 		s.binding = nil
 		selectingKey.Store(false)
 		// A successful capture updates the Settings draft Cancel keeps the old draft value
@@ -190,6 +214,9 @@ func (s *state) rebind(draft config.Values, parent *gui.Window) {
 	selectingKey.Store(true)
 	closeDialog = s.dialog(gui.WindowCfg{Title: "Bind Push-To-Talk", Width: 380, Height: 185}, func() { finish(config.Binding{}) }, func(w *gui.Window) gui.View {
 		return page("bind", []gui.View{text("Bind Push-To-Talk", 18, ink)}, []gui.View{wrapped("Press a keyboard key or controller button. Press Escape to cancel.", 14, ink)}, []gui.View{spacer(), button("cancel-rebind", "Cancel", 0, false, false, func() { finish(config.Binding{}) })})
+	})
+	timeout = time.AfterFunc(15*time.Second, func() {
+		s.async(func() { finish(config.Binding{}) })
 	})
 }
 

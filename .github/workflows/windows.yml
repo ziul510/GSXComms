@@ -44,10 +44,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh -File .github/tests/run.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # The installer builds the main app without CGO and builds speech workers separately
+          # The portable build compiles the main app without CGO
           $env:CGO_ENABLED = '0'
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Compile the patched renderer used by the installer too
+          # Compile the patched renderer used by the portable build
           $modfile = & scripts/go-gui-overlay.ps1
           go build -modfile $modfile ./...
+      - name: Check SimConnect helper
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.98.0 fmt --check --manifest-path cmd/gsxsimconnect/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.98.0 test --locked --manifest-path cmd/gsxsimconnect/Cargo.toml --target x86_64-pc-windows-msvc --target-dir build/rust

@@ -4,6 +4,7 @@
 package gsx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +24,7 @@ const (
 	Remote     = "L:FSDT_GSX_SET_REMOTECONTROL"
 	MenuOpen   = "L:FSDT_GSX_MENU_OPEN"
 	MenuChoice = "L:FSDT_GSX_MENU_CHOICE"
-	Speed      = "GROUND VELOCITY"
+	Speed      = "GPS GROUND SPEED"
 
 	maxMenuOptions = 9
 )
@@ -82,19 +83,62 @@ func ParseMenu(raw string) Menu {
 
 // The transport carries simulator variables The panel file carries the menu text
 type Session struct {
-	Sim      Transport
-	ReadMenu func() Menu
-	Sleep    func(context.Context, time.Duration) error
-	remote   bool
+	Sim         Transport
+	ReadMenu    func() Menu
+	OnReadError func(error)
+	OnChoice    func(Menu, int)
+	Sleep       func(context.Context, time.Duration) error
+	remote      bool
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
 func New(sim Transport, panel string) *Session {
-	return &Session{Sim: sim, ReadMenu: func() Menu {
-		// The panel file can be absent between menus Treat that as an empty menu
-		data, _ := os.ReadFile(filepath.Join(panel, "menu"))
-		return ParseMenu(strings.ToValidUTF8(string(data), ""))
-	}, Sleep: wait}
+	s := &Session{Sim: sim, Sleep: wait}
+	path := filepath.Join(panel, "menu")
+	empty := ParseMenu("")
+	var last []byte
+	var cached Menu
+	var reported string
+	s.ReadMenu = func() Menu {
+		read := func() ([]byte, bool) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) && err.Error() != reported && s.OnReadError != nil {
+					reported = err.Error()
+					s.OnReadError(err)
+				}
+				return nil, false
+			}
+			reported = ""
+			return data, true
+		}
+		data, ok := read()
+		if !ok || len(data) == 0 {
+			return empty
+		}
+		if bytes.Equal(last, data) {
+			return cached
+		}
+		// Couatl can replace the panel while it is still being written.
+		for range 2 {
+			time.Sleep(10 * time.Millisecond)
+			next, ok := read()
+			if !ok || len(next) == 0 {
+				return empty
+			}
+			if bytes.Equal(data, next) {
+				last, cached = next, ParseMenu(strings.ToValidUTF8(string(next), ""))
+				return cached
+			}
+			data = next
+		}
+		return empty
+	}
+	return s
+}
+
+func (m Menu) Same(other Menu) bool {
+	return m.Title == other.Title && slices.Equal(m.Options, other.Options)
 }
 
 // Protocol delays should stop promptly when the app shuts down
@@ -125,6 +169,9 @@ func (s *Session) get(ctx context.Context, name string) (float64, error) {
 		if err == nil {
 			return value, nil
 		}
+		if errors.Is(err, ErrDisconnected) {
+			return 0, err
+		}
 		if attempt < 3 {
 			if err := s.Sleep(ctx, 80*time.Millisecond); err != nil {
 				return 0, err
@@ -145,6 +192,9 @@ func (s *Session) set(ctx context.Context, name string, value float64) error {
 		if err == nil {
 			return nil
 		}
+		if errors.Is(err, ErrDisconnected) || errors.Is(err, errWriteUncertain) {
+			return err
+		}
 		if attempt < 2 {
 			if err := s.Sleep(ctx, 80*time.Millisecond); err != nil {
 				return err
@@ -162,6 +212,9 @@ func (s *Session) Status(ctx context.Context) (ready bool, speed float64, err er
 	speed, err = s.get(ctx, Speed)
 	// A failed speed read blocks transmission but can still report GSX readiness
 	if err != nil {
+		if errors.Is(err, ErrDisconnected) {
+			return false, 0, err
+		}
 		return v >= 0.5, 0, errors.Join(ErrSpeedUnavailable, err)
 	}
 	// Only a finite speed can pass the transmission gate
@@ -254,6 +307,17 @@ func (s *Session) Close() error {
 
 // GSX expects a zero-based slot Give the panel time to process the choice
 func (s *Session) Choose(ctx context.Context, index int) error {
+	return s.choose(ctx, s.ReadMenu(), index)
+}
+
+func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
+	if !page.Same(s.ReadMenu()) || index < 0 || index >= len(page.Options) {
+		return errors.New("GSX menu changed before selection")
+	}
+	return s.choose(ctx, page, index)
+}
+
+func (s *Session) choose(ctx context.Context, page Menu, index int) error {
 	if index < 0 || index >= maxMenuOptions {
 		return errors.New("invalid GSX item")
 	}
@@ -261,7 +325,24 @@ func (s *Session) Choose(ctx context.Context, index int) error {
 		return err
 	}
 	s.remote = true
+	if s.OnChoice != nil && index < len(page.Options) {
+		s.OnChoice(page, index)
+	}
 	return s.Sleep(ctx, 300*time.Millisecond)
+}
+
+func (s *Session) OpenMenuPage(ctx context.Context) (Menu, error) {
+	var menu Menu
+	var err error
+	for range 2 {
+		if err = s.Open(ctx); err != nil {
+			break
+		}
+		if menu, err = s.WaitMenu(ctx); err == nil || ctx.Err() != nil {
+			break
+		}
+	}
+	return menu, err
 }
 
 // A fresh open can accept any populated menu
@@ -274,7 +355,7 @@ func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	for i := 0; i < 8; i++ {
 		menu = s.ReadMenu()
 		// The panel file can still show the parent menu after a submenu choice
-		if len(menu.Options) > 0 && (previous == nil || menu.Title != previous.Title || !slices.Equal(menu.Options, previous.Options)) {
+		if len(menu.Options) > 0 && (previous == nil || !menu.Same(*previous)) {
 			return menu, nil
 		}
 		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
@@ -315,23 +396,16 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	menu := s.ReadMenu()
 	// Start services by opening the menu A text choice can use the current page
-	if service != "" || !menu.Active || len(menu.Options) == 0 {
-		if err := s.Open(ctx); err != nil {
-			return "", err
-		}
+	if service != "" || !s.RemoteActive() || len(menu.Options) == 0 {
 		var err error
-		menu, err = s.WaitMenu(ctx)
+		menu, err = s.OpenMenuPage(ctx)
 		if err != nil {
 			return "", err
 		}
 	}
 	find := func(options []string) int {
 		if service != "" {
-			// Give user vocabulary precedence over the built-in service aliases
-			if index := optionContaining(options, keywords); index >= 0 {
-				return index
-			}
-			return optionContaining(options, commands.Aliases(service))
+			return optionContaining(options, keywords)
 		}
 		// Without a service ID, score the transcript against the visible labels
 		index, _ := commands.Match(text, options)
@@ -343,7 +417,8 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	index := find(menu.Options)
 	// Search the submenu only after the current page has no match
 	if extra := optionContaining(menu.Options, []string{"additional services"}); index < 0 && extra >= 0 {
-		if err := s.Choose(ctx, extra); err != nil {
+		parent := menu
+		if err := s.ChooseOn(ctx, menu, extra); err != nil {
 			return "", err
 		}
 		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
@@ -352,6 +427,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		var err error
 		menu, err = s.waitMenu(ctx, &menu)
 		if err != nil {
+			_ = s.Release(ctx)
 			return "", err
 		}
 		if stuck(menu.Options) {
@@ -363,9 +439,9 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			back := slices.IndexFunc(menu.Options, func(option string) bool {
 				return slices.Contains([]string{"back", "close", "cancel"}, strings.ToLower(option))
 			})
-			if back >= 0 {
-				_ = s.Choose(ctx, back)
-			} else {
+			if back < 0 || s.ChooseOn(ctx, menu, back) != nil {
+				_ = s.Release(ctx)
+			} else if page, err := s.waitMenu(ctx, &menu); err != nil || !page.Same(parent) {
 				_ = s.Release(ctx)
 			}
 		}
@@ -377,7 +453,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		return "", errors.New("No matching GSX menu option found")
 	}
 	selected := menu.Options[index]
-	if err := s.Choose(ctx, index); err != nil {
+	if err := s.ChooseOn(ctx, menu, index); err != nil {
 		return "", err
 	}
 	// The operator prompt can show up after the service selection returns
@@ -386,9 +462,9 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
 				return selected, err
 			}
-			options := s.ReadMenu().Options
-			if i := optionContaining(options, []string{"automatic operator", "automatically choose", "gsx choice"}); i >= 0 {
-				return selected, s.Choose(ctx, i)
+			page := s.ReadMenu()
+			if i := optionContaining(page.Options, []string{"gsx choice"}); i >= 0 {
+				return selected, s.ChooseOn(ctx, page, i)
 			}
 		}
 	}
@@ -403,4 +479,8 @@ func (s *Session) Location(ctx context.Context) (float64, float64, error) {
 	}
 	lon, err := s.get(ctx, "PLANE LONGITUDE")
 	return lat, lon, err
+}
+
+func (s *Session) Altitude(ctx context.Context) (float64, error) {
+	return s.get(ctx, "PLANE ALTITUDE")
 }

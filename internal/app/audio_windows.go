@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -49,7 +52,7 @@ func audioDevices(input bool) []string {
 func deviceNames(input bool) []string {
 	out := []string{"Default"}
 	for _, name := range audioDevices(input) {
-		if name != "" {
+		if name != "" && !slices.Contains(out, name) {
 			out = append(out, name)
 		}
 	}
@@ -58,14 +61,26 @@ func deviceNames(input bool) []string {
 
 // Resolve the saved device by name each time because WinMM indices can change
 func deviceID(input bool, name string) uintptr {
-	if name != "Default" && name != "" {
-		for i, candidate := range audioDevices(input) {
-			if name == candidate {
-				return uintptr(i)
+	if name == "Default" || name == "" {
+		return defaultWaveDevice
+	}
+	return matchDeviceID(name, audioDevices(input))
+}
+
+func matchDeviceID(name string, candidates []string) uintptr {
+	id := uintptr(defaultWaveDevice)
+	for i, candidate := range candidates {
+		// WAVEINCAPSW and WAVEOUTCAPSW reserve 31 UTF-16 units for a name.
+		truncated := len(utf16.Encode([]rune(candidate))) == 31 &&
+			strings.HasPrefix(strings.ToLower(name), strings.ToLower(candidate))
+		if candidate != "" && (strings.EqualFold(name, candidate) || truncated) {
+			if id != defaultWaveDevice {
+				return defaultWaveDevice
 			}
+			id = uintptr(i)
 		}
 	}
-	return defaultWaveDevice
+	return id
 }
 
 // The calls pass the native WAVEFORMATEX field layout for mono PCM16
@@ -206,6 +221,10 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 }
 
 func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
+	return playPCMBuffer(ctx, device, pcm, rate, false)
+}
+
+func playPCMBuffer(ctx context.Context, device string, pcm []byte, rate int, loop bool) error {
 	if len(pcm) == 0 {
 		return nil
 	}
@@ -235,6 +254,10 @@ func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
 	}
 	defer mmCall(mm.NewProc("waveOutClose"), handle)
 	h := waveHeader{data: &pcm[0], length: uint32(len(pcm))}
+	if loop {
+		h.flags = 0x04 | 0x08 // WHDR_BEGINLOOP and WHDR_ENDLOOP
+		h.loops = ^uint32(0)
+	}
 	var pins runtime.Pinner
 	// Keep the output header and samples fixed until the asynchronous write is done
 	pins.Pin(&h)

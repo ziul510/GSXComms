@@ -52,6 +52,27 @@ func (f *fakeSim) Set(ctx context.Context, key string, value float64) error {
 }
 func (f *fakeSim) Close() error { f.closed = true; return nil } // Track whether cleanup actually closed the transport
 
+type uncertainWrite struct {
+	*fakeSim
+	attempts int
+}
+
+func (f *uncertainWrite) Set(context.Context, string, float64) error {
+	f.attempts++
+	return errWriteUncertain
+}
+
+func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
+	transport := &uncertainWrite{fakeSim: &fakeSim{}}
+	session := New(transport, t.TempDir())
+	page := ParseMenu("Ramp\nJetway")
+	session.ReadMenu = func() Menu { return page }
+	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
+	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, errWriteUncertain) || transport.attempts != 1 {
+		t.Fatalf("choice error = %v, attempts = %d", err, transport.attempts)
+	}
+}
+
 func TestScriptedSession(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{Started: 1, Speed: 12}, failGet: 1}
 	s := New(f, "")
@@ -80,11 +101,11 @@ func TestScriptedSession(t *testing.T) {
 	if err := s.Close(); err != nil || !f.closed || s.Connected() {
 		t.Fatalf("close = %v, %+v", err, f)
 	}
-	want := []operation{{MenuChoice, 0}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuOpen, 0}, {Remote, 0}}
+	want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuOpen, 0}, {Remote, 0}}
 	if !reflect.DeepEqual(f.writes, want) {
 		t.Errorf("writes = %+v, want %+v", f.writes, want)
 	}
-	if clock != 2080*time.Millisecond {
+	if clock != 2580*time.Millisecond {
 		t.Errorf("clock = %v", clock)
 	}
 	s.Sim = &fakeSim{values: map[string]float64{Started: 1}}
@@ -205,7 +226,7 @@ func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 		return child
 	}
 	selected, err := s.Execute(t.Context(), "potable water", "", nil, false)
-	if want := []operation{{MenuChoice, 0}, {MenuChoice, 0}}; err != nil || selected != "Request potable water" || !reflect.DeepEqual(f.writes, want) {
+	if want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}, {MenuChoice, 0}}; err != nil || selected != "Request potable water" || !reflect.DeepEqual(f.writes, want) {
 		t.Fatalf("selection %q, error %v, writes %v, want %v", selected, err, f.writes, want)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"golang.org/x/sys/windows"
 )
@@ -21,6 +22,68 @@ type rawDevice struct {
 	page, usage uint16
 	flags       uint32
 	target      uintptr
+}
+
+type rawDeviceEntry struct {
+	handle uintptr
+	kind   uint32
+}
+
+func (s *state) refreshHIDPaths() {
+	list := user.NewProc("GetRawInputDeviceList")
+	size := unsafe.Sizeof(rawDeviceEntry{})
+	var count uint32
+	result, _, _ := list.Call(0, uintptr(unsafe.Pointer(&count)), size)
+	if uint32(result) == ^uint32(0) || count > 4096 {
+		return
+	}
+	paths := make(map[string][]string)
+	if count > 0 {
+		devices := make([]rawDeviceEntry, int(count))
+		result, _, _ = list.Call(uintptr(unsafe.Pointer(&devices[0])), uintptr(unsafe.Pointer(&count)), size)
+		if uint32(result) == ^uint32(0) || result > uintptr(len(devices)) {
+			return
+		}
+		for _, entry := range devices[:result] {
+			if entry.kind == 2 {
+				if hid := readHIDDevice(entry.handle); hid != nil {
+					name := strings.ToLower(strings.TrimSpace(hid.name))
+					paths[name] = append(paths[name], hid.path)
+				}
+			}
+		}
+	}
+	s.async(func() {
+		s.hidPaths = paths
+		s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+	})
+}
+
+func (s *state) legacyHIDPath(b config.Binding) string {
+	paths := s.hidPaths[strings.ToLower(strings.TrimSpace(b.JoyName))]
+	if len(paths) == 1 {
+		return paths[0]
+	}
+	return ""
+}
+
+func (s *state) bindingDescription(b config.Binding) string {
+	switch b.Type {
+	case "key":
+		if bindingKey(b) != 0 {
+			return b.Description
+		}
+	case "joystick":
+		var path string
+		var slot int
+		if b.JoyButton != nil &&
+			((json.Unmarshal(b.JoyID, &path) == nil && path != "") ||
+				(strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil) ||
+				s.legacyHIDPath(b) != "") {
+			return b.Description
+		}
+	}
+	return "Rebind required"
 }
 
 type rawHeader struct {
@@ -110,6 +173,7 @@ func (s *state) listenHID(ctx context.Context) {
 	id := windows.GetCurrentThreadId()
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x12, 0, 0) }()
 	known := make(map[uintptr]*hidDevice)
+	s.refreshHIDPaths()
 	for {
 		var msg keyboardMsg
 		rc, _, _ := get.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
@@ -128,6 +192,7 @@ func (s *state) listenHID(ctx context.Context) {
 				}
 				delete(known, msg.lParam)
 			}
+			s.refreshHIDPaths()
 		// WM_INPUT carries a variable-size packet Ask Windows how much data to allocate
 		case 0x00ff:
 			var size uint32
@@ -217,8 +282,8 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 			}
 			return
 		}
-		// Older bindings can identify the device by product name
-		if b.JoyName != "" && strings.EqualFold(b.JoyName, name) {
+		// A legacy product name is safe only if one attached device matches.
+		if legacyPath := s.legacyHIDPath(b); legacyPath != "" && strings.EqualFold(legacyPath, path) {
 			s.record(down)
 		}
 	})

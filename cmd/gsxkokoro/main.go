@@ -32,6 +32,7 @@ type runtimeState struct {
 	vocab       map[string]int64
 	voice       []float32
 	base        string
+	runtime     string
 }
 
 func main() {
@@ -62,6 +63,7 @@ func main() {
 		case "load":
 			if err = ready; err == nil {
 				err = state.load(f.Paths)
+				result.Runtime = state.runtime
 			}
 		// The phonemizer can run independently of the downloaded voice model
 		case "phonemize":
@@ -237,7 +239,9 @@ func (s *runtimeState) load(paths map[string]string) error {
 	if s.gpu != nil {
 		session, err = open(s.gpu)
 	}
+	engine := "CUDA"
 	if session == nil {
+		engine = "CPU"
 		session, err = open(s.opts)
 	}
 	if err != nil {
@@ -248,6 +252,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	}
 	// Swap the model bundle only after all of its parts have opened
 	s.kokoro, s.vocab, s.voice = session, tok.Model.Vocab, voice
+	s.runtime = engine
 	return nil
 }
 

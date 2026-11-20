@@ -93,3 +93,16 @@ func TestMatchRequiresWholeNumberTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyDirectMenuNumbers(t *testing.T) {
+	for _, text := range []string{"3.", " three? ", "THREE", "3"} {
+		if index, ok := Number(text); !ok || index != 2 {
+			t.Errorf("expected menu slot three for %q, got %d, %v", text, index, ok)
+		}
+	}
+	for _, text := range []string{"option 3", "third", "10", "3rd"} {
+		if _, ok := Number(text); ok {
+			t.Errorf("%q was accepted as a bare menu number", text)
+		}
+	}
+}

@@ -28,12 +28,11 @@ import (
 var languageJSON []byte
 
 var language = struct {
-	NATO        map[string]string   `json:"NATO_PHONETIC_WORDS"`
-	Corrections map[string]string   `json:"STT_TEXT_CORRECTIONS"`
-	Boost       []string            `json:"STT_DOMAIN_BOOST_WORDS"`
-	Numbers     map[string]string   `json:"NUMBER_WORDS"`
-	Stop        []string            `json:"MENU_STOP_WORDS"`
-	Aliases     map[string][]string `json:"GSX_SERVICE_ALIASES"`
+	NATO        map[string]string `json:"NATO_PHONETIC_WORDS"`
+	Corrections map[string]string `json:"STT_TEXT_CORRECTIONS"`
+	Boost       []string          `json:"STT_DOMAIN_BOOST_WORDS"`
+	Numbers     map[string]string `json:"NUMBER_WORDS"`
+	Stop        []string          `json:"MENU_STOP_WORDS"`
 }{}
 
 var natoPattern *regexp.Regexp
@@ -259,8 +258,6 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 }
 
 // GSX uses built-in aliases as a fallback when custom service terms miss
-func Aliases(service string) []string { return slices.Clone(language.Aliases[service]) }
-
 var (
 	deice    = regexp.MustCompile(`\b(de|anti)[\s_-]+ic`)
 	pushback = regexp.MustCompile(`\bpush[\s_-]+back\b`)
@@ -487,19 +484,14 @@ func CorrectMenu(text string, options []string) (string, float64) {
 	return best, bestRatio
 }
 
-var menuNumber = regexp.MustCompile(`^(?:(?:option|number|choice)\s+)?([1-9])$`)
-
 // Recognize standalone selections and convert menu labels to zero-based slots
 func Number(text string) (int, bool) {
-	text = strings.TrimSpace(strings.ToLower(text))
-	if n := language.Numbers[text]; n != "" {
-		text = n
+	text = strings.TrimRight(strings.TrimSpace(strings.ToLower(text)), ".,!?")
+	if len(text) == 1 && text[0] >= '1' && text[0] <= '9' {
+		return int(text[0] - '1'), true
 	}
-	m := menuNumber.FindStringSubmatch(text)
-	if len(m) == 0 {
-		return 0, false
-	}
-	return int(m[1][0] - '1'), true
+	index := slices.Index([]string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}, text)
+	return index, index >= 0
 }
 
 // Voxtral gets service names and keywords in the prompt it uses for transcription

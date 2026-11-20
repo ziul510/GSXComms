@@ -42,6 +42,7 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.finishSave(request, nil)
+				w.FrameFn()
 				if !w.CloseRequested() {
 					t.Fatal("setup stayed open after a successful save")
 				}
@@ -76,22 +77,27 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 	w = gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
 	click("deselect-all")
-	next := save()
-	if len(config.Get[[]string](next, "installed_packs")) != 0 || !config.Get[bool](next, "accent_setup_complete") {
-		t.Fatal("deselect all did not save an empty, completed selection")
+	if err := w.TestClick("save-accents"); !errors.Is(err, gui.ErrTestDisabled) {
+		t.Fatalf("empty selection save is available: %v", err)
+	}
+	if len(s.saves) > 0 || w.CloseRequested() {
+		t.Fatal("setup accepted an empty pack selection")
 	}
 }
 
 func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	dir := t.TempDir()
 	complete := false
-	cfg := firstAccentWindow(t.Context(), dir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
+	cfg := firstAccentWindow(t.Context(), dir, filepath.Join("..", "..", "Accents"), config.Defaults(), func(prefs config.Values) {
 		complete = config.Get[bool](prefs, "accent_setup_complete")
 	})
 	w := gui.NewTestWindow(t, cfg)
 	w.TestRender(nil)
 	if complete || w.CloseRequested() {
 		t.Fatal("setup completed before the user saved")
+	}
+	if err := w.TestClick("accent-packs:pack-" + packs[0].name); err != nil {
+		t.Fatal(err)
 	}
 	if err := w.TestClick("save-accents"); err != nil {
 		t.Fatal(err)
@@ -131,7 +137,7 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	prefs := config.Defaults()
 	prefs.Put("installed_packs", []string{packs[0].name})
 	s := &state{dir: dataDir, crewVoice: "male"}
-	request := playback{prefs: prefs, location: &geo.Position{Country: "FR"}, cue: "jetway"}
+	request := playback{prefs: prefs, location: &geo.Position{Country: "FR"}, cue: "jetway", voice: "male"}
 	american, _ := s.regionalCue(request)
 	request.option = "Disconnect jetway"
 	disconnected, _ := s.regionalCue(request)

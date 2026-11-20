@@ -6,6 +6,7 @@ package gsx
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -16,7 +17,11 @@ func TestLiveSimConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	sim, err := Connect(ctx)
+	helper, err := filepath.Abs(filepath.Join("..", "..", "build", "gsxsimconnect.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sim, err := connectHelper(ctx, helper)
 	if err != nil {
 		t.Fatal(err)
 	}
