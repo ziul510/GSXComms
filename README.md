@@ -2,7 +2,7 @@
 
 ## Install and start
 
-Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. GSXComms creates `user_settings.json` beside the executable on first launch. If a previous Go build stored settings in `%LOCALAPPDATA%\GSXCommsGo`, the app copies them on first launch. Downloaded models, voice packs, and runtime overrides use that AppData folder. `--data-dir` overrides both locations.
+Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. GSXComms creates `user_settings.json` with defaults beside the executable when the file is missing. Downloaded models, voice packs, and runtime overrides use `%LOCALAPPDATA%\GSXCommsGo`. `--data-dir` overrides both locations.
 
 The selected local speech model downloads and loads in the background at startup. **Settings** can retry a missing download or switch to an installed model. Enable the menu reader to download Kokoro. Choose **Set up Mistral** for the illustrated API key tutorial. Validating your key selects Mistral and stores the key in Windows Credential Manager. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
 

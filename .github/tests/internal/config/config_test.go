@@ -47,51 +47,41 @@ func TestLegacySettingsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPortableSettingsCreateAndKeepExistingFile(t *testing.T) {
-	data, dir := t.TempDir(), t.TempDir()
-	const old = `{"volume_voice":0.31,"mistral_api_key":"fixture-key","portable_custom_setting":true}`
-	if err := os.WriteFile(filepath.Join(data, SettingsFile), []byte(old), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var migrated string
-	if err := initializeSettings(dir, data, func(key string) error { migrated = key; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, SettingsFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	values, err := Load(dir)
-	if err != nil || migrated != "fixture-key" || bytes.Contains(raw, []byte(legacySecret)) ||
-		!Get[bool](values, "portable_custom_setting") || Get[float64](values, "volume_voice") != 0.31 {
-		t.Fatalf("portable migration failed: %v", err)
-	}
+func TestPortableSettingsKeepExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	values := Defaults()
 	values.Put("volume_voice", 0.77)
 	if err := Save(dir, values); err != nil {
 		t.Fatal(err)
 	}
 	// If another instance finishes first, the exclusive publish keeps its file.
 	path := filepath.Join(dir, SettingsFile)
-	if err := writeAtomic(path, []byte(old), moveNew); !errors.Is(err, os.ErrExist) {
+	if err := writeAtomic(path, defaultJSON, moveNew); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected exclusive publish to reject an existing file: %v", err)
 	}
-	if err := initializeSettings(dir, data, func(string) error {
-		t.Fatal("existing settings were copied again")
-		return nil
-	}); err != nil {
+	if err := InitializeSettings(dir); err != nil {
 		t.Fatal(err)
 	}
 	if values, err := Load(dir); err != nil || Get[float64](values, "volume_voice") != 0.77 {
 		t.Fatalf("portable update was overwritten: %v", err)
 	}
-	if raw, err := os.ReadFile(filepath.Join(data, SettingsFile)); err != nil || string(raw) != old {
-		t.Fatalf("previous settings changed: %v", err)
-	}
 }
 
-func TestPortableSettingsExistBeforeFirstRun(t *testing.T) {
+func TestPortableSettingsStartWithDefaults(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	runtimeDir, err := DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A previous build's settings must not bypass Accent Setup.
+	if err := os.WriteFile(filepath.Join(runtimeDir, SettingsFile), []byte(`{"accent_setup_complete":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	if err := InitializeSettings(dir, dir); err != nil {
+	if err := InitializeSettings(dir); err != nil {
 		t.Fatal(err)
 	}
 	values, err := Load(dir)
@@ -256,8 +246,8 @@ func TestSettingsSavePreservesLegacyCredentialUntilMigrated(t *testing.T) {
 
 func TestImportWithoutCredentialPreservesUnmigratedDestination(t *testing.T) {
 	source, dest, settings := t.TempDir(), t.TempDir(), t.TempDir()
-	path := filepath.Join(dest, SettingsFile)
-	// The old Go credential lives in AppData when importing before first launch.
+	path := filepath.Join(settings, SettingsFile)
+	// The existing portable file contains the only copy of the key.
 	legacy := []byte(`{"mistral_api_key":"old-fixture"}`)
 	for name, data := range map[string][]byte{
 		path:                                legacy,
@@ -279,8 +269,27 @@ func TestImportWithoutCredentialPreservesUnmigratedDestination(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, "words.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("import copied vocabulary before migration: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(settings, SettingsFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("import saved portable settings before migration: %v", err)
+}
+
+func TestImportIgnoresSettingsInRuntimeDirectory(t *testing.T) {
+	source, data, settings := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, SettingsFile), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(data, SettingsFile)
+	legacy := []byte(`{"mistral_api_key":"old-fixture"}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := importSettings(settings, data, source, nil, func(string) error {
+		t.Fatal("import tried to migrate a key from the runtime directory")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, legacy) {
+		t.Fatalf("import changed the runtime directory settings file: %v", err)
 	}
 }
 

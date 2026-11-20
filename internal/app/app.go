@@ -100,7 +100,7 @@ type state struct {
 }
 
 func Run(dir, settingsDir string) {
-	initErr := config.InitializeSettings(settingsDir, dir)
+	initErr := config.InitializeSettings(settingsDir)
 	settings, err := config.Load(settingsDir)
 	icon, _ := assets.Files.ReadFile("app.png")
 	archives := assetDir("Accents")
@@ -145,7 +145,7 @@ func Run(dir, settingsDir string) {
 	if err != nil {
 		s.log("SYS", err.Error())
 	}
-	// Upgrade users whose earlier setup selected packs before extraction was implemented
+	// Check that recordings for the configured packs are available on startup.
 	if err := installAccentPacks(ctx, archives, filepath.Join(dir, "Accents"), config.Get[[]string](settings, "installed_packs"),
 		config.Get[string](settings, "legacy_accent_dir")); err != nil {
 		s.log("ERR", err.Error())

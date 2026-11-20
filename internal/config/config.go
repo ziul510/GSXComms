@@ -56,36 +56,13 @@ func DataDir() (string, error) {
 	return filepath.Join(dir, "GSXCommsGo"), nil
 }
 
-// InitializeSettings creates the portable file before Accent Setup can write it.
-// The previous settings file stays intact and is consulted only when the portable file is absent.
-func InitializeSettings(dir, previousDir string) error {
-	return initializeSettings(dir, previousDir, migrateLegacyKey)
-}
-
-func initializeSettings(dir, previousDir string, migrateKey func(string) error) error {
+// InitializeSettings creates the portable file from defaults before Accent Setup opens.
+func InitializeSettings(dir string) error {
 	path := filepath.Join(dir, SettingsFile)
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	values := Defaults()
-	var previousErr error
-	raw, err := os.ReadFile(filepath.Join(previousDir, SettingsFile))
-	if err == nil {
-		prior, key, decodeErr := decode(raw)
-		if decodeErr != nil {
-			previousErr = fmt.Errorf("could not read previous settings: %w", decodeErr)
-		} else {
-			values = prior
-			if key != "" {
-				if err := migrateKey(key); err != nil {
-					return fmt.Errorf("could not migrate Voxtral credential: %w", err)
-				}
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		previousErr = fmt.Errorf("could not read previous settings: %w", err)
-	}
-	data, err := settingsJSON(values)
+	data, err := settingsJSON(Defaults())
 	if err != nil {
 		return err
 	}
@@ -95,9 +72,9 @@ func initializeSettings(dir, previousDir string, migrateKey func(string) error) 
 		return nil
 	}
 	if err != nil {
-		err = fmt.Errorf("could not create settings file %s: %w", path, err)
+		return fmt.Errorf("could not create settings file %s: %w", path, err)
 	}
-	return errors.Join(previousErr, err)
+	return nil
 }
 
 // Load the embedded defaults once Callers edit copies
@@ -261,7 +238,7 @@ func importSettings(settingsDir, dataDir, source string, storeKey, migrateKey fu
 	// Validate optional overrides before starting any destination writes
 	var files []asset
 	dataInfo, statErr := os.Stat(dataDir)
-	// Importing the old Go data directory already has its overrides in the right place.
+	// The requested source may already be the runtime directory.
 	copyOverrides := statErr != nil || !os.SameFile(original, dataInfo)
 	for _, file := range []string{"words.json", assets.AccentMappingsFile} {
 		data, err := os.ReadFile(filepath.Join(source, file))
@@ -293,12 +270,8 @@ func importSettings(settingsDir, dataDir, source string, storeKey, migrateKey fu
 	settingsPath := filepath.Join(settingsDir, SettingsFile)
 	files = append(files, asset{settingsPath, settings})
 	if key == "" {
-		// An import on first launch can bypass ordinary migration from AppData.
-		credentialPath := settingsPath
-		if _, err := os.Stat(settingsPath); errors.Is(err, os.ErrNotExist) {
-			credentialPath = filepath.Join(dataDir, SettingsFile)
-		}
-		if err := preserveSettingsCredential(credentialPath, migrateKey); err != nil {
+		// Preserve a legacy key before replacing the portable settings file.
+		if err := preserveSettingsCredential(settingsPath, migrateKey); err != nil {
 			return nil, err
 		}
 	}
