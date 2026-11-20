@@ -1,6 +1,6 @@
 name: Build Windows release
 
-# A published tag attaches release assets. A manual run produces downloadable workflow artifacts.
+# A published tag attaches release assets A manual run produces downloadable workflow artifacts
 on:
   release:
     types: [published]
@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 25
-    # The release job needs write access to attach assets.
+    # The release job needs write access to attach assets
     permissions:
       contents: write
     env:
@@ -32,7 +32,7 @@ jobs:
       - name: Check source
         shell: pwsh
         run: |
-          # Vet both native speech workers along with the GUI and sidecars.
+          # Vet both native speech workers along with the GUI and sidecars
           $env:CGO_ENABLED = '1'
           go vet ./...
           if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
@@ -45,22 +45,22 @@ jobs:
           $nsis = Join-Path $env:RUNNER_TEMP 'nsis'
           curl.exe --fail --silent --show-error --location --retry 2 --max-time 60 --output $zip 'https://master.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip?viasf=1'
           if ($LASTEXITCODE -ne 0) { throw 'NSIS download failed' }
-          # Check the archive against the pinned digest before running the downloaded build tool.
+          # Check the archive against the pinned digest before running the downloaded build tool
           if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '56581F90DB321581C5381193D796FFFCF2D24B2F8FED2160A6C6A3BAA67F2C4F') {
             throw 'NSIS archive checksum mismatch'
           }
           Expand-Archive -LiteralPath $zip -DestinationPath $nsis
           "MAKENSIS=$(Join-Path $nsis 'nsis-3.12/makensis.exe')" >> $env:GITHUB_ENV
 
-          # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes.
+          # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes
           $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
           $packages = $export.buildDependencies
-          # The phonemizer export uses CPU PyTorch on the runner.
+          # The phonemizer export uses CPU PyTorch on the runner
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==$($packages.torch)"
           if ($LASTEXITCODE -ne 0) { throw 'PyTorch install failed' }
           python -m pip install "deep-phonemizer==$($packages['deep-phonemizer'])" "onnx==$($packages.onnx)"
           if ($LASTEXITCODE -ne 0) { throw 'Phonemizer tool install failed' }
-          # Download the model used to generate the installer's pinned phonemizer assets.
+          # Download the model used to generate the installer's pinned phonemizer assets
           $checkpoint = Join-Path $env:RUNNER_TEMP 'best_model.pt'
           Invoke-WebRequest $export.checkpoint -OutFile $checkpoint
           if ((Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash -ne $export.checkpointSHA256) {
@@ -77,13 +77,13 @@ jobs:
           New-Item -ItemType Directory -Path build/release-package, dist/release | Out-Null
           Copy-Item -LiteralPath "dist/$exeName" -Destination dist/release
           Copy-Item -LiteralPath "dist/release/$exeName", 'LICENSE', 'THIRD_PARTY_NOTICES' -Destination build/release-package
-          # The archive carries its own checksums for checking the extracted files.
+          # The archive carries its own checksums for checking the extracted files
           $checksums = $exeName, 'LICENSE', 'THIRD_PARTY_NOTICES' | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "build/release-package/$_").Hash.ToLowerInvariant()
             "$hash  $_"
           }
           $checksums | Set-Content -Encoding utf8 build/release-package/SHA256SUMS.txt
-          # Archive the package files at the ZIP root so the installer is easy to find.
+          # Archive the package files at the ZIP root so the installer is easy to find
           Compress-Archive -Path build/release-package/* -DestinationPath "dist/release/$zipName"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/release/$zipName").Hash.ToLowerInvariant()
           "$hash  $zipName" | Set-Content -Encoding utf8 "dist/release/$zipName.sha256"
@@ -98,12 +98,12 @@ jobs:
       - name: Attach files to published release
         if: github.event_name == 'release'
         shell: pwsh
-        # The CLI needs a token because checkout leaves no credentials behind.
+        # The CLI needs a token because checkout leaves no credentials behind
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          # Allow a release workflow retry to replace incomplete uploads.
+          # Allow a release workflow retry to replace incomplete uploads
           gh release upload --clobber -- "$env:RELEASE_TAG" "dist/release/$env:PACKAGE_NAME.exe" "dist/release/$env:PACKAGE_NAME.zip" "dist/release/$env:PACKAGE_NAME.zip.sha256"
           if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }

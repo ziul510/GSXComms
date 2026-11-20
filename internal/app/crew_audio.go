@@ -13,7 +13,7 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
-// Each queued clip carries its own settings and either PCM or an embedded cue name.
+// Each queued clip carries its own settings and either PCM or an embedded cue name
 type playback struct {
 	prefs config.Values
 	pcm   []byte
@@ -22,12 +22,12 @@ type playback struct {
 }
 
 func (s *state) cue(prefs config.Values, name string, high bool) {
-	// The bundled fallback cues are raw 24 kHz PCM.
+	// The bundled fallback cues are raw 24 kHz PCM
 	s.queueAudio(playback{prefs: prefs, cue: strings.ToLower(name), rate: 24000}, high)
 }
 
 func (s *state) queueAudio(request playback, high bool) {
-	// Service confirmations and other priority cues can use their own queue.
+	// Service confirmations and other priority cues can use their own queue
 	queue := s.audioQueue
 	if high {
 		queue = s.audioPriority
@@ -35,7 +35,7 @@ func (s *state) queueAudio(request playback, high bool) {
 	select {
 	case queue <- request:
 	case <-s.ctx.Done():
-	// Drop a cue on overflow so the simulator or speech worker never waits for audio output.
+	// Drop a cue on overflow so the simulator or speech worker never waits for audio output
 	default:
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 	}
@@ -45,7 +45,7 @@ func (s *state) playbackLoop() {
 	for s.ctx.Err() == nil {
 		var next playback
 		select {
-		// Check priority first so an already waiting cue wins over normal playback.
+		// Check priority first so an already waiting cue wins over normal playback
 		case next = <-s.audioPriority:
 		default:
 			select {
@@ -55,7 +55,7 @@ func (s *state) playbackLoop() {
 				return
 			}
 		}
-		// Decode bundled clips only when they reach playback. Synthesized clips already have PCM.
+		// Decode bundled clips only when they reach playback Synthesized clips already have PCM
 		if next.cue != "" {
 			pcm, err := loadCue(next.cue)
 			if err != nil {
@@ -63,7 +63,7 @@ func (s *state) playbackLoop() {
 			}
 			next.pcm = pcm
 			if next.cue == "error" {
-				// Keep the error cue's mute override local to that request.
+				// Keep the error cue's mute override local to that request
 				next.prefs = next.prefs.Copy()
 				next.prefs.Put("mute_gsx_audio_during_crew_voice", false)
 			}
@@ -74,7 +74,7 @@ func (s *state) playbackLoop() {
 	}
 }
 
-// The embedded cue files contain gzip-compressed sample bytes with no audio header.
+// The embedded cue files contain gzip-compressed sample bytes with no audio header
 func loadCue(name string) ([]byte, error) {
 	raw, err := assets.Files.ReadFile("cues/" + name + ".pcm.gz")
 	if err != nil {
@@ -85,6 +85,6 @@ func loadCue(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer stream.Close()
-	// Keep decompressed cue reads bounded even if an asset is malformed.
+	// Keep decompressed cue reads bounded even if an asset is malformed
 	return io.ReadAll(io.LimitReader(stream, 1<<20))
 }

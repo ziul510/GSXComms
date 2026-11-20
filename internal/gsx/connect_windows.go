@@ -19,7 +19,7 @@ import (
 )
 
 func addonManager() string {
-	// FSDreamTeam's user install and older machine install use different registry keys.
+	// FSDreamTeam's user install and older machine install use different registry keys
 	for _, candidate := range []struct {
 		key         registry.Key
 		path, value string
@@ -40,7 +40,7 @@ func addonManager() string {
 	return `C:\Program Files (x86)\Addon Manager`
 }
 
-// The console and GUI both need the installed panel's menu file.
+// The console and GUI both need the installed panel's menu file
 func Panel() string {
 	if override := os.Getenv("GSX_PANEL_DIR"); filepath.IsAbs(override) {
 		return override
@@ -57,7 +57,7 @@ type connection struct {
 }
 
 func Connect(ctx context.Context) (Transport, error) {
-	// Try the user's DLL first, then installed copies that can satisfy the handshake.
+	// Try the user's DLL first, then installed copies that can satisfy the handshake
 	paths := []string{os.Getenv("GSX_SIMCONNECT_DLL")}
 	for _, root := range []string{os.Getenv("MSFS2024_SDK"), os.Getenv("MSFS_SDK"),
 		filepath.Join(os.Getenv("SystemDrive")+string(os.PathSeparator), "MSFS 2024 SDK"),
@@ -76,7 +76,7 @@ func Connect(ctx context.Context) (Transport, error) {
 		if !filepath.IsAbs(path) {
 			continue
 		}
-		// Skip missing candidates before asking Windows to load the library.
+		// Skip missing candidates before asking Windows to load the library
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
@@ -84,7 +84,7 @@ func Connect(ctx context.Context) (Transport, error) {
 		if err == nil {
 			return c, nil
 		}
-		// Keep the native failure if a DLL existed but couldn't connect.
+		// Keep the native failure if a DLL existed but couldn't connect
 		last = err
 	}
 	if last == nil {
@@ -94,19 +94,19 @@ func Connect(ctx context.Context) (Transport, error) {
 }
 
 func connectPath(ctx context.Context, path string) (_ *connection, err error) {
-	// Search beside this DLL and in System32 for its native dependencies.
+	// Search beside this DLL and in System32 for its native dependencies
 	lib, err := windows.LoadLibraryEx(path, 0, windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if err != nil {
 		return nil, err
 	}
 	c := &connection{lib: lib, api: make(map[string]uintptr), definitions: make(map[string]uintptr)}
-	// Any failed symbol lookup, open, or handshake must release the library.
+	// Any failed symbol lookup, open, or handshake must release the library
 	defer func() {
 		if err != nil {
 			_ = c.Close()
 		}
 	}()
-	// Resolve the whole transport API before opening a simulator handle.
+	// Resolve the whole transport API before opening a simulator handle
 	for _, name := range []string{"Open", "Close", "GetNextDispatch", "AddToDataDefinition", "RequestDataOnSimObject", "SetDataOnSimObject"} {
 		proc, e := windows.GetProcAddress(lib, "SimConnect_"+name)
 		if e != nil {
@@ -120,27 +120,27 @@ func connectPath(ctx context.Context, path string) (_ *connection, err error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	// A successful Open call still needs the server's OPEN packet before use.
+	// A successful Open call still needs the server's OPEN packet before use
 	if _, err = c.receive(ctx, 2, 0); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// HRESULT failure is encoded in the signed low 32 bits.
+// HRESULT failure is encoded in the signed low 32 bits
 func failed(result uintptr) bool { return int32(result) < 0 }
 func hresult(operation string, result uintptr) error {
-	// Keep the original Windows error value for diagnostics.
+	// Keep the original Windows error value for diagnostics
 	return fmt.Errorf("SimConnect %s failed (0x%08x)", operation, uint32(result))
 }
 
 func (c *connection) definition(name string) (uintptr, error) {
-	// SimConnect data definitions belong to the connection and can be reused across requests.
+	// SimConnect data definitions belong to the connection and can be reused across requests
 	if id := c.definitions[name]; id != 0 {
 		return id, nil
 	}
 	id := uintptr(len(c.definitions) + 1)
-	// GSX flags are numeric. Aircraft position and speed need explicit units.
+	// GSX flags are numeric Aircraft position and speed need explicit units
 	unit := []byte("number\x00")
 	if name == "PLANE LATITUDE" || name == "PLANE LONGITUDE" {
 		unit = []byte("degrees\x00")
@@ -152,7 +152,7 @@ func (c *connection) definition(name string) (uintptr, error) {
 		unit = []byte("knots\x00")
 	}
 	label := []byte(name + "\x00")
-	// Every definition is one FLOAT64 value with the default datum ID.
+	// Every definition is one FLOAT64 value with the default datum ID
 	result, _, _ := syscall.SyscallN(c.api["AddToDataDefinition"], c.handle, id, uintptr(unsafe.Pointer(&label[0])), uintptr(unsafe.Pointer(&unit[0])), 4, 0, 0xffffffff)
 	if failed(result) {
 		return 0, hresult("AddToDataDefinition", result)
@@ -161,7 +161,7 @@ func (c *connection) definition(name string) (uintptr, error) {
 	return id, nil
 }
 
-// Request one sample for the user aircraft and wait only for its matching reply.
+// Request one sample for the user aircraft and wait only for its matching reply
 func (c *connection) Get(ctx context.Context, name string) (float64, error) {
 	id, err := c.definition(name)
 	if err != nil {
@@ -177,7 +177,7 @@ func (c *connection) Get(ctx context.Context, name string) (float64, error) {
 	return c.receive(ctx, 8, c.request)
 }
 
-// Send a single eight-byte value using the connection's cached definition.
+// Send a single eight-byte value using the connection's cached definition
 func (c *connection) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -202,34 +202,34 @@ func (c *connection) receive(ctx context.Context, kind uint32, request uintptr) 
 		var size uint32
 		r, _, _ := syscall.SyscallN(c.api["GetNextDispatch"], c.handle, uintptr(unsafe.Pointer(&ptr)), uintptr(unsafe.Pointer(&size)))
 		if !failed(r) && ptr != nil && size >= 12 {
-			// The base SimConnect header ends with the packet type after size and version.
+			// The base SimConnect header ends with the packet type after size and version
 			packet := unsafe.Slice(ptr, int(size))
 			typeID := uint32(packet[8]) | uint32(packet[9])<<8 | uint32(packet[10])<<16 | uint32(packet[11])<<24
 			switch {
-			// A QUIT packet means the simulator has closed the connection.
+			// A QUIT packet means the simulator has closed the connection
 			case typeID == 3:
 				return 0, ErrDisconnected
 			case typeID == kind && request == 0:
 				return 0, nil
 			case typeID == kind && size >= 48:
-				// A response from a timed-out request can arrive during the next Get.
+				// A response from a timed-out request can arrive during the next Get
 				id := *(*uint32)(unsafe.Add(unsafe.Pointer(ptr), 12))
 				if id == uint32(request) {
-					// The packet carries one FLOAT64 datum at dwData after the fixed header.
+					// The packet carries one FLOAT64 datum at dwData after the fixed header
 					bits := *(*uint64)(unsafe.Add(unsafe.Pointer(ptr), 40))
 					return math.Float64frombits(bits), nil
 				}
 			}
 			continue
 		}
-		// Wait briefly when the dispatch queue has no usable packet.
+		// Wait briefly when the dispatch queue has no usable packet
 		if err := wait(ctx, 20*time.Millisecond); err != nil {
 			return 0, err
 		}
 	}
 }
 
-// Close the simulator handle while the DLL's Close entry point is still loaded.
+// Close the simulator handle while the DLL's Close entry point is still loaded
 func (c *connection) Close() error {
 	var err error
 	if c.handle != 0 {

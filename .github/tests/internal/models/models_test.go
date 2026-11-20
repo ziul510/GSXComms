@@ -17,7 +17,7 @@ import (
 
 type transportFunc func(*http.Request) (*http.Response, error)
 
-// Inject the response through the HTTP client's normal transport path.
+// Inject the response through the HTTP client's normal transport path
 func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestResumeAndPublishModel(t *testing.T) {
@@ -45,7 +45,7 @@ func TestResumeAndPublishModel(t *testing.T) {
 		resp.Header.Set("Content-Range", fmt.Sprintf("bytes 7-%d/%d", len(content)-1, len(content)))
 		return resp, nil
 	})}
-	// A staged model must stay unavailable for inference until publishing succeeds.
+	// A staged model must stay unavailable for inference until publishing succeeds
 	if m.Ready(dir) {
 		t.Fatal("staging data became usable before verification")
 	}
@@ -80,9 +80,9 @@ func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
 	case err := <-finished:
 		t.Fatalf("download stopped before requesting the file: %v", err)
 	}
-	// Pause the download so deletion hits the lock while staging is active.
+	// Pause the download so deletion hits the lock while staging is active
 	cacheVisible := m.Cached(dir) && !m.Ready(dir)
-	// The first delete attempts to acquire the same lock as the paused download.
+	// The first delete attempts to acquire the same lock as the paused download
 	deleteErr := m.Delete(dir)
 	close(release)
 	if err := <-finished; err != nil {
@@ -99,7 +99,7 @@ func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
 func TestIncompleteModelCanBeDeletedBeforeRetry(t *testing.T) {
 	m := Model{"test", "owner/example", "pinned", []File{{"fixture", 5, strings.Repeat("0", 64)}}}
 	dir := t.TempDir()
-	// A directory can exist without verified files. The UI must offer deletion in that state.
+	// A directory can exist without verified files The UI must offer deletion in that state
 	if err := os.MkdirAll(m.Directory(dir), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
 	requests := 0
 	client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 		requests++
-		// Simulate an early EOF and leave three bytes for the later resume request.
+		// Simulate an early EOF and leave three bytes for the later resume request
 		if requests == 1 {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body[:3]))}, nil
 		}
@@ -150,7 +150,7 @@ func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
 
 func TestChecksumMismatchIsNotPublished(t *testing.T) {
 	body := "bad-data"
-	// Use valid length and the wrong digest so only the checksum check can catch the file.
+	// Use valid length and the wrong digest so only the checksum check can catch the file
 	f := File{"fixture", int64(len(body)), strings.Repeat("0", 64)}
 	m := Model{"test", "owner/example", "pinned", []File{f}}
 	dir := t.TempDir()
@@ -200,7 +200,7 @@ func TestCacheImportPreservesResumableModel(t *testing.T) {
 			if err := m.Download(t.Context(), dir, func(int64, int64) {}); err != nil || !f.matches(m.Paths(dir)[f.Path]) {
 				t.Fatalf("publishing model: %v", err)
 			}
-			// A valid cache can skip HTTP. A corrupt cache must use the existing partial download.
+			// A valid cache can skip HTTP A corrupt cache must use the existing partial download
 			wantRequests := 0
 			if name == "corrupt" {
 				wantRequests = 1

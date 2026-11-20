@@ -1,7 +1,7 @@
 ; Copyright 2026 ziul510
 ; SPDX-License-Identifier: Apache-2.0
 Unicode True
-; Setup uses the current user's application directory and registry hive.
+; Setup uses the current user's application directory and registry hive
 RequestExecutionLevel user
 SetCompressor /SOLID zlib
 Name "GSXComms (Test Build)"
@@ -23,7 +23,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
 !macro CheckAvailable file
   ${If} ${FileExists} "$INSTDIR\${file}"
     ClearErrors
-    ; Append mode probes for a write lock without truncating the binary.
+    ; Append mode probes for a write lock without truncating the binary
     FileOpen $0 "$INSTDIR\${file}" a
     ${If} ${Errors}
       MessageBox MB_OK|MB_ICONSTOP "Setup cannot update ${file}. Close GSXComms and try again." /SD IDOK
@@ -34,7 +34,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
   ${EndIf}
 !macroend
 
-; Check every bundled executable and runtime before replacing or removing any of them.
+; Check every bundled executable and runtime before replacing or removing any of them
 !macro CheckProgramFiles
   !insertmacro CheckAvailable "GSXComms.exe"
   !insertmacro CheckAvailable "gsxremotecontrol.exe"
@@ -46,7 +46,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
   !insertmacro CheckAvailable "workers\kokoro\onnxruntime.dll"
 !macroend
 
-; The packaged Windows binaries are all x64.
+; The packaged Windows binaries are all x64
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "GSXComms requires 64-bit Windows."
@@ -56,7 +56,7 @@ FunctionEnd
 
 Section "GSXComms"
   SetShellVarContext current
-  ; Abort before copying if the running app or a worker has a file locked.
+  ; Abort before copying if the running app or a worker has a file locked
   !insertmacro CheckProgramFiles
   SetOutPath "$INSTDIR"
   File "..\build\GSXComms.exe"
@@ -64,7 +64,7 @@ Section "GSXComms"
   File "..\build\gsxmute.exe"
   File "..\LICENSE"
   File "..\THIRD_PARTY_NOTICES"
-  ; Both workers use the same executable name but keep separate DLL directories.
+  ; Both workers use the same executable name but keep separate DLL directories
   SetOutPath "$INSTDIR\workers\sherpa"
   File "..\build\workers\sherpa\gsxspeech.exe"
   File "..\build\workers\sherpa\sherpa-onnx-c-api.dll"
@@ -75,12 +75,12 @@ Section "GSXComms"
   File "..\build\workers\kokoro\phonemizer.onnx"
   File "..\build\workers\kokoro\phonemizer.json"
   SetOutPath "$INSTDIR"
-  ; Register the uninstaller with the current user's Apps list.
+  ; Register the uninstaller with the current user's Apps list
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\GSXComms Go"
   CreateShortcut "$SMPROGRAMS\GSXComms Go\GSXComms.lnk" "$INSTDIR\GSXComms.exe"
   WriteRegStr HKCU "${UNINSTALL}" "DisplayName" "GSXComms (Test Build)"
-  ; Clear the display version left behind by earlier installers.
+  ; Clear the display version left behind by earlier installers
   ClearErrors
   DeleteRegValue HKCU "${UNINSTALL}" "DisplayVersion"
   ClearErrors
@@ -95,20 +95,20 @@ Section "Uninstall"
   SetShellVarContext current
   ReadRegStr $1 HKCU "${UNINSTALL}" "InstallLocation"
   ${If} $1 == ""
-    ; Require app-specific files before trusting a path with no registry entry.
+    ; Require app-specific files before trusting a path with no registry entry
     ${If} ${FileExists} "$INSTDIR\gsxremotecontrol.exe"
     ${AndIf} ${FileExists} "$INSTDIR\workers\sherpa\sherpa-onnx-c-api.dll"
       StrCpy $1 $INSTDIR
     ${EndIf}
   ${EndIf}
-  ; Restrict removal to the installation this uninstaller belongs to.
+  ; Restrict removal to the installation this uninstaller belongs to
   ${If} $1 != $INSTDIR
     MessageBox MB_OK|MB_ICONSTOP "Run the uninstaller from the registered GSXComms installation." /SD IDOK
     SetErrorLevel 2
     Abort
   ${EndIf}
   !insertmacro CheckProgramFiles
-  ; Remove only files owned by this installer. Settings and downloads live outside the program directory.
+  ; Remove only files owned by this installer Settings and downloads live outside the program directory
   ClearErrors
   Delete "$INSTDIR\workers\sherpa\onnxruntime.dll"
   Delete "$INSTDIR\workers\sherpa\sherpa-onnx-c-api.dll"
@@ -124,13 +124,13 @@ Section "Uninstall"
   Delete "$INSTDIR\gsxmute.exe"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES"
-  ; Leave the installer registration available for another attempt if file removal fails.
+  ; Leave the installer registration available for another attempt if file removal fails
   ${If} ${Errors}
     MessageBox MB_OK|MB_ICONSTOP "Some program files could not be removed. Close GSXComms and run uninstall again." /SD IDOK
     SetErrorLevel 2
     Abort
   ${EndIf}
-  ; Remove only empty directories so extra files under the install path survive.
+  ; Remove only empty directories so extra files under the install path survive
   RMDir "$INSTDIR\workers\sherpa"
   RMDir "$INSTDIR\workers\kokoro"
   RMDir "$INSTDIR\workers"

@@ -3,7 +3,7 @@ package ipa
 import "testing"
 
 func TestNumbersWithSharedDigits(t *testing.T) {
-	// Use a dictionary-only fixture to check that shared digits stay in separate numbers.
+	// Use a dictionary-only fixture to check that shared digits stay in separate numbers
 	p := Phonemizer{Dictionary: map[string]string{"one": "wʌn", "twelve": "twɛlv"}}
 	got, err := p.Convert("1 12 1")
 	if err != nil || got != "wʌn twɛlv wʌn" {

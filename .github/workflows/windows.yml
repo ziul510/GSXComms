@@ -3,7 +3,7 @@
 name: Windows checks
 on: [push, pull_request]
 
-# The check job needs checkout access but does not publish artifacts to the repository.
+# The check job needs checkout access but does not publish artifacts to the repository
 permissions:
   contents: read
 
@@ -13,9 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          # Secret scanning covers the commit history.
+          # Secret scanning covers the commit history
           fetch-depth: 0
-          # Later build and scan steps run without repository credentials stored in Git.
+          # Later build and scan steps run without repository credentials stored in Git
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
@@ -30,22 +30,22 @@ jobs:
           }
           $tools = Join-Path $env:RUNNER_TEMP 'gsxcomms-tools'
           Expand-Archive -LiteralPath $zip -DestinationPath $tools
-          # Report findings without printing matched secret values.
+          # Report findings without printing matched secret values
           & (Join-Path $tools 'gitleaks.exe') git --redact .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Vet and build
         shell: pwsh
         run: |
           $env:CGO_ENABLED = '1'
-          # Enable CGO first so the checks include both native worker commands.
+          # Enable CGO first so the checks include both native worker commands
           go vet ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # The installer builds the main app without CGO and builds speech workers separately.
+          # The installer builds the main app without CGO and builds speech workers separately
           $env:CGO_ENABLED = '0'
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Compile the patched renderer used by the installer too.
+          # Compile the patched renderer used by the installer too
           $modfile = & scripts/go-gui-overlay.ps1
           go build -modfile $modfile ./...

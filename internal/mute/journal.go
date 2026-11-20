@@ -12,7 +12,7 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
-// Match the endpoint, session instance, and process lifetime before restoring audio.
+// Match the endpoint, session instance, and process lifetime before restoring audio
 type identity struct {
 	Endpoint       string
 	Session        string
@@ -37,7 +37,7 @@ type backend interface {
 	Alive(identity) bool
 }
 
-// A missing journal means there is no interrupted mute to recover.
+// A missing journal means there is no interrupted mute to recover
 func read(path string) ([]record, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -51,7 +51,7 @@ func read(path string) ([]record, error) {
 	return records, err
 }
 
-// Replace the whole journal atomically so a crash can't leave half a JSON record.
+// Replace the whole journal atomically so a crash can't leave half a JSON record
 func write(path string, records []record) error {
 	b, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
@@ -62,7 +62,7 @@ func write(path string, records []record) error {
 
 func match(label string) bool {
 	label = strings.ToLower(label)
-	// The GSX substring would also match the player itself.
+	// The GSX substring would also match the player itself
 	if strings.Contains(label, "gsxcomms") {
 		return false
 	}
@@ -79,7 +79,7 @@ func acquire(path string, api backend) error {
 	if err != nil {
 		return err
 	}
-	// Restore interrupted mutes first and carry forward any sessions still missing.
+	// Restore interrupted mutes first and carry forward any sessions still missing
 	if len(old) > 0 {
 		if err := restore(path, api); err != nil {
 			return err
@@ -90,18 +90,18 @@ func acquire(path string, api backend) error {
 		}
 	}
 	return api.Visit(func(s audioSession) error {
-		// Record only matching sessions with a complete identity and an active change to make.
+		// Record only matching sessions with a complete identity and an active change to make
 		if !match(s.Label) || s.Muted || s.ID.PID == 0 || s.ID.Session == "" || s.ID.Endpoint == "" || s.ID.ProcessStarted == 0 {
 			return nil
 		}
-		// Keep the first recorded state for sessions already waiting on recovery.
+		// Keep the first recorded state for sessions already waiting on recovery
 		for _, entry := range old {
 			if entry.ID == s.ID {
 				return nil
 			}
 		}
 		old = append(old, record{ID: s.ID, WasMuted: s.Muted})
-		// Recovery needs the original state on disk before muting anything.
+		// Recovery needs the original state on disk before muting anything
 		if err := write(path, old); err != nil {
 			return err
 		}
@@ -120,10 +120,10 @@ func restore(path string, api backend) error {
 	restored := map[identity]bool{}
 	var failures error
 	err = api.Visit(func(s audioSession) error {
-		// Restore only an exact identity match. A similarly named session may be unrelated.
+		// Restore only an exact identity match A similarly named session may be unrelated
 		for _, entry := range records {
 			if entry.ID == s.ID {
-				// One failed restore should leave the other sessions eligible for recovery.
+				// One failed restore should leave the other sessions eligible for recovery
 				if err := s.Set(entry.WasMuted); err != nil {
 					failures = errors.Join(failures, err)
 				} else {
@@ -135,7 +135,7 @@ func restore(path string, api backend) error {
 		return nil
 	})
 	var pending []record
-	// Unplugging an audio device can hide the session while its process is still alive.
+	// Unplugging an audio device can hide the session while its process is still alive
 	for _, entry := range records {
 		if !restored[entry.ID] && api.Alive(entry.ID) {
 			pending = append(pending, entry)
@@ -147,7 +147,7 @@ func restore(path string, api backend) error {
 	return errors.Join(err, failures, write(path, pending))
 }
 
-// Treat an already absent journal as a successful cleanup.
+// Treat an already absent journal as a successful cleanup
 func clearJournal(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {

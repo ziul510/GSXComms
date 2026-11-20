@@ -39,7 +39,7 @@ func main() {
 	if err != nil {
 		return
 	}
-	// The parent starts this worker from its own directory with the matching native runtime.
+	// The parent starts this worker from its own directory with the matching native runtime
 	state := &runtimeState{base: filepath.Dir(exe)}
 	ready := state.initialize()
 	defer state.close()
@@ -49,13 +49,13 @@ func main() {
 		if err != nil {
 			return
 		}
-		// Echo the ID and operation so the parent can associate this reply with a request.
+		// Echo the ID and operation so the parent can associate this reply with a request
 		result := speech.Frame{ID: f.ID, Op: f.Op}
 		switch f.Op {
 		case "shutdown":
 			_ = speech.Write(os.Stdout, result)
 			return
-		// Requests are handled serially, so this opcode only acknowledges the caller.
+		// Requests are handled serially, so this opcode only acknowledges the caller
 		case "cancel":
 		case "hello":
 			err = ready
@@ -63,7 +63,7 @@ func main() {
 			if err = ready; err == nil {
 				err = state.load(f.Paths)
 			}
-		// The phonemizer can run independently of the downloaded voice model.
+		// The phonemizer can run independently of the downloaded voice model
 		case "phonemize":
 			if err = ready; err == nil {
 				result.Text, err = state.phonemize(f.Text)
@@ -88,7 +88,7 @@ func main() {
 func (s *runtimeState) initialize() error {
 	kernel := windows.NewLazySystemDLL("kernel32.dll")
 	set, add := kernel.NewProc("SetDefaultDllDirectories"), kernel.NewProc("AddDllDirectory")
-	// Resolve native dependencies from Windows and the worker's own directory.
+	// Resolve native dependencies from Windows and the worker's own directory
 	const restricted = windows.LOAD_LIBRARY_SEARCH_SYSTEM32 | windows.LOAD_LIBRARY_SEARCH_USER_DIRS
 	if ok, _, err := set.Call(restricted); ok == 0 {
 		return err
@@ -100,7 +100,7 @@ func (s *runtimeState) initialize() error {
 	if ok, _, err := add.Call(uintptr(unsafe.Pointer(base))); ok == 0 {
 		return err
 	}
-	// Load ONNX Runtime from beside the worker.
+	// Load ONNX Runtime from beside the worker
 	ort.SetSharedLibraryPath(filepath.Join(s.base, "onnxruntime.dll"))
 	if err := ort.InitializeEnvironment(); err != nil {
 		return err
@@ -110,14 +110,14 @@ func (s *runtimeState) initialize() error {
 		return err
 	}
 	s.opts = options
-	// Limit CPU inference threads to leave capacity for the simulator.
+	// Limit CPU inference threads to leave capacity for the simulator
 	if err := options.SetIntraOpNumThreads(max(1, min(4, runtime.NumCPU()-2))); err != nil {
 		return err
 	}
 	if err := options.SetInterOpNumThreads(1); err != nil {
 		return err
 	}
-	// Keep separate options so a failed CUDA setup leaves CPU inference available.
+	// Keep separate options so a failed CUDA setup leaves CPU inference available
 	gpu, err := ort.NewSessionOptions()
 	if err == nil {
 		if addCUDA(gpu) && gpu.SetIntraOpNumThreads(2) == nil && gpu.SetInterOpNumThreads(1) == nil {
@@ -129,7 +129,7 @@ func (s *runtimeState) initialize() error {
 	return nil
 }
 
-// Dispose sessions and their options before tearing down the shared ONNX environment.
+// Dispose sessions and their options before tearing down the shared ONNX environment
 func (s *runtimeState) close() {
 	if s.kokoro != nil {
 		_ = s.kokoro.Destroy()
@@ -149,7 +149,7 @@ func (s *runtimeState) close() {
 }
 
 func (s *runtimeState) phonemize(text string) (string, error) {
-	// Create the bundled phonemizer only when the first request needs it.
+	// Create the bundled phonemizer only when the first request needs it
 	if s.phonemes == nil {
 		g2p, err := ort.NewDynamicAdvancedSession(filepath.Join(s.base, "phonemizer.onnx"), []string{"sequence"}, []string{"tokens"}, s.opts)
 		if err != nil {
@@ -160,7 +160,7 @@ func (s *runtimeState) phonemize(text string) (string, error) {
 			if len(seq) > contextSize {
 				return nil, errors.New("word exceeds the phonemizer context window")
 			}
-			// The exported ONNX graph expects 256 tokens even for short words.
+			// The exported ONNX graph expects 256 tokens even for short words
 			padded := make([]int64, contextSize)
 			copy(padded, seq)
 			input, err := ort.NewTensor(ort.NewShape(1, contextSize), padded)
@@ -176,21 +176,21 @@ func (s *runtimeState) phonemize(text string) (string, error) {
 			if err := g2p.Run([]ort.Value{input}, []ort.Value{output}); err != nil {
 				return nil, err
 			}
-			// Keep only predictions for the original tokens. The rest are padding.
+			// Keep only predictions for the original tokens The rest are padding
 			return append([]int64(nil), output.GetData()[:len(seq)]...), nil
 		})
 		if err != nil {
 			_ = g2p.Destroy()
 			return "", err
 		}
-		// Keep the inference session alive because the phonemizer callback captures it.
+		// Keep the inference session alive because the phonemizer callback captures it
 		s.g2p, s.phonemes = g2p, p
 	}
 	return s.phonemes.Convert(text)
 }
 
 func (s *runtimeState) load(paths map[string]string) error {
-	// The load frame gives absolute paths for the graph, voice data, and tokenizer.
+	// The load frame gives absolute paths for the graph, voice data, and tokenizer
 	for _, file := range []string{"model.onnx", "am_adam.bin", "tokenizer.json"} {
 		if !filepath.IsAbs(paths[file]) {
 			return fmt.Errorf("invalid Kokoro path for %s", file)
@@ -213,7 +213,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// Each style vector is 256 little-endian float32s. The first entry is skipped for nonempty input.
+	// Each style vector is 256 little-endian float32s The first entry is skipped for nonempty input
 	if len(raw) < 2048 || len(raw)%1024 != 0 {
 		return errors.New("Kokoro voice has an invalid size")
 	}
@@ -221,7 +221,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	for i := range voice {
 		voice[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
 	}
-	// Read the pinned graph's waveform output name instead of hardcoding it.
+	// Read the pinned graph's waveform output name instead of hardcoding it
 	_, output, err := ort.GetInputOutputInfoWithOptions(paths["model.onnx"], s.opts)
 	if err != nil {
 		return err
@@ -233,7 +233,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 		return ort.NewDynamicAdvancedSession(paths["model.onnx"], []string{"input_ids", "style", "speed"}, []string{output[0].Name}, options)
 	}
 	var session *ort.DynamicAdvancedSession
-	// The probe can succeed even when the CUDA provider can't load this graph.
+	// The probe can succeed even when the CUDA provider can't load this graph
 	if s.gpu != nil {
 		session, err = open(s.gpu)
 	}
@@ -246,7 +246,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	if s.kokoro != nil {
 		_ = s.kokoro.Destroy()
 	}
-	// Swap the model bundle only after all of its parts have opened.
+	// Swap the model bundle only after all of its parts have opened
 	s.kokoro, s.vocab, s.voice = session, tok.Model.Vocab, voice
 	return nil
 }
@@ -256,25 +256,25 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 		return nil, errors.New("Kokoro model is not loaded")
 	}
 	var output []byte
-	// Use sentence boundaries for voice chunks and pauses.
+	// Use sentence boundaries for voice chunks and pauses
 	sentences := strings.FieldsFunc(text, func(r rune) bool { return strings.ContainsRune(".!?;", r) })
 	for i, sentence := range sentences {
 		phonemes, err := s.phonemize(strings.TrimSpace(sentence))
 		if err != nil {
 			return nil, err
 		}
-		// Drop IPA characters the Kokoro vocabulary cannot encode.
+		// Drop IPA characters the Kokoro vocabulary cannot encode
 		valid := []rune(strings.TrimSpace(strings.Map(func(r rune) rune {
 			if _, ok := s.vocab[string(r)]; ok {
 				return r
 			}
 			return -1
 		}, phonemes)))
-		// Leave room for two boundary tokens and stay within the available style vectors.
+		// Leave room for two boundary tokens and stay within the available style vectors
 		context := min(510, len(s.voice)/256-1)
 		for len(valid) > 0 {
 			n := min(len(valid), context)
-			// Prefer a word or punctuation boundary when a sentence needs another chunk.
+			// Prefer a word or punctuation boundary when a sentence needs another chunk
 			if n < len(valid) {
 				for j := n - 1; j > 0; j-- {
 					if strings.ContainsRune(".,!?; ", valid[j]) {
@@ -288,25 +288,25 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			if len(first) == 0 {
 				continue
 			}
-			// Leave a zero token at each edge of the Kokoro input.
+			// Leave a zero token at each edge of the Kokoro input
 			tokens := make([]int64, len(first)+2)
 			for j, r := range first {
 				tokens[j+1] = s.vocab[string(r)]
 			}
-			// The voice file has a 256-float style vector for each unpadded token count.
+			// The voice file has a 256-float style vector for each unpadded token count
 			styleIndex := len(first) * 256
 			audio, err := s.run(tokens, s.voice[styleIndex:styleIndex+256])
 			if err != nil {
 				return nil, err
 			}
-			// Convert floating-point samples to the signed PCM16 used by playback.
+			// Convert floating-point samples to the signed PCM16 used by playback
 			for _, sample := range audio {
 				normalized := max(-32768, min(32767, float64(sample)*32768))
 				output = binary.LittleEndian.AppendUint16(output, uint16(int16(normalized)))
 			}
 		}
 		if i < len(sentences)-1 && len(output) > 0 {
-			// At 24 kHz mono PCM16, 16800 bytes gives a 350 ms pause.
+			// At 24 kHz mono PCM16, 16800 bytes gives a 350 ms pause
 			output = append(output, make([]byte, 16800)...)
 		}
 	}
@@ -317,7 +317,7 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 }
 
 func (s *runtimeState) run(tokens []int64, style []float32) ([]float32, error) {
-	// The graph takes a batch of tokens, one style vector, and a speed multiplier.
+	// The graph takes a batch of tokens, one style vector, and a speed multiplier
 	ids, err := ort.NewTensor(ort.NewShape(1, int64(len(tokens))), tokens)
 	if err != nil {
 		return nil, err
@@ -333,7 +333,7 @@ func (s *runtimeState) run(tokens []int64, style []float32) ([]float32, error) {
 		return nil, err
 	}
 	defer speed.Destroy()
-	// Let ONNX allocate the waveform tensor since the sample count varies with the input.
+	// Let ONNX allocate the waveform tensor since the sample count varies with the input
 	outputs := []ort.Value{nil}
 	if err := s.kokoro.Run([]ort.Value{ids, voice, speed}, outputs); err != nil {
 		return nil, err
@@ -343,6 +343,6 @@ func (s *runtimeState) run(tokens []int64, style []float32) ([]float32, error) {
 	if !ok {
 		return nil, errors.New("Kokoro returned an unexpected waveform type")
 	}
-	// Keep the waveform data independent of the tensor's lifetime.
+	// Keep the waveform data independent of the tensor's lifetime
 	return append([]float32(nil), audio.GetData()...), nil
 }

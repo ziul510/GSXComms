@@ -14,7 +14,7 @@ func TestAirportLocations(t *testing.T) {
 		lat, lon   float64
 		cc, accent string
 	}{
-		// Edinburgh covers a regional override. The other airports cover country defaults.
+		// Edinburgh covers a regional override The other airports cover country defaults
 		{55.949, -3.364, "GB", "Scottish"}, {48.3538, 11.7861, "DE", "German"}, {35.5494, 139.7798, "JP", "Japanese"},
 	} {
 		p, err := Nearest(test.lat, test.lon)
@@ -36,7 +36,7 @@ func TestImportedCountryNameAndCode(t *testing.T) {
 	}{
 		{Position{Country: "DE"}, "French"},
 		{Position{Country: "CA"}, "British"},
-		// An imported country override takes precedence over the stock regional accent.
+		// An imported country override takes precedence over the stock regional accent
 		{Position{Country: "GB", Region: "Scotland"}, "Irish"},
 	} {
 		if got := Accent(sample.pos, overrides, "American", ""); got != sample.want {

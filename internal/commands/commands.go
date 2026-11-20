@@ -46,7 +46,7 @@ func init() {
 	for key := range language.NATO {
 		pattern = append(pattern, regexp.QuoteMeta(key))
 	}
-	// Try longer NATO phrases before shorter alternatives sharing a prefix.
+	// Try longer NATO phrases before shorter alternatives sharing a prefix
 	sort.Slice(pattern, func(i, j int) bool { return len(pattern[i]) > len(pattern[j]) })
 	natoPattern = regexp.MustCompile("(?i)" + strings.Join(pattern, "|"))
 }
@@ -69,7 +69,7 @@ type Vocabulary struct {
 }
 
 func Load(dir string) (Vocabulary, error) {
-	// Use the imported vocabulary if present. Surface read errors so a broken override is visible.
+	// Use the imported vocabulary if present Surface read errors so a broken override is visible
 	raw, err := os.ReadFile(filepath.Join(dir, "words.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		raw, err = assets.Files.ReadFile("words.json")
@@ -81,7 +81,7 @@ func Load(dir string) (Vocabulary, error) {
 }
 
 func list(raw json.RawMessage) []string {
-	// Older vocabulary entries can store a single keyword as a string.
+	// Older vocabulary entries can store a single keyword as a string
 	var values []string
 	if err := json.Unmarshal(raw, &values); err != nil {
 		var value string
@@ -94,14 +94,14 @@ func list(raw json.RawMessage) []string {
 }
 
 func Parse(raw []byte) (Vocabulary, error) {
-	// File order lets DEBOARDING take precedence when "deboard" also matches "board".
+	// File order lets DEBOARDING take precedence when "deboard" also matches "board"
 	d := json.NewDecoder(bytes.NewReader(raw))
 	first, err := d.Token()
 	if err != nil || first != json.Delim('{') {
 		return Vocabulary{}, errors.New("expected vocabulary object")
 	}
 	var v Vocabulary
-	// Track the first rule for each bias phrase separately from the full hotword set.
+	// Track the first rule for each bias phrase separately from the full hotword set
 	seen, terms := map[string]bool{}, map[string]bool{}
 	for _, term := range language.Boost {
 		terms[term] = true
@@ -117,7 +117,7 @@ func Parse(raw []byte) (Vocabulary, error) {
 		}
 		e := entry{Name: name.(string)}
 		var parts map[string]json.RawMessage
-		// Bias variants guide recognition while keywords drive service routing.
+		// Bias variants guide recognition while keywords drive service routing
 		if json.Unmarshal(raw, &parts) == nil {
 			e.Keywords, e.Bias = list(parts["keywords"]), list(parts["bias_variants"])
 		} else {
@@ -130,11 +130,11 @@ func Parse(raw []byte) (Vocabulary, error) {
 		if len(e.Keywords) == 0 {
 			continue
 		}
-		// Bias variants normalize to the first service keyword.
+		// Bias variants normalize to the first service keyword
 		canonical := strings.ToLower(strings.TrimSpace(e.Keywords[0]))
 		for _, variant := range e.Bias {
 			variant = strings.ToLower(strings.TrimSpace(variant))
-			// The first service in file order owns a duplicate bias phrase.
+			// The first service in file order owns a duplicate bias phrase
 			if seen[variant] {
 				continue
 			}
@@ -152,20 +152,20 @@ func Parse(raw []byte) (Vocabulary, error) {
 	if _, err := d.Token(); err != io.EOF {
 		return Vocabulary{}, errors.New("unexpected data after vocabulary object")
 	}
-	// Replace longer variants first so a shorter phrase can't consume their prefix.
+	// Replace longer variants first so a shorter phrase can't consume their prefix
 	sort.SliceStable(v.rules, func(i, j int) bool { return v.rules[i].specificity > v.rules[j].specificity })
 	for term := range terms {
 		v.hotwords = append(v.hotwords, term)
 	}
-	// A stable order keeps the speech worker's hotword signature from changing between reads.
+	// A stable order keeps the speech worker's hotword signature from changing between reads
 	slices.Sort(v.hotwords)
 	return v, nil
 }
 
-// Return a copy so callers can't change compiled vocabulary state.
+// Return a copy so callers can't change compiled vocabulary state
 func (v Vocabulary) Hotwords() []string { return slices.Clone(v.hotwords) }
 
-// Use the same Unicode word characters for both sides of a replacement.
+// Use the same Unicode word characters for both sides of a replacement
 func word(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' }
 
 func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(string) string) string {
@@ -174,8 +174,8 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 	for _, match := range re.FindAllStringIndex(text, -1) {
 		left, _ := utf8.DecodeLastRuneInString(text[:match[0]])
 		right, _ := utf8.DecodeRuneInString(text[match[1]:])
-		// A match bordered by Unicode word characters is part of another word.
-		// A hyphen can also protect the suffix when applying service bias variants.
+		// A match bordered by Unicode word characters is part of another word
+		// A hyphen can also protect the suffix when applying service bias variants
 		if word(left) || word(right) || (noHyphen && left == '-') {
 			continue
 		}
@@ -192,7 +192,7 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 
 var aground = regexp.MustCompile("(?i)aground")
 
-// Fix common transcript errors and NATO words before applying service bias rules.
+// Fix common transcript errors and NATO words before applying service bias rules
 func (v Vocabulary) Normalize(text string) string {
 	text = replaceWhole(text, aground, false, func(string) string { return language.Corrections["aground"] })
 	text = replaceWhole(text, natoPattern, false, func(match string) string { return language.NATO[strings.ToLower(match)] })
@@ -209,7 +209,7 @@ type Action struct {
 }
 
 func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatching bool) Action {
-	// Normalization may rewrite a preset codeword, so try the original words too.
+	// Normalization may rewrite a preset codeword, so try the original words too
 	for _, candidate := range []string{text, raw} {
 		for _, p := range presets {
 			if p.Enabled && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
@@ -223,7 +223,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 		if len(e.Keywords) == 0 {
 			continue
 		}
-		// Greetings require all their configured words. Services can use any one keyword.
+		// Greetings require all their configured words Services can use any one keyword
 		if e.Name == "GREETING" {
 			greeting = true
 			for _, keyword := range e.Keywords {
@@ -231,7 +231,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 			}
 			continue
 		}
-		// A deboarding match takes priority over the overlapping boarding substring.
+		// A deboarding match takes priority over the overlapping boarding substring
 		if e.Name == "BOARDING" && deboard {
 			continue
 		}
@@ -244,7 +244,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 		}
 	}
 	switch {
-	// Avoid acting on an utterance that matches several services.
+	// Avoid acting on an utterance that matches several services
 	case len(matches) > 1:
 		return Action{Kind: "ambiguous"}
 	case len(matches) == 1:
@@ -258,7 +258,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 	}
 }
 
-// GSX uses built-in aliases as a fallback when custom service terms miss.
+// GSX uses built-in aliases as a fallback when custom service terms miss
 func Aliases(service string) []string { return slices.Clone(language.Aliases[service]) }
 
 var (
@@ -269,7 +269,7 @@ var (
 )
 
 func Tokens(text string) []string {
-	// Normalize spaced spellings before punctuation breaks them into separate tokens.
+	// Normalize spaced spellings before punctuation breaks them into separate tokens
 	text = deice.ReplaceAllString(strings.ToLower(text), "deic")
 	text = pushback.ReplaceAllString(text, "pushback")
 	text = jetway.ReplaceAllString(text, "jet$1")
@@ -277,7 +277,7 @@ func Tokens(text string) []string {
 	var tokens []string
 	for _, word := range words {
 		if n := language.Numbers[word]; n != "" {
-			// Keep the spoken word for text matching and add its digit for numbered choices.
+			// Keep the spoken word for text matching and add its digit for numbered choices
 			tokens = append(tokens, n)
 		}
 		tokens = append(tokens, word)
@@ -285,7 +285,7 @@ func Tokens(text string) []string {
 	return tokens
 }
 
-// Trim common endings for close matches while keeping short command words intact.
+// Trim common endings for close matches while keeping short command words intact
 func stem(w string) string {
 	if utf8.RuneCountInString(w) <= 3 {
 		return w
@@ -299,7 +299,7 @@ func stem(w string) string {
 	return strings.TrimRight(w, "e")
 }
 
-// ratio uses the same longest contiguous matching-block ratio as difflib.
+// ratio uses the same longest contiguous matching-block ratio as difflib
 func ratio(left, right string) float64 {
 	a, b := []rune(left), []rune(right)
 	if len(a)+len(b) == 0 {
@@ -309,7 +309,7 @@ func ratio(left, right string) float64 {
 	for j, char := range b {
 		positions[char] = append(positions[char], j)
 	}
-	// Mirror difflib's frequent-character cutoff on longer inputs.
+	// Mirror difflib's frequent-character cutoff on longer inputs
 	if len(b) >= 200 {
 		limit := len(b)/100 + 1
 		for char, idx := range positions {
@@ -318,7 +318,7 @@ func ratio(left, right string) float64 {
 			}
 		}
 	}
-	// Find the longest contiguous match, then repeat on the text to either side.
+	// Find the longest contiguous match, then repeat on the text to either side
 	var count func(int, int, int, int) int
 	count = func(al, ah, bl, bh int) int {
 		bestI, bestJ, size := al, bl, 0
@@ -332,7 +332,7 @@ func ratio(left, right string) float64 {
 				if j >= bh {
 					break
 				}
-				// Extend the diagonal match ending one rune back in both inputs.
+				// Extend the diagonal match ending one rune back in both inputs
 				n := prev[j-1] + 1
 				next[j] = n
 				if n > size {
@@ -341,7 +341,7 @@ func ratio(left, right string) float64 {
 			}
 			prev = next
 		}
-		// Extend the chosen block through matching characters excluded from the seed index.
+		// Extend the chosen block through matching characters excluded from the seed index
 		for bestI > al && bestJ > bl && a[bestI-1] == b[bestJ-1] {
 			bestI--
 			bestJ--
@@ -353,13 +353,13 @@ func ratio(left, right string) float64 {
 		if size == 0 {
 			return 0
 		}
-		// Only compare the ranges before and after the best block so matches stay in order.
+		// Only compare the ranges before and after the best block so matches stay in order
 		return size + count(al, bestI, bl, bestJ) + count(bestI+size, ah, bestJ+size, bh)
 	}
 	return 2 * float64(count(0, len(a), 0, len(b))) / float64(len(a)+len(b))
 }
 
-// Require exact matches for short words that are easy to confuse.
+// Require exact matches for short words that are easy to confuse
 func wordRatio(a, b string) float64 {
 	if a == b {
 		return 1
@@ -370,13 +370,13 @@ func wordRatio(a, b string) float64 {
 	return ratio(a, b)
 }
 
-// Accept close inflections and prefixes before trying the fuzzy word score.
+// Accept close inflections and prefixes before trying the fuzzy word score
 func matches(a, b string) bool {
 	x, y := stem(a), stem(b)
 	return a == b || x == y || (len(x) >= 3 && len(y) >= 3 && (strings.HasPrefix(x, y) || strings.HasPrefix(y, x))) || wordRatio(a, b) >= 0.8
 }
 
-// Drop filler words for scoring unless that would remove the entire label.
+// Drop filler words for scoring unless that would remove the entire label
 func meaningful(all []string) []string {
 	result := slices.DeleteFunc(slices.Clone(all), func(s string) bool { return slices.Contains(language.Stop, s) })
 	if len(result) == 0 {
@@ -385,12 +385,12 @@ func meaningful(all []string) []string {
 	return result
 }
 
-// Tokens are already spaced. Pad both ends to avoid substring matches within words.
+// Tokens are already spaced Pad both ends to avoid substring matches within words
 func phrase(needle, haystack string) bool {
 	return strings.Contains(" "+haystack+" ", " "+needle+" ")
 }
 
-// Look for prefixes that reverse a command's meaning even when the stem is similar.
+// Look for prefixes that reverse a command's meaning even when the stem is similar
 func opposed(a, b string) bool {
 	a, b = stem(a), stem(b)
 	for _, prefix := range []string{"dis", "un"} {
@@ -407,19 +407,19 @@ func score(text, option string, index int) int {
 		return 0
 	}
 	x, y := strings.Join(a, " "), strings.Join(b, " ")
-	// Leave implicit submenu navigation to the GSX session.
+	// Leave implicit submenu navigation to the GSX session
 	if strings.Contains(y, "additional services") && !strings.Contains(x, "additional") {
 		return 0
 	}
 	n := 0
-	// Give an exact option phrase more weight than individual overlapping words.
+	// Give an exact option phrase more weight than individual overlapping words
 	if len(y) >= 3 && phrase(y, x) {
 		n += 150 + utf8.RuneCountInString(y)
 	} else if len(x) >= 3 && phrase(x, y) {
 		n += 120 + utf8.RuneCountInString(x)
 	}
 	a, b = meaningful(a), meaningful(b)
-	// Track option coverage separately from how many transcript words match.
+	// Track option coverage separately from how many transcript words match
 	covered := map[string]bool{}
 	for _, sw := range a {
 		negated := false
@@ -430,13 +430,13 @@ func score(text, option string, index int) int {
 			}
 			negated = negated || opposed(sw, ow)
 		}
-		// Opposite actions like connect and disconnect can share a fuzzy match.
+		// Opposite actions like connect and disconnect can share a fuzzy match
 		if negated {
 			n -= 60
 		}
 	}
 	n += len(covered) * 40 / len(b)
-	// Give explicit numbered choices a strong bonus using whole-number tokens.
+	// Give explicit numbered choices a strong bonus using whole-number tokens
 	for _, prefix := range []string{"option ", "number ", "choice "} {
 		if phrase(prefix+strconv.Itoa(index+1), x) {
 			return n + 200
@@ -445,7 +445,7 @@ func score(text, option string, index int) int {
 	return n
 }
 
-// Apply the minimum score and keep the earlier option when scores tie.
+// Apply the minimum score and keep the earlier option when scores tie
 func Match(text string, options []string) (index, points int) {
 	index = -1
 	for i, option := range options {
@@ -457,7 +457,7 @@ func Match(text string, options []string) (index, points int) {
 }
 
 func CorrectMenu(text string, options []string) (string, float64) {
-	// Tokens already add a digit for each number word. Drop the duplicate word for correction.
+	// Tokens already add a digit for each number word Drop the duplicate word for correction
 	collapse := func(text string) []string {
 		return slices.DeleteFunc(Tokens(text), func(word string) bool { return language.Numbers[word] != "" })
 	}
@@ -472,14 +472,14 @@ func CorrectMenu(text string, options []string) (string, float64) {
 			continue
 		}
 		chars := ratio(strings.Join(a, " "), strings.Join(b, " "))
-		// A single strongly matching word can make a longer label a correction candidate.
+		// A single strongly matching word can make a longer label a correction candidate
 		combined := chars
 		for _, x := range a {
 			for _, y := range b {
 				combined = max(combined, wordRatio(x, y))
 			}
 		}
-		// Use phrase similarity to break ties from equally close words.
+		// Use phrase similarity to break ties from equally close words
 		if combined >= 0.75 && (combined > bestRatio || (combined == bestRatio && chars > bestChars)) {
 			best, bestRatio, bestChars = option, combined, chars
 		}
@@ -489,7 +489,7 @@ func CorrectMenu(text string, options []string) (string, float64) {
 
 var menuNumber = regexp.MustCompile(`^(?:(?:option|number|choice)\s+)?([1-9])$`)
 
-// Recognize standalone selections and convert menu labels to zero-based slots.
+// Recognize standalone selections and convert menu labels to zero-based slots
 func Number(text string) (int, bool) {
 	text = strings.TrimSpace(strings.ToLower(text))
 	if n := language.Numbers[text]; n != "" {
@@ -502,7 +502,7 @@ func Number(text string) (int, bool) {
 	return int(m[1][0] - '1'), true
 }
 
-// Voxtral gets service names and keywords in the prompt it uses for transcription.
+// Voxtral gets service names and keywords in the prompt it uses for transcription
 func (v Vocabulary) HotwordTable() string {
 	var lines []string
 	for _, e := range v.entries {
@@ -513,7 +513,7 @@ func (v Vocabulary) HotwordTable() string {
 	return strings.Join(lines, "\n")
 }
 
-// The GSX session uses these custom labels before trying built-in aliases.
+// The GSX session uses these custom labels before trying built-in aliases
 func (v Vocabulary) Keywords(service string) []string {
 	for _, e := range v.entries {
 		if e.Name == service {

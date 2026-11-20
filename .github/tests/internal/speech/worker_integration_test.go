@@ -34,7 +34,7 @@ func TestInstalledWorkerRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := w.cmd.Process.Pid
-	// Kill the child outside Worker so the next exchange has to detect the crash.
+	// Kill the child outside Worker so the next exchange has to detect the crash
 	if err := w.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestInstalledWorkerRestarts(t *testing.T) {
 	if w.cmd.Process.Pid == first {
 		t.Fatal("worker did not restart")
 	}
-	// Silent PCM exercises the replacement worker without needing a spoken fixture.
+	// Silent PCM exercises the replacement worker without needing a spoken fixture
 	if text, err := w.Transcribe(ctx, make([]byte, 8000)); err != nil || text != "" {
 		t.Fatalf("replacement recognition = %q, %v", text, err)
 	}

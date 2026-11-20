@@ -15,7 +15,7 @@ import (
 
 func readTest(t *testing.T, path string, out any) {
 	t.Helper()
-	// The overlay runs this test from internal/commands, with fixtures kept under .github.
+	// The overlay runs this test from internal/commands, with fixtures kept under .github
 	data, err := os.ReadFile("../../.github/tests/testdata/" + path)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestReferenceCorpus(t *testing.T) {
 		}
 	}
 	readTest(t, "corpus.json", &input)
-	// The expected output was captured from the legacy Python command path.
+	// The expected output was captured from the legacy Python command path
 	readTest(t, "reference.json", &expected)
 	vocab, err := Load(t.TempDir())
 	if err != nil {
@@ -73,7 +73,7 @@ func TestReferenceCorpus(t *testing.T) {
 }
 
 func TestParseRejectsTrailingVocabulary(t *testing.T) {
-	// A decoder that stops after the first object would otherwise accept this input.
+	// A decoder that stops after the first object would otherwise accept this input
 	if _, err := Parse([]byte("{} {}")); err == nil {
 		t.Fatal("accepted a second vocabulary object")
 	}
@@ -81,7 +81,7 @@ func TestParseRejectsTrailingVocabulary(t *testing.T) {
 
 func TestMatchRequiresWholeNumberTokens(t *testing.T) {
 	options := []string{"Jetway", "Catering"}
-	// Keep multi-digit numbers from matching a single-digit menu slot.
+	// Keep multi-digit numbers from matching a single-digit menu slot
 	for text, want := range map[string]int{
 		"option 10":              -1,
 		"number 21":              -1,

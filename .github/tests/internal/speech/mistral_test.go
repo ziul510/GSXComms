@@ -13,12 +13,12 @@ import (
 
 type mistralTestTransport func(*http.Request) (*http.Response, error)
 
-// Use a canned server response behind the normal request construction.
+// Use a canned server response behind the normal request construction
 func (f mistralTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestVoxtralTranscriptionResponse(t *testing.T) {
 	pcm := make([]byte, 8000)
-	// Pass the loudness gate so the test reaches response parsing.
+	// Pass the loudness gate so the test reaches response parsing
 	binary.LittleEndian.PutUint16(pcm, 500)
 	for _, tc := range []struct {
 		name, message, transcript string
@@ -33,13 +33,13 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			original := http.DefaultTransport
 			t.Cleanup(func() { http.DefaultTransport = original })
-			// Exercise the real request path without sending recordings or using a real key.
+			// Exercise the real request path without sending recordings or using a real key
 			http.DefaultTransport = mistralTestTransport(func(*http.Request) (*http.Response, error) {
 				body := `{"choices":[{"message":` + tc.message + `}]}`
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
 			transcript, err := Voxtral(t.Context(), "dummy-test-key", "", "", pcm)
-			// Unexpected response content must surface as the sanitized user-facing error.
+			// Unexpected response content must surface as the sanitized user-facing error
 			if tc.invalid {
 				if err == nil || err.Error() != "Mistral returned an invalid transcription response" {
 					t.Fatalf("expected sanitized transcription error, got %v", err)

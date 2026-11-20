@@ -39,7 +39,7 @@ var (
 	orange      = gui.Hex(0xf97316)
 )
 
-// UI state stays on the window thread. Workers communicate through queues and callbacks.
+// UI state stays on the window thread Workers communicate through queues and callbacks
 type state struct {
 	audioQueue, audioPriority                       chan playback
 	saves                                           chan *saveRequest
@@ -74,25 +74,25 @@ type state struct {
 }
 
 func Run(dir string) {
-	// Load the effective settings even if migration returned an error to report.
+	// Load the effective settings even if migration returned an error to report
 	settings, err := config.Load(dir)
 	icon, _ := assets.Files.ReadFile("app.png")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
-	// Use separate native workers for input transcription and menu readout.
+	// Use separate native workers for input transcription and menu readout
 	s.recognizer = speech.NewWorker("sherpa")
 	s.reader = speech.NewWorker("kokoro")
 	s.speaking = make(chan struct{}, 1)
 	s.audioQueue = make(chan playback, 16)
 	s.audioPriority = make(chan playback, 8)
-	// Keep all local audio on one playback loop so it can share the mute watchdog.
+	// Keep all local audio on one playback loop so it can share the mute watchdog
 	go s.playbackLoop()
 	defer s.reader.Reset()
-	// Start checking for a Couatl mute left by an earlier process.
+	// Start checking for a Couatl mute left by an earlier process
 	go restoreMute(ctx, dir)
 	defer s.recognizer.Reset()
-	// Closing a settings dialog should leave the main application running.
+	// Closing a settings dialog should leave the main application running
 	s.host.ExitMode = gui.ExitOnMainClose
 	s.saves = make(chan *saveRequest, 16)
 	s.saved = make(chan struct{})
@@ -115,24 +115,24 @@ func Run(dir string) {
 			s.main = w
 			w.TitlebarDark(true)
 			w.SetView(mainView)
-			// Start background work after the main window can accept UI callbacks.
+			// Start background work after the main window can accept UI callbacks
 			go s.simulator()
 			s.configureTray()
 			s.setTopmost()
-			// Load the active PTT key before the keyboard hook starts listening.
+			// Load the active PTT key before the keyboard hook starts listening
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
 			go listenKeyboard(ctx, s.keyboardEvent)
 			go s.pollController(ctx)
 			go s.listenHID(ctx)
 			if config.Get[bool](s.cfg, "start_minimized") {
-				// Only hide the window if there is a tray icon to bring it back.
+				// Only hide the window if there is a tray icon to bring it back
 				if s.tray != nil {
 					w.Hide()
 				} else {
 					w.Minimize()
 				}
 			}
-			// First launch shows the accent choices before an optional simulator connection.
+			// First launch shows the accent choices before an optional simulator connection
 			if !config.Get[bool](s.cfg, "accent_setup_complete") {
 				s.openAccents()
 			}
@@ -143,14 +143,14 @@ func Run(dir string) {
 		OnCloseRequest: func(w *gui.Window) { s.quit() },
 	})
 	backend.RunApp(s.host, w)
-	// Give queued settings writes time to finish after the UI closes.
+	// Give queued settings writes time to finish after the UI closes
 	close(s.saves)
 	select {
 	case <-s.saved:
 	case <-time.After(2 * time.Second):
 	}
 	cancel()
-	// The simulator loop may still be closing a menu it owns.
+	// The simulator loop may still be closing a menu it owns
 	if s.main != nil {
 		select {
 		case <-s.done:
@@ -159,7 +159,7 @@ func Run(dir string) {
 	}
 }
 
-// Cancel background work before closing the main window and dropping its tray actions.
+// Cancel background work before closing the main window and dropping its tray actions
 func (s *state) quit() {
 	s.cancel()
 	if s.tray != nil {
@@ -170,7 +170,7 @@ func (s *state) quit() {
 }
 
 func (s *state) configureTray() {
-	// Disabling the tray option also removes an icon created by an earlier save.
+	// Disabling the tray option also removes an icon created by an earlier save
 	if !config.Get[bool](s.cfg, "minimize_to_tray") {
 		if s.tray != nil {
 			s.host.RemoveSystemTray(s.tray)
@@ -184,7 +184,7 @@ func (s *state) configureTray() {
 	tray, err := s.host.SetSystemTray(gui.SystemTrayCfg{
 		Tooltip: "GSXComms", IconPNG: s.icon,
 		Menu: []gui.NativeMenuItemCfg{{ID: "show", Text: "Show"}, {ID: "quit", Text: "Quit"}},
-		// Tray callbacks queue their window changes on the UI thread.
+		// Tray callbacks queue their window changes on the UI thread
 		OnAction: func(id string) {
 			s.main.QueueCommand(func(w *gui.Window) {
 				switch id {
@@ -205,7 +205,7 @@ func (s *state) configureTray() {
 }
 
 func (s *state) log(sender, message string) {
-	// Store separate transcript rows. Mirror them to disk only in debug mode.
+	// Store separate transcript rows Mirror them to disk only in debug mode
 	for _, line := range strings.Split(strings.TrimSpace(message), "\n") {
 		if line != "" {
 			s.lines = append(s.lines, fmt.Sprintf("[%s]: %s", sender, line))
@@ -214,18 +214,18 @@ func (s *state) log(sender, message string) {
 			}
 		}
 	}
-	// Bound the text sent to the conversation view on each redraw.
+	// Bound the text sent to the conversation view on each redraw
 	if len(s.lines) > 1000 {
 		s.lines = s.lines[len(s.lines)-1000:]
 	}
 	if s.main != nil {
-		// Scroll after the UI has a chance to lay out the appended text.
+		// Scroll after the UI has a chance to lay out the appended text
 		s.main.QueueCommand(func(w *gui.Window) { w.ScrollVerticalToPct("conversation", 1) })
 	}
 }
 
 func (s *state) async(f func()) {
-	// Background work hands state changes back to the UI thread here.
+	// Background work hands state changes back to the UI thread here
 	s.main.QueueCommand(func(w *gui.Window) {
 		if s.ctx.Err() == nil {
 			f()
@@ -234,7 +234,7 @@ func (s *state) async(f func()) {
 	})
 }
 
-// Keep the UI responsive when the simulator can't drain the command queue.
+// Keep the UI responsive when the simulator can't drain the command queue
 func (s *state) addJob(action func(context.Context, *gsx.Session)) bool {
 	select {
 	case s.jobs <- action:
@@ -247,7 +247,7 @@ func (s *state) addJob(action func(context.Context, *gsx.Session)) bool {
 
 func (s *state) simulator() {
 	defer close(s.done)
-	// Keep polling and commands on one goroutine since they share the dispatch queue.
+	// Keep polling and commands on one goroutine since they share the dispatch queue
 	session := gsx.New(nil, gsx.Panel())
 	defer session.Close()
 	ticker := time.NewTicker(600 * time.Millisecond)
@@ -259,7 +259,7 @@ func (s *state) simulator() {
 		select {
 		case <-s.ctx.Done():
 			return
-		// Connect, menu, and routing jobs share the same simulator session and timeout budget per job.
+		// Connect, menu, and routing jobs share the same simulator session and timeout budget per job
 		case job := <-s.jobs:
 			ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			if ctx.Err() == nil {
@@ -274,13 +274,13 @@ func (s *state) simulator() {
 			ctx, cancel := context.WithTimeout(s.ctx, 500*time.Millisecond)
 			ready, speed, err := session.Status(ctx)
 			cancel()
-			// Only transport failures count toward disconnecting. An unknown speed still blocks PTT.
+			// Only transport failures count toward disconnecting An unknown speed still blocks PTT
 			if err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
 				failed++
 			} else {
 				failed = 0
 			}
-			// Require consecutive failures before dropping the transport and hiding stale UI state.
+			// Require consecutive failures before dropping the transport and hiding stale UI state
 			if failed >= 3 {
 				_ = session.Close()
 				failed = 0
@@ -293,14 +293,14 @@ func (s *state) simulator() {
 				continue
 			}
 			menu := session.ReadMenu()
-			// Accent lookup can poll less often than menu status and ground speed.
+			// Accent lookup can poll less often than menu status and ground speed
 			if time.Since(timeAtLocation) > 5*time.Second {
 				timeAtLocation = time.Now()
 				geoCtx, stop := context.WithTimeout(s.ctx, 850*time.Millisecond)
 				lat, lon, err := session.Location(geoCtx)
 				stop()
 				if err == nil {
-					// Update the stored location on a region change. The accent lookup here is for debug output.
+					// Update the stored location on a region change The accent lookup here is for debug output
 					if pos, err := geo.Nearest(lat, lon); err == nil && pos != lastLocation {
 						lastLocation = pos
 						overrides := geo.Overrides(s.dir)
@@ -316,7 +316,7 @@ func (s *state) simulator() {
 					}
 				}
 			}
-			// Give control back to GSX when the app has been idle.
+			// Give control back to GSX when the app has been idle
 			if session.RemoteActive() && time.Since(lastRemote) >= 10*time.Second {
 				ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 				_ = session.Release(ctx)
@@ -324,7 +324,7 @@ func (s *state) simulator() {
 			}
 			s.async(func() {
 				s.ready = ready
-				// Keep speed availability separate so a failed read can't look like the aircraft is stopped.
+				// Keep speed availability separate so a failed read can't look like the aircraft is stopped
 				s.speedKnown = err == nil
 				s.speed = speed
 				if s.overlay {
@@ -336,11 +336,11 @@ func (s *state) simulator() {
 }
 
 func (s *state) toggleConnect() {
-	// Ignore another connect click until the queued operation has finished.
+	// Ignore another connect click until the queued operation has finished
 	if s.busy {
 		return
 	}
-	// Only show the connecting state if the job was accepted.
+	// Only show the connecting state if the job was accepted
 	s.busy = s.addJob(func(ctx context.Context, session *gsx.Session) {
 		if session.Connected() {
 			_ = session.Close()
@@ -358,7 +358,7 @@ func (s *state) toggleConnect() {
 			s.async(func() { s.busy = false; s.log("ERR", err.Error()) })
 			return
 		}
-		// A successful SimConnect handshake and GSX startup are separate states.
+		// A successful SimConnect handshake and GSX startup are separate states
 		session.Sim = sim
 		ready, speed, statusErr := session.Status(ctx)
 		s.async(func() {
@@ -374,7 +374,7 @@ func (s *state) toggleConnect() {
 }
 
 func (s *state) toggleMenu() {
-	// Leave the overlay visible if the queued close couldn't be scheduled.
+	// Leave the overlay visible if the queued close couldn't be scheduled
 	if s.overlay {
 		if s.addJob(func(ctx context.Context, session *gsx.Session) { _ = session.Release(ctx) }) {
 			s.overlay = false
@@ -389,7 +389,7 @@ func (s *state) toggleMenu() {
 			s.async(func() { s.log("GSX", err.Error()) })
 			return
 		}
-		// Show the overlay once the panel has provided selectable choices.
+		// Show the overlay once the panel has provided selectable choices
 		menu, err := session.WaitMenu(ctx)
 		s.async(func() {
 			if err != nil {
@@ -409,7 +409,7 @@ func (s *state) choose(index int) {
 	}
 	title, label := s.menu.Title, s.menu.Options[index]
 	if s.addJob(func(ctx context.Context, session *gsx.Session) {
-		// GSX can replace the menu while a selection waits in the job queue.
+		// GSX can replace the menu while a selection waits in the job queue
 		current := session.ReadMenu()
 		if current.Title != title || index >= len(current.Options) || current.Options[index] != label {
 			s.async(func() {
@@ -427,7 +427,7 @@ func (s *state) choose(index int) {
 			}
 			s.menu = menu
 		})
-		// Clear the temporary highlight only if this slot is still highlighted.
+		// Clear the temporary highlight only if this slot is still highlighted
 		time.AfterFunc(time.Second, func() {
 			s.async(func() {
 				if s.highlight == index {
@@ -441,7 +441,7 @@ func (s *state) choose(index int) {
 	}
 }
 
-// Unknown speed blocks normal transmissions. Simulator testing and the override bypass that check.
+// Unknown speed blocks normal transmissions Simulator testing and the override bypass that check
 func (s *state) transmissionBlock() string {
 	if config.Get[bool](s.cfg, "simulation_mode") || config.Get[bool](s.cfg, "ignore_speed_restriction") {
 		return ""
@@ -461,7 +461,7 @@ func (s *state) submit(input string) {
 		return
 	}
 	s.log("CMD", input)
-	// Keep the command's preferences stable while it waits on the simulator queue.
+	// Keep the command's preferences stable while it waits on the simulator queue
 	prefs := s.cfg.Copy()
 	if !s.connected && !config.Get[bool](prefs, "simulation_mode") {
 		if readoutMatches(prefs, input) {
@@ -471,12 +471,12 @@ func (s *state) submit(input string) {
 		}
 		return
 	}
-	// Typed commands pass through the same speed gate as PTT.
+	// Typed commands pass through the same speed gate as PTT
 	if reason := s.transmissionBlock(); reason != "" {
 		s.log("SYS", reason)
 		return
 	}
-	// A bare number is a direct selection only while the menu is visible.
+	// A bare number is a direct selection only while the menu is visible
 	if idx, ok := commands.Number(input); ok && s.overlay {
 		s.choose(idx)
 		return
@@ -489,14 +489,14 @@ func (s *state) submit(input string) {
 		}
 		raw := strings.ToLower(input)
 		text := words.Normalize(raw)
-		// Give the readout trigger first shot at both the original and normalized text.
+		// Give the readout trigger first shot at both the original and normalized text
 		if readoutMatches(prefs, text, raw) {
 			s.sayMenu(ctx, session, prefs)
 			return
 		}
 		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		if config.Get[bool](prefs, "enable_gsx_menu_text_correction") {
-			// A current menu label can take precedence over the vocabulary route.
+			// A current menu label can take precedence over the vocabulary route
 			if text2, _ := commands.CorrectMenu(text, session.ReadMenu().Options); text2 != "" {
 				text = text2
 				action = commands.Action{Kind: "menu"}
@@ -505,11 +505,11 @@ func (s *state) submit(input string) {
 		auto := config.Get[bool](prefs, "auto_select_operator")
 		log := func(sender, msg string) { s.async(func() { s.log(sender, msg) }) }
 		execute := func(service string) bool {
-			// Each preset service gets its own deadline even if earlier ones ran long.
+			// Each preset service gets its own deadline even if earlier ones ran long
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			defer cancel()
 			selected, err := session.Execute(serviceCtx, text, service, words.Keywords(service), auto)
-			// The stuck navigation menu needs the GSX hotfix prompt.
+			// The stuck navigation menu needs the GSX hotfix prompt
 			if errors.Is(err, gsx.ErrHotfix) {
 				s.async(func() { s.showHotfix() })
 				return false
@@ -528,7 +528,7 @@ func (s *state) submit(input string) {
 		case "preset":
 			log("PRESET", fmt.Sprintf("Preset %q triggered", action.Preset))
 			done := 0
-			// A duplicate preset entry may retry a failed service but won't repeat a successful one.
+			// A duplicate preset entry may retry a failed service but won't repeat a successful one
 			seen := map[string]bool{}
 			for _, service := range action.Services {
 				if s.ctx.Err() != nil {
@@ -547,7 +547,7 @@ func (s *state) submit(input string) {
 		case "greeting":
 			s.cue(prefs, "greeting", false)
 			log("GSX", "Ground crew greeting")
-		// Play the error cue and leave GSX alone when several services match.
+		// Play the error cue and leave GSX alone when several services match
 		case "ambiguous":
 			s.cue(prefs, "error", true)
 			log("SYS", "Multiple cmds detected")
@@ -558,7 +558,7 @@ func (s *state) submit(input string) {
 	})
 }
 
-// Installed notices live beside the executable. A local build can read them from the working directory.
+// Installed notices live beside the executable A local build can read them from the working directory
 func readNotice(name string) string {
 	exe, _ := os.Executable()
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), name))

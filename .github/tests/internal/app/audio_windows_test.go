@@ -20,7 +20,7 @@ func TestOpenCaptureDeviceFallback(t *testing.T) {
 		{"cloud missing", "Headset", defaultWaveDevice, false, true, nil},
 		{"cloud busy", "Headset", 1, false, true, []uintptr{1}},
 		{"cloud selected", "Headset", 0, false, false, []uintptr{0}},
-		// Cloud capture can still use the system device if the settings select it.
+		// Cloud capture can still use the system device if the settings select it
 		{"cloud default", "Default", defaultWaveDevice, false, false, []uintptr{defaultWaveDevice}},
 		{"cloud legacy default", "", defaultWaveDevice, false, false, []uintptr{defaultWaveDevice}},
 		{"local missing", "Headset", defaultWaveDevice, true, false, []uintptr{defaultWaveDevice}},
@@ -30,7 +30,7 @@ func TestOpenCaptureDeviceFallback(t *testing.T) {
 			var attempts []uintptr
 			err := openCaptureDevice(tc.name, tc.id, tc.allowFallback, func(id uintptr) error {
 				attempts = append(attempts, id)
-				// Simulate a busy named device without opening the host microphone.
+				// Simulate a busy named device without opening the host microphone
 				if id == 1 {
 					return errors.New("device busy")
 				}

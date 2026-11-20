@@ -17,7 +17,7 @@ import (
 
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	s := &state{cfg: config.Defaults(), ptt: "Idle", highlight: -1}
-	// Include the optional command field in the minimum-width layout check.
+	// Include the optional command field in the minimum-width layout check
 	s.cfg.Put("enable_keyboard_input", true)
 	w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
 	layout := w.TestRender(mainView)
@@ -37,7 +37,7 @@ func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 }
 
 func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
-	// An unbuffered queue with no receiver makes every enqueue fail immediately.
+	// An unbuffered queue with no receiver makes every enqueue fail immediately
 	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), highlight: -1, jobs: make(chan func(context.Context, *gsx.Session))}
 	s.toggleConnect()
 	s.toggleMenu()
@@ -49,7 +49,7 @@ func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
 
 func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	s := &state{cfg: config.Defaults(), saves: make(chan *saveRequest, 2)}
-	// Take the opening snapshot before simulating a save from a separate dialog.
+	// Take the opening snapshot before simulating a save from a separate dialog
 	base := s.settingsDraft()
 	draft := base.Copy()
 	draft.Put("input_device_name", "Cockpit")
@@ -70,14 +70,14 @@ func TestSettingsOwnsPresetManager(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.openSettings()
 	cfg := <-s.host.PendingOpen()
-	// Make the full Settings panel visible for direct widget clicks.
+	// Make the full Settings panel visible for direct widget clicks
 	cfg.Height = 3200
 	settings := gui.NewTestWindow(t, cfg)
 	settings.TestRender(nil)
 	if err := settings.TestClick("settings-scroll:presets"); err != nil {
 		t.Fatal(err)
 	}
-	// Consume the first pending dialog so any later request would be a duplicate.
+	// Consume the first pending dialog so any later request would be a duplicate
 	manager := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	if err := settings.TestClick("settings-scroll:presets"); !errors.Is(err, gui.ErrTestDisabled) {
 		t.Fatalf("preset manager button: %v", err)
@@ -102,7 +102,7 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 	cfg.Width, cfg.Height = 480, 680
 	settings := gui.NewTestWindow(t, cfg)
 	layout := settings.TestRender(nil)
-	// Require the sliders to fill the settings column without extending beyond the window.
+	// Require the sliders to fill the settings column without extending beyond the window
 	for _, key := range []string{"volume_static", "volume_voice", "max_recording_seconds"} {
 		node, ok := layout.FindByID("settings-scroll:" + key)
 		if !ok || node.Shape.Width < 400 || node.Shape.X+node.Shape.Width > 480 {
@@ -124,7 +124,7 @@ func TestPresetEmptyStateCreatesPreset(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Use the actual empty-state action so this exercises the editor callbacks.
+	// Use the actual empty-state action so this exercises the editor callbacks
 	click("create-preset")
 	if err := manager.TestType("presets-scroll:preset-name", "Arrival"); err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestPresetEmptyStateCreatesPreset(t *testing.T) {
 	if err := manager.TestType("presets-scroll:preset-trigger", "arrival"); err != nil {
 		t.Fatal(err)
 	}
-	// A fresh form starts with GPU as the service picker value.
+	// A fresh form starts with GPU as the service picker value
 	click("add-service")
 	click("save-preset")
 	presets := config.Get[[]config.Preset](draft, "presets")
@@ -148,7 +148,7 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		speed                float64
 		block                bool
 	}{
-		// Cover unknown speed, the exact limit, and both explicit bypasses.
+		// Cover unknown speed, the exact limit, and both explicit bypasses
 		{false, false, false, 0, true},
 		{true, false, false, 50, false},
 		{true, false, false, 51, true},
@@ -169,13 +169,13 @@ type menuChoices struct {
 	afterChoice func()
 }
 
-// Zero lets the session exercise its normal closed-menu sequence in tests.
+// Zero lets the session exercise its normal closed-menu sequence in tests
 func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Record only choices. Remote and open flag writes aren't part of this assertion.
+	// Record only choices Remote and open flag writes aren't part of this assertion
 	if name == gsx.MenuChoice {
 		m.selected = append(m.selected, int(value))
 		if m.afterChoice != nil {
@@ -184,7 +184,7 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 	}
 	return nil
 }
-func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture.
+func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, jobs: make(chan func(context.Context, *gsx.Session), 1), audioPriority: make(chan playback, 3)}
@@ -198,7 +198,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	session.ReadMenu = func() gsx.Menu { return current }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
-	// The displayed slot is stale by the time the queued selection runs.
+	// The displayed slot is stale by the time the queued selection runs
 	s.choose(0)
 	(<-s.jobs)(s.ctx, session)
 	if len(tr.selected) != 0 {
@@ -206,7 +206,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 
 	s.cfg.Put("enable_menu_matching", false)
-	// Text correction must fetch the current page even when broader matching is disabled.
+	// Text correction must fetch the current page even when broader matching is disabled
 	current = gsx.ParseMenu("Operators\nSwissport")
 	s.submit("Swissport")
 	(<-s.jobs)(s.ctx, session)
@@ -218,7 +218,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "turnaround", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()
-	// Cancel the outer job on the first choice to check that later services get their own deadline.
+	// Cancel the outer job on the first choice to check that later services get their own deadline
 	tr.afterChoice = cancel
 	s.submit("turnaround")
 	(<-s.jobs)(outer, session)
@@ -228,7 +228,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 }
 
 func TestMenuReadoutFormatting(t *testing.T) {
-	// Use actual panel labels to check number formatting and punctuation cleanup together.
+	// Use actual panel labels to check number formatting and punctuation cleanup together
 	options := gsx.ParseMenu("GSX\n1. Request de-icing\n2. Stand B-12")
 	want := "One: Request de icing. Two: Stand B 12."
 	if got := formatReadout(options.Options); got != want {
@@ -247,7 +247,7 @@ func TestLaterSuccessfulSaveAppliesBinding(t *testing.T) {
 	later := s.settingsDraft()
 	later.Put("gsx_hotfix_completed", true)
 	s.save(later, nil)
-	// A failed earlier write leaves the old PTT key active until the later save succeeds.
+	// A failed earlier write leaves the old PTT key active until the later save succeeds
 	s.finishSave(<-s.saves, errors.New("settings file busy"))
 	if captureKey.Load() != 'M' || !s.pttHeld {
 		t.Fatal("failed save changed the active binding")

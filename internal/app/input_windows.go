@@ -34,7 +34,7 @@ type keyboardMsg struct {
 }
 
 func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
-	// The message pump has to run on the thread that owns the keyboard hook.
+	// The message pump has to run on the thread that owns the keyboard hook
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	set := user.NewProc("SetWindowsHookExW")
@@ -43,7 +43,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	peek := user.NewProc("PeekMessageW")
 	get := user.NewProc("GetMessageW")
 	post := user.NewProc("PostThreadMessageW")
-	// The low-level hook receives keyboard transitions even when another window has focus.
+	// The low-level hook receives keyboard transitions even when another window has focus
 	callback := windows.NewCallback(func(code, wParam, lParam uintptr) uintptr {
 		if int32(code) >= 0 && lParam != 0 {
 			type lowLevelKey struct {
@@ -51,7 +51,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 				Info                   uintptr
 			}
 			key := (*lowLevelKey)(*(*unsafe.Pointer)(unsafe.Pointer(&lParam))).Key
-			// Forward only the active PTT key unless the rebinding dialog is listening for any key.
+			// Forward only the active PTT key unless the rebinding dialog is listening for any key
 			if key == captureKey.Load() || selectingKey.Load() {
 				switch wParam {
 				case 0x0100, 0x0104:
@@ -61,7 +61,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 				}
 			}
 		}
-		// Always pass the key onward so PTT doesn't swallow simulator input.
+		// Always pass the key onward so PTT doesn't swallow simulator input
 		out, _, _ := next.Call(0, code, wParam, lParam)
 		return out
 	})
@@ -70,7 +70,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 		return
 	}
 	var msg keyboardMsg
-	// Create the thread's message queue before cancellation can post WM_QUIT.
+	// Create the thread's message queue before cancellation can post WM_QUIT
 	_, _, _ = peek.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 0)
 	id := windows.GetCurrentThreadId()
 	handle, _, _ := set.Call(13, callback, uintptr(module), 0)
@@ -78,7 +78,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 		return
 	}
 	defer unhook.Call(handle)
-	// Wake GetMessage on cancellation so the hook can be removed on its owning thread.
+	// Wake GetMessage on cancellation so the hook can be removed on its owning thread
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x0012, 0, 0) }()
 	for {
 		result, _, _ := get.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
@@ -96,7 +96,7 @@ func bindingKey(b config.Binding) uint32 {
 	if json.Unmarshal(b.Value, &code) == nil {
 		return code
 	}
-	// Legacy settings store keys by name. New bindings store virtual key codes.
+	// Legacy settings store keys by name New bindings store virtual key codes
 	var name string
 	_ = json.Unmarshal(b.Value, &name)
 	name = strings.ToUpper(strings.TrimSpace(name))
@@ -112,13 +112,13 @@ func bindingKey(b config.Binding) uint32 {
 	return map[string]uint32{"SPACE": 0x20, "ENTER": 0x0d, "TAB": 0x09, "LEFT CTRL": 0xa2, "RIGHT CTRL": 0xa3, "LEFT SHIFT": 0xa0, "RIGHT SHIFT": 0xa1, "LEFT ALT": 0xa4, "RIGHT ALT": 0xa5}[name]
 }
 
-// Store the numeric Windows key code and keep a separate description for the UI.
+// Store the numeric Windows key code and keep a separate description for the UI
 func bindingForKey(key uint32) config.Binding {
 	name := fmt.Sprintf("VK %d", key)
 	if key >= 'A' && key <= 'Z' || key >= '0' && key <= '9' {
 		name = string(rune(key))
 	}
-	// VK_F1 through VK_F24 occupy one contiguous range.
+	// VK_F1 through VK_F24 occupy one contiguous range
 	if key >= 0x70 && key <= 0x87 {
 		name = fmt.Sprintf("F%d", key-0x6f)
 	}
@@ -141,11 +141,11 @@ func bindingForKey(key uint32) config.Binding {
 func (s *state) keyboardEvent(key uint32, down bool) {
 	s.async(func() {
 		if s.binding != nil {
-			// A release from the old binding still needs to stop any active recording.
+			// A release from the old binding still needs to stop any active recording
 			if !down && key == captureKey.Load() {
 				s.record(false)
 			}
-			// The rebind dialog treats Escape as cancel. Key-up never creates a binding.
+			// The rebind dialog treats Escape as cancel Key-up never creates a binding
 			if down {
 				if key == 0x1b {
 					s.binding(config.Binding{})
@@ -162,21 +162,21 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 }
 
 func (s *state) rebind(draft config.Values, parent *gui.Window) {
-	// Only one dialog can own the next keyboard or controller input.
+	// Only one dialog can own the next keyboard or controller input
 	if s.binding != nil {
 		return
 	}
 	var closeDialog func()
 	finished := false
 	finish := func(b config.Binding) {
-		// Both closing the dialog and capturing a key can call finish.
+		// Both closing the dialog and capturing a key can call finish
 		if finished {
 			return
 		}
 		finished = true
 		s.binding = nil
 		selectingKey.Store(false)
-		// A successful capture updates the Settings draft. Cancel keeps the old draft value.
+		// A successful capture updates the Settings draft Cancel keeps the old draft value
 		if b.Type != "" {
 			draft.Put("ptt_bind", b)
 		}
@@ -186,7 +186,7 @@ func (s *state) rebind(draft config.Values, parent *gui.Window) {
 		}
 	}
 	s.binding = finish
-	// Tell the global hook to forward unfamiliar keys until the dialog finishes.
+	// Tell the global hook to forward unfamiliar keys until the dialog finishes
 	selectingKey.Store(true)
 	closeDialog = s.dialog(gui.WindowCfg{Title: "Bind Push-To-Talk", Width: 380, Height: 185}, func() { finish(config.Binding{}) }, func(w *gui.Window) gui.View {
 		return page("bind", []gui.View{text("Bind Push-To-Talk", 18, ink)}, []gui.View{wrapped("Press a keyboard key or controller button. Press Escape to cancel.", 14, ink)}, []gui.View{spacer(), button("cancel-rebind", "Cancel", 0, false, false, func() { finish(config.Binding{}) })})
@@ -207,7 +207,7 @@ func (s *state) pollController(ctx context.Context) {
 	}
 	t := time.NewTicker(16 * time.Millisecond)
 	defer t.Stop()
-	// XInput exposes four slots. Keep a separate last button mask for each slot.
+	// XInput exposes four slots Keep a separate last button mask for each slot
 	var last [4]uint16
 	for {
 		select {
@@ -216,7 +216,7 @@ func (s *state) pollController(ctx context.Context) {
 		case <-t.C:
 		}
 		for i, prev := range last {
-			// A disconnected XInput slot starts with no buttons held.
+			// A disconnected XInput slot starts with no buttons held
 			var current xinputState
 			_, _, _ = proc.Call(uintptr(i), uintptr(unsafe.Pointer(&current)))
 			last[i] = current.buttons
@@ -225,7 +225,7 @@ func (s *state) pollController(ctx context.Context) {
 			}
 			for button := 0; button < 16; button++ {
 				bit := uint16(1) << button
-				// Emit edges so holding a controller button won't keep triggering capture.
+				// Emit edges so holding a controller button won't keep triggering capture
 				if (prev & bit) == (current.buttons & bit) {
 					continue
 				}
@@ -236,7 +236,7 @@ func (s *state) pollController(ctx context.Context) {
 						s.binding(config.Binding{Type: "joystick", JoyID: raw, JoyName: fmt.Sprintf("XInput Controller %d", i+1), JoyButton: &button, Description: fmt.Sprintf("XInput %d Button %d", i+1, button+1)})
 						return
 					}
-					// XInput bindings use a numeric slot ID. Raw Input bindings can carry a device path.
+					// XInput bindings use a numeric slot ID Raw Input bindings can carry a device path
 					b := config.Get[config.Binding](s.cfg, "ptt_bind")
 					var slot int
 					if b.Type == "joystick" && b.JoyButton != nil && json.Unmarshal(b.JoyID, &slot) == nil && slot == i && *b.JoyButton == button {
@@ -264,7 +264,7 @@ func windowByTitle(title string) uintptr {
 		}
 		var owner uint32
 		_, _, _ = getPID.Call(hwnd, uintptr(unsafe.Pointer(&owner)))
-		// Another process can have a window with the same caption.
+		// Another process can have a window with the same caption
 		if owner == pid {
 			return hwnd
 		}
@@ -273,12 +273,12 @@ func windowByTitle(title string) uintptr {
 
 func (s *state) setTopmost() {
 	if hwnd := windowByTitle("GSXComms"); hwnd != 0 {
-		// Win32 uses negative pseudo-handles for HWND_NOTOPMOST and HWND_TOPMOST.
+		// Win32 uses negative pseudo-handles for HWND_NOTOPMOST and HWND_TOPMOST
 		placement := ^uintptr(1)
 		if config.Get[bool](s.cfg, "topmost_active") {
 			placement = ^uintptr(0)
 		}
-		// Change z-order without moving, resizing, or activating the window.
+		// Change z-order without moving, resizing, or activating the window
 		_, _, _ = user.NewProc("SetWindowPos").Call(hwnd, placement, 0, 0, 0, 0, 0x0013)
 	}
 }

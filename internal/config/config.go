@@ -25,7 +25,7 @@ var defaultJSON []byte
 const SettingsFile = "user_settings.json"
 const legacySecret = "mistral_api_key"
 
-// Keep saved values in JSON form so settings can preserve unrecognized keys.
+// Keep saved values in JSON form so settings can preserve unrecognized keys
 type Values map[string]json.RawMessage
 
 type Preset struct {
@@ -35,7 +35,7 @@ type Preset struct {
 	Services []string `json:"services"`
 }
 
-// Legacy bindings can use strings for keys or device names. Current bindings carry native IDs.
+// Legacy bindings can use strings for keys or device names Current bindings carry native IDs
 type Binding struct {
 	Type        string          `json:"type"`
 	Value       json.RawMessage `json:"value,omitempty"`
@@ -47,7 +47,7 @@ type Binding struct {
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
 
-// Use the current user's cache area for settings and downloaded models.
+// Use the current user's cache area for settings and downloaded models
 func DataDir() (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
@@ -56,7 +56,7 @@ func DataDir() (string, error) {
 	return filepath.Join(dir, "GSXCommsGo"), nil
 }
 
-// Load the embedded defaults once. Callers edit copies.
+// Load the embedded defaults once Callers edit copies
 var defaults = func() Values {
 	var values Values
 	if err := json.Unmarshal(defaultJSON, &values); err != nil {
@@ -65,10 +65,10 @@ var defaults = func() Values {
 	return values
 }()
 
-// The shared defaults need to stay pristine across windows and imports.
+// The shared defaults need to stay pristine across windows and imports
 func Defaults() Values { return defaults.Copy() }
 
-// Clone the raw JSON bytes too so a background job gets an independent snapshot.
+// Clone the raw JSON bytes too so a background job gets an independent snapshot
 func (v Values) Copy() Values {
 	result := make(Values, len(v))
 	for key, raw := range v {
@@ -83,13 +83,13 @@ func Get[T any](v Values, key string) T {
 	if !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && json.Unmarshal(raw, &value) == nil {
 		return value
 	}
-	// A failed decode can leave partial state in value. Start fresh for the fallback.
+	// A failed decode can leave partial state in value Start fresh for the fallback
 	var fallback T
 	_ = json.Unmarshal(defaults[key], &fallback)
 	return fallback
 }
 
-// Runtime edits must keep the Voxtral key out of the settings map.
+// Runtime edits must keep the Voxtral key out of the settings map
 func (v Values) Put(key string, value any) {
 	if key == legacySecret {
 		return
@@ -104,7 +104,7 @@ func (v Values) Put(key string, value any) {
 func Load(dir string) (Values, error) {
 	path := filepath.Join(dir, SettingsFile)
 	data, err := os.ReadFile(path)
-	// A missing file is a normal first launch.
+	// A missing file is a normal first launch
 	if errors.Is(err, os.ErrNotExist) {
 		return Defaults(), nil
 	}
@@ -113,7 +113,7 @@ func Load(dir string) (Values, error) {
 	}
 	values, _, err := decode(data)
 	if err != nil {
-		// Keep the bad file around in case its settings can be recovered.
+		// Keep the bad file around in case its settings can be recovered
 		backup := fmt.Sprintf("%s.corrupt.%d", path, time.Now().UnixNano())
 		if renameErr := os.Rename(path, backup); renameErr != nil {
 			return Defaults(), errors.Join(err, renameErr)
@@ -122,7 +122,7 @@ func Load(dir string) (Values, error) {
 	}
 	var before Values
 	_ = json.Unmarshal(data, &before)
-	// Persist migration only when the effective contents changed.
+	// Persist migration only when the effective contents changed
 	if !equalValues(before, values) {
 		return values, Save(dir, values)
 	}
@@ -135,7 +135,7 @@ func equalValues(a, b Values) bool {
 	}
 	for key, value := range a {
 		var x, y bytes.Buffer
-		// Ignore JSON spacing so opening the app doesn't rewrite settings needlessly.
+		// Ignore JSON spacing so opening the app doesn't rewrite settings needlessly
 		if json.Compact(&x, value) != nil || json.Compact(&y, b[key]) != nil || !bytes.Equal(x.Bytes(), y.Bytes()) {
 			return false
 		}
@@ -148,20 +148,20 @@ func decode(data []byte) (Values, string, error) {
 	if err := json.Unmarshal(data, &saved); err != nil || saved == nil {
 		return nil, "", errors.New("expected a JSON settings object")
 	}
-	// Return an old key separately so callers can migrate it to Credential Manager.
+	// Return an old key separately so callers can migrate it to Credential Manager
 	key := Get[string](saved, legacySecret)
-	// Older settings can omit new keys and still carry user-defined values.
+	// Older settings can omit new keys and still carry user-defined values
 	values := Defaults()
 	for name, raw := range saved {
 		if name != legacySecret {
 			values[name] = raw
 		}
 	}
-	// Retired options and download flags have no meaning in the current app.
+	// Retired options and download flags have no meaning in the current app
 	for _, name := range []string{"use_gsx_choice", "menu_delay", "key_delay", "auto_choice_delay", "menu_hotkey", "require_sim_ptt", "first_launch", "model_downloaded_parakeet", "model_downloaded_orukeet", "model_downloaded_kokoro-82m-am-adam"} {
 		delete(values, name)
 	}
-	// A retired provider falls back to the bundled default selection.
+	// A retired provider falls back to the bundled default selection
 	if provider := Get[string](values, "speech_provider"); !slices.Contains([]string{"parakeet", "orukeet", "mistral"}, provider) {
 		values.Put("speech_provider", "parakeet")
 	}
@@ -169,7 +169,7 @@ func decode(data []byte) (Values, string, error) {
 	return values, key, nil
 }
 
-// The real importer uses Windows Credential Manager. Tests inject the vault operations.
+// The real importer uses Windows Credential Manager Tests inject the vault operations
 func Import(dir, source string) (Values, error) {
 	return importSettings(dir, source, SaveKey, migrateLegacyKey)
 }
@@ -186,7 +186,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	if destination != nil && !destination.IsDir() {
 		return nil, errors.New("app data path must be a directory")
 	}
-	// Different paths can point to the same directory.
+	// Different paths can point to the same directory
 	if destination != nil && os.SameFile(original, destination) {
 		return nil, errors.New("choose a legacy directory separate from the app data directory")
 	}
@@ -202,7 +202,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 		name string
 		data []byte
 	}
-	// Validate optional overrides before starting any destination writes.
+	// Validate optional overrides before starting any destination writes
 	var files []asset
 	for _, file := range []string{"words.json", assets.AccentMappingsFile} {
 		data, err := os.ReadFile(filepath.Join(source, file))
@@ -231,12 +231,12 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	}
 	files = append(files, asset{SettingsFile, settings})
 	if key == "" {
-		// A keyless import can still overwrite a destination holding a legacy key.
+		// A keyless import can still overwrite a destination holding a legacy key
 		if err := preserveSettingsCredential(filepath.Join(dir, SettingsFile), migrateKey); err != nil {
 			return nil, err
 		}
 	}
-	// A later file or vault failure must restore the earlier destination writes.
+	// A later file or vault failure must restore the earlier destination writes
 	var undo []func() error
 	rollback := func(err error) (Values, error) {
 		for i := len(undo) - 1; i >= 0; i-- {
@@ -253,7 +253,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 		if err := WriteAtomic(path, file.data); err != nil {
 			return rollback(err)
 		}
-		// Restore the old bytes or remove a file that didn't exist before the import.
+		// Restore the old bytes or remove a file that didn't exist before the import
 		undo = append(undo, func() error {
 			if readErr != nil {
 				return os.Remove(path)
@@ -261,7 +261,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 			return WriteAtomic(path, prior)
 		})
 	}
-	// Commit the imported credential last so a vault failure can still roll back the files.
+	// Commit the imported credential last so a vault failure can still roll back the files
 	if key != "" {
 		if err := storeKey(key); err != nil {
 			return rollback(err)
@@ -270,7 +270,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	return values, nil
 }
 
-// Strip the credential again at the serialization boundary.
+// Strip the credential again at the serialization boundary
 func settingsJSON(values Values) ([]byte, error) {
 	copy := values.Copy()
 	delete(copy, legacySecret)
@@ -278,7 +278,7 @@ func settingsJSON(values Values) ([]byte, error) {
 	return append(data, '\n'), err
 }
 
-// Normal saves migrate an old credential before replacing the settings file.
+// Normal saves migrate an old credential before replacing the settings file
 func Save(dir string, values Values) error {
 	return save(dir, values, migrateLegacyKey)
 }
@@ -289,14 +289,14 @@ func save(dir string, values Values, migrateKey func(string) error) error {
 		return err
 	}
 	path := filepath.Join(dir, SettingsFile)
-	// The old JSON may be the only copy of the Voxtral key.
+	// The old JSON may be the only copy of the Voxtral key
 	if err := preserveSettingsCredential(path, migrateKey); err != nil {
 		return err
 	}
 	return WriteAtomic(path, data)
 }
 
-// Read the destination before overwriting it in case it still holds an unmigrated key.
+// Read the destination before overwriting it in case it still holds an unmigrated key
 func preserveSettingsCredential(path string, migrateKey func(string) error) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -321,13 +321,13 @@ func WriteAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	// Stage beside the destination so replacement stays on the same volume.
+	// Stage beside the destination so replacement stays on the same volume
 	file, err := os.CreateTemp(dir, ".gsxcomms-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(file.Name())
-	// Flush and close the temporary file before replacing the destination.
+	// Flush and close the temporary file before replacing the destination
 	_, writeErr := file.Write(data)
 	err = errors.Join(writeErr, file.Sync(), file.Close())
 	if err != nil {
@@ -336,14 +336,14 @@ func WriteAtomic(path string, data []byte) error {
 	return Replace(file.Name(), path)
 }
 
-// Normalize labels and codewords while keeping the user's service order.
+// Normalize labels and codewords while keeping the user's service order
 func CleanPreset(p Preset) Preset {
 	p.Name = strings.Join(strings.Fields(p.Name), " ")
 	p.Codeword = strings.ToLower(strings.Join(strings.Fields(p.Codeword), " "))
 	services := make([]string, 0, len(p.Services))
 	for _, service := range p.Services {
 		service = strings.ToUpper(strings.TrimSpace(service))
-		// Ignore unknown services and preserve the first occurrence of duplicates.
+		// Ignore unknown services and preserve the first occurrence of duplicates
 		if slices.Contains(Services, service) && !slices.Contains(services, service) {
 			services = append(services, service)
 		}
@@ -363,7 +363,7 @@ func ValidatePreset(p Preset, entries []Preset, index int) (Preset, error) {
 		return p, errors.New("select at least one service")
 	}
 	for i, other := range entries {
-		// An edited preset can keep its own name and codeword.
+		// An edited preset can keep its own name and codeword
 		if i == index {
 			continue
 		}
@@ -383,14 +383,14 @@ func migratePresets(raw json.RawMessage) []Preset {
 	result := make([]Preset, 0, len(entries))
 	names, codewords := map[string]bool{}, map[string]bool{}
 	for _, entry := range entries {
-		// Omitted legacy enabled flags should leave those presets active.
+		// Omitted legacy enabled flags should leave those presets active
 		p := Preset{Enabled: true}
 		if json.Unmarshal(entry, &p) != nil {
 			continue
 		}
 		p = CleanPreset(p)
 		name := strings.ToLower(p.Name)
-		// Keep the first valid entry for each name and trigger in imported presets.
+		// Keep the first valid entry for each name and trigger in imported presets
 		if name == "" || p.Codeword == "" || names[name] || codewords[p.Codeword] {
 			continue
 		}

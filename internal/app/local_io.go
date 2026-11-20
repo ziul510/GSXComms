@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Queue a complete settings snapshot and a UI callback for the disk result.
+// Queue a complete settings snapshot and a UI callback for the disk result
 type saveRequest struct {
 	values config.Values
 	then   func(error)
@@ -27,31 +27,31 @@ type debugEvent struct {
 
 func (s *state) settingsWriter() {
 	defer close(s.saved)
-	// Write snapshots in order so a slower write can't replace a newer one.
+	// Write snapshots in order so a slower write can't replace a newer one
 	for req := range s.saves {
 		err := config.Save(s.dir, req.values)
-		// Apply settings on the window thread only after the writer returns.
+		// Apply settings on the window thread only after the writer returns
 		s.async(func() { s.finishSave(req, err) })
 	}
 }
 
 func (s *state) finishSave(req *saveRequest, err error) {
-	// An older completion must leave the newest queued draft available.
+	// An older completion must leave the newest queued draft available
 	if s.pendingSave == req {
 		s.pendingSave = nil
 	}
 	if err != nil {
 		s.log("ERR", "Could not save settings: "+err.Error())
 	} else {
-		// Side effects compare with the last saved settings, even if an earlier request failed.
+		// Side effects compare with the last saved settings, even if an earlier request failed
 		previous := s.cfg
 		s.cfg = req.values
 		if !bytes.Equal(previous["ptt_bind"], s.cfg["ptt_bind"]) {
-			// Stop recording before changing which key release the hook listens for.
+			// Stop recording before changing which key release the hook listens for
 			s.record(false)
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
 		}
-		// Enabling or disabling debug output needs an event even when no log text changed.
+		// Enabling or disabling debug output needs an event even when no log text changed
 		if config.Get[bool](previous, "debug_mode") != config.Get[bool](s.cfg, "debug_mode") {
 			s.debugLog(debugEvent{enabled: config.Get[bool](s.cfg, "debug_mode")})
 		}
@@ -62,7 +62,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 			s.setTopmost()
 		}
 	}
-	// Tell the originating dialog when it can close or show a write error.
+	// Tell the originating dialog when it can close or show a write error
 	if req.then != nil {
 		req.then(err)
 	}
@@ -71,7 +71,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 func (s *state) debugWriter() {
 	kernel := windows.NewLazySystemDLL("kernel32.dll")
 	newConsole, freeConsole := kernel.NewProc("AllocConsole"), kernel.NewProc("FreeConsole")
-	// The writer owns the file and native console for the active debug session.
+	// The writer owns the file and native console for the active debug session
 	var file, output *os.File
 	var size int64
 	closeDebug := func() {
@@ -86,7 +86,7 @@ func (s *state) debugWriter() {
 		}
 	}
 	defer closeDebug()
-	// Append to any existing log and count its old bytes toward rotation.
+	// Append to any existing log and count its old bytes toward rotation
 	openLog := func() error {
 		if err := os.MkdirAll(s.dir, 0700); err != nil {
 			return err
@@ -108,7 +108,7 @@ func (s *state) debugWriter() {
 		case <-s.ctx.Done():
 			return
 		case event := <-s.debug:
-			// Switching debug off closes both outputs until an enabled event arrives.
+			// Switching debug off closes both outputs until an enabled event arrives
 			if !event.enabled {
 				closeDebug()
 				continue
@@ -117,16 +117,16 @@ func (s *state) debugWriter() {
 				if err := openLog(); err != nil {
 					continue
 				}
-				// The GUI binary needs a console allocation before it can open CONOUT$.
+				// The GUI binary needs a console allocation before it can open CONOUT$
 				if ok, _, _ := newConsole.Call(); ok != 0 {
 					output, _ = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
 				}
 			}
-			// An enabled event with no text opens the debug output without writing a line.
+			// An enabled event with no text opens the debug output without writing a line
 			if event.line == "" {
 				continue
 			}
-			// Include the newline when deciding whether the next entry fits in the current log.
+			// Include the newline when deciding whether the next entry fits in the current log
 			if size+int64(len(event.line)+1) > 2_000_000 {
 				_ = file.Close()
 				file = nil
@@ -148,7 +148,7 @@ func (s *state) debugWriter() {
 
 func rotate(dir string) error {
 	path := filepath.Join(dir, "debug.log")
-	// Rotate oldest first so the next move can't overwrite an unshifted backup.
+	// Rotate oldest first so the next move can't overwrite an unshifted backup
 	for n := 2; n >= 0; n-- {
 		source := path
 		if n > 0 {
@@ -164,7 +164,7 @@ func rotate(dir string) error {
 
 func (s *state) debugLog(event debugEvent) {
 	select {
-	// The UI must keep running even when the debug writer can't keep up.
+	// The UI must keep running even when the debug writer can't keep up
 	case s.debug <- event:
 	default:
 	}

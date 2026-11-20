@@ -20,12 +20,12 @@ import (
 )
 
 func addCUDA(options *ort.SessionOptions) bool {
-	// Probe only the driver tool installed in the Windows system directory.
+	// Probe only the driver tool installed in the Windows system directory
 	dir, err := windows.GetSystemDirectory()
 	if err != nil {
 		return false
 	}
-	// A slow GPU probe would delay the worker handshake.
+	// A slow GPU probe would delay the worker handshake
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, filepath.Join(dir, "nvidia-smi.exe"), "--query-gpu=index,memory.free,utilization.gpu", "--format=csv,noheader,nounits")
@@ -46,11 +46,11 @@ func addCUDA(options *ort.SessionOptions) bool {
 		id, a := strconv.Atoi(strings.TrimSpace(row[0]))
 		memory, b := strconv.Atoi(strings.TrimSpace(row[1]))
 		util, c := strconv.Atoi(strings.TrimSpace(row[2]))
-		// Require 1 GiB free and skip busy cards because speech may share a GPU with MSFS.
+		// Require 1 GiB free and skip busy cards because speech may share a GPU with MSFS
 		if a != nil || b != nil || c != nil || id < 0 || memory < 1024 || util > 80 {
 			continue
 		}
-		// Prefer more free memory. Break ties with the current GPU load.
+		// Prefer more free memory Break ties with the current GPU load
 		if memory > free || (memory == free && util < load) {
 			device, free, load = id, memory, util
 		}
@@ -62,7 +62,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 	if err != nil {
 		return false
 	}
-	// SessionOptions keeps the configured provider after the temporary CUDA options are freed.
+	// SessionOptions keeps the configured provider after the temporary CUDA options are freed
 	defer cuda.Destroy()
 	return cuda.Update(map[string]string{"device_id": strconv.Itoa(device)}) == nil && options.AppendExecutionProviderCUDA(cuda) == nil
 }
