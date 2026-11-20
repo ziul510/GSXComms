@@ -6,7 +6,10 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +44,7 @@ func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
 	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), highlight: -1, jobs: make(chan func(context.Context, *gsx.Session))}
 	s.toggleConnect()
 	s.toggleMenu()
-	s.choose(0)
+	s.submit("one")
 	if s.busy || !s.overlay || s.highlight != -1 {
 		t.Fatalf("busy=%v overlay=%v highlight=%d", s.busy, s.overlay, s.highlight)
 	}
@@ -62,6 +65,36 @@ func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	}
 	if config.Get[bool](base, "accent_setup_complete") || config.Get[string](next, "input_device_name") == "Cockpit" {
 		t.Fatal("the merge modified an existing snapshot")
+	}
+}
+
+func TestMenuReaderDisablesImmediately(t *testing.T) {
+	const readKey = "read_gsx_menus_aloud_after_keyword"
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}
+	s.cfg.Put(readKey, true)
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.openSettings()
+	cfg := <-s.host.PendingOpen()
+	cfg.Height = 3200
+	settings := gui.NewTestWindow(t, cfg)
+	settings.TestRender(nil)
+	if err := settings.TestType("settings-scroll:menu-reader-keyword", "draft keyword"); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.TestClick("settings-scroll:" + readKey); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-s.saves:
+		if config.Get[bool](req.values, readKey) || config.Get[string](req.values, "gsx_menu_reader_keyword") == "draft keyword" {
+			t.Fatal("immediate save did not isolate the readout switch")
+		}
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("readout switch did not queue a save")
+	}
+	if config.Get[bool](s.cfg, readKey) {
+		t.Fatal("readout stayed enabled after saving")
 	}
 }
 
@@ -218,7 +251,7 @@ func (*menuChoices) Close() error { return nil } // There is no native simulator
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, speechReady: true,
-		menuWatch: true, services: make(map[string]bool), jobs: make(chan func(context.Context, *gsx.Session), 1), audioQueue: make(chan playback, 3)}
+		overlay: true, menuWatch: true, services: make(map[string]bool), jobs: make(chan func(context.Context, *gsx.Session), 1), audioQueue: make(chan playback, 3)}
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("auto_select_operator", false)
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
@@ -231,7 +264,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	// The displayed slot is stale by the time the queued selection runs
-	s.choose(0)
+	s.submit("one")
 	(<-s.jobs)(s.ctx, session)
 	if len(tr.selected) != 0 {
 		t.Fatal("selected a different item after the menu changed")
@@ -267,6 +300,41 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 }
 
+func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speedKnown: true, speed: 80,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put("read_gsx_menus_aloud_after_keyword", true)
+	s.cfg.Put("gsx_menu_reader_keyword", "read menu")
+	s.submit("read menu")
+	(<-s.jobs)(s.ctx, gsx.New(&menuChoices{}, t.TempDir()))
+	s.main.FrameFn()
+	log := strings.Join(s.lines, "\n")
+	if !strings.Contains(log, "Kokoro menu-reader model is unavailable") || strings.Contains(log, "Taxi speed") {
+		t.Fatalf("readout did not reach Kokoro: %s", log)
+	}
+}
+
+func TestNumberSelectionUsesNormalizedText(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "words.json"), []byte(`{"CUSTOM":{"keywords":["one"],"bias_variants":["won"]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	page := gsx.ParseMenu("Ramp\nJetway")
+	s := &state{dir: dir, cfg: config.Defaults(), ctx: t.Context(), menu: page, overlay: true, menuWatch: true,
+		speedKnown: true, speechReady: true, jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("won")
+	(<-s.jobs)(s.ctx, session)
+	if !slices.Equal(transport.selected, []int{0}) {
+		t.Fatalf("normalized number selected %v", transport.selected)
+	}
+}
+
 func TestMenuReadoutFormatting(t *testing.T) {
 	// Use actual panel labels to check number formatting and punctuation cleanup together
 	options := gsx.ParseMenu("GSX\n1. Request de-icing\n2. Stand B-12")
@@ -295,5 +363,30 @@ func TestLaterSuccessfulSaveAppliesBinding(t *testing.T) {
 	s.finishSave(<-s.saves, nil)
 	if captureKey.Load() != 'N' || s.pttHeld || !config.Get[bool](s.cfg, "gsx_hotfix_completed") {
 		t.Fatal("successful save left runtime settings stale")
+	}
+}
+
+func TestCapturedBindingSavesImmediately(t *testing.T) {
+	original, selecting := captureKey.Load(), selectingKey.Load()
+	t.Cleanup(func() { captureKey.Store(original); selectingKey.Store(selecting) })
+	captureKey.Store('M')
+	s := &state{cfg: config.Defaults(), ctx: t.Context(), host: gui.NewApp(), saves: make(chan *saveRequest, 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.rebind(s.main)
+	cfg := <-s.host.PendingOpen()
+	dialog := gui.NewTestWindow(t, cfg)
+	t.Cleanup(func() { cfg.OnCloseRequest(dialog) })
+	s.binding(bindingForKey('N'))
+	select {
+	case req := <-s.saves:
+		if dialog.CloseRequested() || captureKey.Load() != 'M' {
+			t.Fatal("binding changed before the write completed")
+		}
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("captured binding did not queue a save")
+	}
+	if !dialog.CloseRequested() || captureKey.Load() != 'N' || s.binding != nil {
+		t.Fatal("saved binding did not take effect and close the dialog")
 	}
 }

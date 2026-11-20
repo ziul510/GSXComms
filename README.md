@@ -2,9 +2,9 @@
 
 ## Install and start
 
-Extract the Windows x64 ZIP and run **GSXComms.exe** from the extracted folder. Keep the folders and runtime files together. Settings and downloaded models live in `%LOCALAPPDATA%\GSXCommsGo`.
+Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. GSXComms creates `user_settings.json` beside the executable on first launch. If a previous Go build stored settings in `%LOCALAPPDATA%\GSXCommsGo`, the app copies them on first launch. Downloaded models, voice packs, and runtime overrides use that AppData folder. `--data-dir` overrides both locations.
 
-The selected local speech model downloads and loads in the background at startup. **Settings** can retry a missing download or switch to an installed model. Enable the menu reader to download Kokoro. Choose **Set up Mistral** for the illustrated API key tutorial. After validating your key, choose **Save Changes** to activate Mistral. Windows Credential Manager stores the key. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
+The selected local speech model downloads and loads in the background at startup. **Settings** can retry a missing download or switch to an installed model. Enable the menu reader to download Kokoro. Choose **Set up Mistral** for the illustrated API key tutorial. Validating your key selects Mistral and stores the key in Windows Credential Manager. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
 
 On first launch, **Accent Setup** opens before the main window. Select at least one regional pack and a default accent, then save. Closing the wizard defers setup. You can reopen it from Settings. Deselected packs stay on disk for reuse. The recordings were generated with ElevenLabs. Crew voices use aircraft location and fall back to your default or another installed accent. **Force accent** applies to the next crew interaction.
 

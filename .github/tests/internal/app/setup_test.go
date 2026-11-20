@@ -20,7 +20,11 @@ import (
 
 func TestAccentSetupSavesPackSelection(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
-	s := &state{ctx: t.Context(), dir: t.TempDir(), accentsDir: "Accents", cfg: config.Defaults(), host: gui.NewApp(), saves: make(chan *saveRequest, 1)}
+	s := &state{ctx: t.Context(), dir: t.TempDir(), settingsDir: t.TempDir(), accentsDir: "Accents",
+		cfg: config.Defaults(), host: gui.NewApp(), saves: make(chan *saveRequest, 1), saved: make(chan struct{})}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	go s.settingsWriter()
+	t.Cleanup(func() { close(s.saves); <-s.saved })
 	s.openAccents()
 	w := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
@@ -36,24 +40,15 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			w.FrameFn()
-			select {
-			case request := <-s.saves:
-				if err := config.Save(s.dir, request.values); err != nil {
-					t.Fatal(err)
-				}
-				s.finishSave(request, nil)
-				w.FrameFn()
-				if !w.CloseRequested() {
-					t.Fatal("setup stayed open after a successful save")
-				}
-				saved, err := config.Load(s.dir)
+			s.main.FrameFn()
+			if w.CloseRequested() {
+				saved, err := config.Load(s.settingsDir)
 				if err != nil {
 					t.Fatal(err)
 				}
 				return saved
-			default:
-				time.Sleep(10 * time.Millisecond)
 			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		t.Fatal("accent setup never saved its selection")
 		return nil
@@ -70,8 +65,8 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 			t.Errorf("extracted packs do not match settings for %s", pack.name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("settings writer used the runtime data directory: %v", err)
 	}
 	s.openAccents()
 	w = gui.NewTestWindow(t, <-s.host.PendingOpen())
@@ -92,7 +87,8 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	complete := false
-	cfg := firstAccentWindow(t.Context(), dir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
+	settingsDir := t.TempDir()
+	cfg := firstAccentWindow(t.Context(), dir, settingsDir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
 		complete = config.Get[bool](prefs, "accent_setup_complete")
 	})
 	w := gui.NewTestWindow(t, cfg)
@@ -107,7 +103,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 		w.FrameFn()
 		time.Sleep(10 * time.Millisecond)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, config.SettingsFile))
+	data, err := os.ReadFile(filepath.Join(settingsDir, config.SettingsFile))
 	if err != nil {
 		t.Fatal(err)
 	}

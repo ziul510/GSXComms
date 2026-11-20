@@ -122,6 +122,7 @@ func init() {
 	}
 }
 
+// AccentCandidates preserves the legacy country-label preference before regional fallbacks.
 func AccentCandidates(pos Position, overrides map[string]string) []string {
 	name := strings.ToLower(mapping.Names[pos.Country])
 	return []string{

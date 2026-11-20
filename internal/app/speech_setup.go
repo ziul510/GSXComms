@@ -25,16 +25,18 @@ type localModelStatus struct {
 }
 
 type speechSetup struct {
-	local       map[string]localModelStatus
-	running     string
-	cancel      context.CancelFunc
-	step        int
-	key         string
-	showKey     bool
-	hasKey      bool
-	keyMessage  string
-	tutorialDir string
-	images      []tutorialImage
+	local          map[string]localModelStatus
+	running        string
+	cancel         context.CancelFunc
+	step           int
+	key            string
+	showKey        bool
+	hasKey         bool
+	keyMessage     string
+	providerError  string
+	savingProvider bool
+	tutorialDir    string
+	images         []tutorialImage
 }
 
 func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string, then func(error)) {
@@ -85,15 +87,33 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 	}()
 }
 
-func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values, id, label string) gui.View {
+// Persist the provider before advertising it as active or triggering model startup.
+func (setup *speechSetup) useProvider(s *state, w *gui.Window, provider string, onSaved func()) {
+	if setup.savingProvider {
+		return
+	}
+	setup.savingProvider, setup.providerError = true, ""
+	s.saveSetting("speech_provider", provider, func(err error) {
+		setup.savingProvider = false
+		if err != nil {
+			setup.providerError = "Could not select speech provider: " + err.Error()
+		} else if onSaved != nil {
+			onSaved()
+		}
+		if !w.CloseRequested() {
+			w.InvalidateLayout()
+		}
+	})
+}
+
+func (setup *speechSetup) localCard(s *state, w *gui.Window, id, label string) gui.View {
 	status := setup.local[id]
 	note := "Not downloaded"
 	if status.ready {
 		note = "Downloaded"
 	}
-	current := config.Get[string](draft, "speech_provider") == id
 	inUse := config.Get[string](s.cfg, "speech_provider") == id
-	busy := setup.running != "" || s.speechLoading == id
+	busy := setup.running != "" || setup.savingProvider || s.speechLoading == id
 	action := func(id, label string, primary, disabled bool, click func()) gui.View {
 		control := buttonConfig(id, label, 0, primary, disabled, click)
 		control.Height = 30
@@ -109,7 +129,7 @@ func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values
 	if id == other {
 		other = "orukeet"
 	}
-	if id != "kokoro" && status.cached && ((!status.ready) || (!current && !inUse && setup.local[other].ready)) {
+	if id != "kokoro" && status.cached && (!status.ready || (!inUse && setup.local[other].ready)) {
 		actions = append(actions, action("delete-"+id, "Delete", false, busy, func() {
 			setup.runLocal(s, w, id, "Deleting", nil)
 		}))
@@ -128,10 +148,12 @@ func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values
 		actions = append(actions, action("stop-download", "Cancel", false, false, setup.cancel))
 	}
 	heading := []gui.View{bold(label, 15, ink), spacer(), text(note, 13, muted)}
-	if current {
+	if inUse {
 		heading = append(heading, text("Active", 13, accent))
 	} else if id != "kokoro" && status.ready {
-		heading = append(heading, action("provider-"+id, "Use", true, false, func() { draft.Put("speech_provider", id) }))
+		heading = append(heading, action("provider-"+id, "Use", true, busy, func() {
+			setup.useProvider(s, w, id, nil)
+		}))
 	}
 	if s.speechLoading == id {
 		note = s.speechStatus
@@ -168,14 +190,15 @@ type tutorialImage struct {
 	width, height float32
 }
 
-func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
+func (setup *speechSetup) mistralCard(s *state) gui.View {
 	heading := []gui.View{bold("Mistral · Voxtral Small", 15, ink)}
-	if config.Get[string](draft, "speech_provider") == "mistral" {
+	if config.Get[string](s.cfg, "speech_provider") == "mistral" {
 		heading = append(heading, text("Active", 13, accent))
 	}
 	heading = append(heading, spacer(), bold("Set up", 14, accent))
 	open := func() {
 		setup.step = 1
+		setup.providerError = ""
 		s.settingUpMistral = true
 		// Read image dimensions once so screenshots can scale without distorting
 		if setup.images == nil {
@@ -194,7 +217,7 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 			}
 		}
 	}
-	control := buttonConfig("provider-mistral", "Set up Mistral", 0, false, false, open)
+	control := buttonConfig("provider-mistral", "Set up Mistral", 0, false, setup.savingProvider, open)
 	control.Sizing, control.Height = gui.FillFit, 0
 	control.Padding, control.SizeBorder = gui.PadVH(8, 10), gui.BorderPx(1)
 	control.Colors.Border, control.Colors.BorderFocus = elevated, accent
@@ -210,13 +233,14 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 	return gui.Button(control)
 }
 
-func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Values) gui.View {
+func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 	header := []gui.View{bold("Set up Mistral", 20, ink)}
 	leave := func() {
 		setup.step, setup.key, setup.keyMessage, setup.showKey = 0, "", "", false
 		s.settingUpMistral = false
 	}
-	back := button("mistral-back", "Back to Settings", 0, false, s.savingKey, leave)
+	busy := s.savingKey || setup.savingProvider
+	back := button("mistral-back", "Back to Settings", 0, false, busy, leave)
 	if setup.step <= len(mistralSteps) {
 		i := setup.step - 1
 		header = append(header, wrapped(fmt.Sprintf("Step %d of %d", setup.step, len(mistralSteps)), 13, muted))
@@ -254,20 +278,26 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 		})
 	}
 	useMistral := func() {
-		draft.Put("speech_provider", "mistral")
-		leave()
+		setup.keyMessage = "Saving speech provider…"
+		setup.useProvider(s, w, "mistral", func() {
+			// Recheck a previously selected provider when the user supplies its missing key.
+			if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
+				s.prepareSpeech(false)
+			}
+			leave()
+		})
 	}
 	body := []gui.View{
 		bold("Voice privacy", 16, ink), wrapped(mistralWarning, 14, orange),
 		wrapped("Paste your key below. Windows Credential Manager stores it after validation.", 14, muted),
-		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: !setup.showKey, Disabled: s.savingKey,
+		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: !setup.showKey, Disabled: busy,
 			OnTextChanged: func(v string, _ gui.EventCtx) { setup.key = v; w.InvalidateLayout() }}),
 		toggleControl("show-mistral-key", "Show API key", setup.showKey, func(ctx gui.EventCtx) {
 			setup.showKey = !setup.showKey
 			ctx.Consume()
 			w.InvalidateLayout()
 		}),
-		button("save-key", "Validate key and select Mistral", 0, true, s.savingKey || strings.TrimSpace(setup.key) == "", func() {
+		button("save-key", "Validate key and select Mistral", 0, true, busy || strings.TrimSpace(setup.key) == "", func() {
 			token := strings.TrimSpace(setup.key)
 			setup.key, setup.keyMessage, s.savingKey = "", "Validating key…", true
 			go func() {
@@ -283,9 +313,6 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 						setup.keyMessage = err.Error()
 					} else {
 						setup.hasKey = true
-						if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
-							s.prepareSpeech(false)
-						}
 						if setup.step > 0 {
 							useMistral()
 						}
@@ -296,12 +323,14 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Valu
 		}),
 	}
 	if setup.hasKey {
-		body = append(body, button("use-saved-key", "Select Mistral with saved key", 0, false, s.savingKey, useMistral))
+		body = append(body, button("use-saved-key", "Select Mistral with saved key", 0, false, busy, useMistral))
 	}
-	if setup.keyMessage != "" {
+	if setup.providerError != "" {
+		body = append(body, wrapped(setup.providerError, 13, red))
+	} else if setup.keyMessage != "" {
 		body = append(body, wrapped(setup.keyMessage, 13, muted))
 	}
 	return page("mistral-key", header, body, []gui.View{back, spacer(),
-		button("mistral-last-step", "Previous", 0, false, s.savingKey, func() { setup.step--; setup.key = ""; setup.keyMessage = "" }),
+		button("mistral-last-step", "Previous", 0, false, busy, func() { setup.step--; setup.key = ""; setup.keyMessage = "" }),
 	})
 }

@@ -120,6 +120,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(12), 6, check, wrapped(details, 13, muted))))
 		}
 		slices.Sort(options)
+		// If the selected packs exclude the old default, offer the first available accent.
 		defaultAccent := fallback
 		if len(options) > 0 {
 			if !slices.Contains(options, defaultAccent) {
@@ -177,6 +178,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 						}
 						saving, message = true, "Saving selection…"
 						w.InvalidateLayout()
+						// The first-run writer and Settings writer finish on different goroutines.
 						save(enabled, defaultAccent, func(err error) {
 							w.QueueCommand(func(w *gui.Window) {
 								if !w.CloseRequested() && ctx.Err() == nil {
@@ -273,6 +275,7 @@ func (s *state) regionalCue(next playback) ([]byte, int) {
 	}
 	names = append(names, geo.AccentCandidates(pos, geo.Overrides(s.dir))...)
 	names = append(names, fallback)
+	// Resolve a real clip, since a configured accent can belong to a disabled or missing pack.
 	installed := slices.Clone(accents)
 	slices.Sort(installed)
 	names = append(names, installed...)

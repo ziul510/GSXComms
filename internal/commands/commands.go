@@ -257,7 +257,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 	}
 }
 
-// GSX uses built-in aliases as a fallback when custom service terms miss
+// Normalize common compounds before matching commands or menu options.
 var (
 	deice    = regexp.MustCompile(`\b(de|anti)[\s_-]+ic`)
 	pushback = regexp.MustCompile(`\bpush[\s_-]+back\b`)

@@ -22,6 +22,7 @@ func accentPackInstalled(dir, name string) bool {
 	return err == nil && info.IsDir()
 }
 
+// Legacy archives can be unpacked by pack or flattened under Extracted.
 func legacyAccentPack(name string, accents []string, roots ...string) bool {
 	for _, root := range roots {
 		if root == "" {

@@ -13,6 +13,14 @@ import (
 )
 
 func Replace(source, destination string) error {
+	return moveFile(source, destination, windows.MOVEFILE_REPLACE_EXISTING)
+}
+
+func moveNew(source, destination string) error {
+	return moveFile(source, destination, 0)
+}
+
+func moveFile(source, destination string, flags uint32) error {
 	from, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err
@@ -21,8 +29,8 @@ func Replace(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	// Replace the existing path in one operation and ask Windows to flush the move
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	// Flush the same-volume move before reporting success.
+	return windows.MoveFileEx(from, to, flags|windows.MOVEFILE_WRITE_THROUGH)
 }
 
 var (

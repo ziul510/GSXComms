@@ -25,11 +25,18 @@ type debugEvent struct {
 	line    string
 }
 
+// Apply one control immediately without saving unrelated edits still open in Settings.
+func (s *state) saveSetting(key string, value any, then func(error)) {
+	next := s.settingsDraft()
+	next.Put(key, value)
+	s.save(next, then)
+}
+
 func (s *state) settingsWriter() {
 	defer close(s.saved)
 	// Write snapshots in order so a slower write can't replace a newer one
 	for req := range s.saves {
-		err := config.Save(s.dir, req.values)
+		err := config.Save(s.settingsDir, req.values)
 		// Apply settings on the window thread only after the writer returns
 		s.async(func() { s.finishSave(req, err) })
 	}

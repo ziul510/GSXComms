@@ -14,26 +14,34 @@ import (
 )
 
 func main() {
-	dir, _ := config.DataDir()
-	flag.StringVar(&dir, "data-dir", dir, "directory for GSXComms settings")
+	override := flag.String("data-dir", "", "override the settings and runtime data directories")
 	importDir := flag.String("import", "", "import settings from a GSXCommsFiles directory")
 	flag.Parse()
-	if dir == "" {
-		fmt.Fprintln(os.Stderr, "GSXComms data directory is unavailable")
-		os.Exit(1)
-	}
-	// The speech and mute workers require absolute paths
-	dir, err := filepath.Abs(dir)
+	dir, settingsDir, err := appDirectories(*override)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Invalid GSXComms data directory:", err)
+		fmt.Fprintln(os.Stderr, "GSXComms directories are unavailable:", err)
 		os.Exit(1)
 	}
-	// Finish migration before the UI loads its settings
 	if *importDir != "" {
-		if _, err := config.Import(dir, *importDir); err != nil {
+		if _, err := config.Import(settingsDir, dir, *importDir); err != nil {
 			fmt.Fprintln(os.Stderr, "Import failed:", err)
 			os.Exit(1)
 		}
 	}
-	app.Run(dir)
+	app.Run(dir, settingsDir)
+}
+
+func appDirectories(override string) (data, settings string, err error) {
+	// An explicit override keeps test and developer runs isolated.
+	if override != "" {
+		dir, err := filepath.Abs(override)
+		return dir, dir, err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", "", err
+	}
+	data, err = config.DataDir()
+	// Use the executable path because shortcuts can change the working directory.
+	return data, filepath.Dir(exe), err
 }

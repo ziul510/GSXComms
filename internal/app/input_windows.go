@@ -181,42 +181,81 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 	})
 }
 
-func (s *state) rebind(draft config.Values, parent *gui.Window) {
+func (s *state) rebind(parent *gui.Window) {
 	// Only one dialog can own the next keyboard or controller input
 	if s.binding != nil {
 		return
 	}
 	var closeDialog func()
 	var timeout *time.Timer
-	finished := false
+	var window *gui.Window
+	var closed, saving bool
+	var message string
 	finish := func(b config.Binding) {
-		// Both closing the dialog and capturing a key can call finish
-		if finished {
+		if closed {
 			return
 		}
-		finished = true
+		if b.Type == "" {
+			closeDialog()
+			return
+		}
+		if saving {
+			return
+		}
+		saving, message = true, "Saving binding…"
 		if timeout != nil {
 			timeout.Stop()
 		}
-		s.binding = nil
 		selectingKey.Store(false)
-		// A successful capture updates the Settings draft Cancel keeps the old draft value
-		if b.Type != "" {
-			draft.Put("ptt_bind", b)
+		if window != nil {
+			window.InvalidateLayout()
 		}
-		parent.InvalidateLayout()
-		if closeDialog != nil {
-			closeDialog()
-		}
+		// The live binding changes only after the settings writer confirms the save.
+		s.saveSetting("ptt_bind", b, func(err error) {
+			if closed {
+				return
+			}
+			if err == nil {
+				closeDialog()
+				return
+			}
+			saving, message = false, "Could not save binding. Press a key or button to retry."
+			selectingKey.Store(true)
+			timeout.Reset(15 * time.Second)
+			if window != nil {
+				window.InvalidateLayout()
+			}
+		})
 	}
 	s.binding = finish
 	// Tell the global hook to forward unfamiliar keys until the dialog finishes
 	selectingKey.Store(true)
-	closeDialog = s.dialog(gui.WindowCfg{Title: "Bind Push-To-Talk", Width: 380, Height: 185}, func() { finish(config.Binding{}) }, func(w *gui.Window) gui.View {
-		return page("bind", []gui.View{text("Bind Push-To-Talk", 18, ink)}, []gui.View{wrapped("Press a keyboard key or controller button. Press Escape to cancel.", 14, ink)}, []gui.View{spacer(), button("cancel-rebind", "Cancel", 0, false, false, func() { finish(config.Binding{}) })})
+	closeDialog = s.dialog(gui.WindowCfg{Title: "Bind Push-To-Talk", Width: 380, Height: 220}, func() {
+		closed = true
+		s.binding = nil
+		selectingKey.Store(false)
+		if timeout != nil {
+			timeout.Stop()
+		}
+		if !parent.CloseRequested() {
+			parent.InvalidateLayout()
+		}
+	}, func(w *gui.Window) gui.View {
+		window = w
+		body := []gui.View{wrapped("Press a keyboard key or controller button. Press Escape to cancel.", 14, ink)}
+		if message != "" {
+			body = append(body, wrapped(message, 13, muted))
+		}
+		return page("bind", []gui.View{text("Bind Push-To-Talk", 18, ink)}, body, []gui.View{
+			spacer(), button("cancel-rebind", "Cancel", 0, false, saving, closeDialog),
+		})
 	})
 	timeout = time.AfterFunc(15*time.Second, func() {
-		s.async(func() { finish(config.Binding{}) })
+		s.async(func() {
+			if !saving {
+				finish(config.Binding{})
+			}
+		})
 	})
 }
 

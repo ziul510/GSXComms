@@ -56,6 +56,7 @@ go build -trimpath -o 'build/gsxremotecontrol.exe' ./cmd/gsxremotecontrol
 if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
 go build -trimpath -o 'build/gsxmute.exe' ./cmd/gsxmute
 if ($LASTEXITCODE -ne 0) { throw 'GSX mute watchdog build failed' }
+# Link the C runtime into the helper so the ZIP needs no separate redistributable.
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
 cargo +1.98.0 build --locked --release --manifest-path cmd/gsxsimconnect/Cargo.toml --target x86_64-pc-windows-msvc --target-dir build/rust
 if ($LASTEXITCODE -ne 0) { throw 'SimConnect helper build failed' }

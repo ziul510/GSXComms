@@ -310,6 +310,7 @@ func (s *Session) Choose(ctx context.Context, index int) error {
 	return s.choose(ctx, s.ReadMenu(), index)
 }
 
+// ChooseOn checks the page again because a GSX slot can change while a command waits.
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
 	if !page.Same(s.ReadMenu()) || index < 0 || index >= len(page.Options) {
 		return errors.New("GSX menu changed before selection")
@@ -331,6 +332,7 @@ func (s *Session) choose(ctx context.Context, page Menu, index int) error {
 	return s.Sleep(ctx, 300*time.Millisecond)
 }
 
+// OpenMenuPage makes a second request if Couatl accepted the open but never supplied choices.
 func (s *Session) OpenMenuPage(ctx context.Context) (Menu, error) {
 	var menu Menu
 	var err error

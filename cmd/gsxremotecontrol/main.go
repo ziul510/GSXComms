@@ -33,10 +33,32 @@ func main() {
 	console(ctx, session)
 }
 
-// Leave the current transport in place until the health loop closes it
+// Leave the current transport in place until the health loop closes it.
 func connect(ctx context.Context, s *gsx.Session) {
 	if !s.Connected() {
 		s.Sim, _ = gsx.Connect(ctx)
+	}
+}
+
+// Both console modes must drop dead transports before connect can try again.
+func pollConnection(ctx context.Context, s *gsx.Session, dial func(context.Context, *gsx.Session), failures *int) {
+	if !s.Connected() {
+		dial(ctx, s)
+		*failures = 0
+		return
+	}
+	health, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, _, err := s.Status(health)
+	// A missing speed value can occur while SimConnect is still healthy.
+	if err == nil || errors.Is(err, gsx.ErrSpeedUnavailable) {
+		*failures = 0
+		return
+	}
+	*failures = *failures + 1
+	if errors.Is(err, gsx.ErrDisconnected) || *failures >= 3 {
+		_ = s.Close()
+		*failures = 0
 	}
 }
 
@@ -72,20 +94,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			if s.RemoteActive() && time.Since(last) >= 10*time.Second {
 				_ = s.Release(ctx)
 			}
-			connect(ctx, s)
-			if !s.Connected() {
-				continue
-			}
-			if _, _, err := s.Status(ctx); err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
-				healthFailures++
-				// Allow transient failures before closing the transport The next tick will reconnect
-				if healthFailures >= 3 {
-					_ = s.Close()
-					healthFailures = 0
-				}
-			} else {
-				healthFailures = 0
-			}
+			pollConnection(ctx, s, connect, &healthFailures)
 		case line, ok := <-lines:
 			if !ok {
 				return
@@ -99,10 +108,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 				msg(map[string]any{"status": "ok", "connected": s.Connected()})
 			// Report success only after choices arrive in the panel file
 			case line == "OPEN_MENU":
-				err := s.Open(ctx)
-				if err == nil {
-					_, err = s.WaitMenu(ctx)
-				}
+				_, err := s.OpenMenuPage(ctx)
 				msg(map[string]any{"status": "ok", "menu_opened": err == nil})
 			case line == "CLOSE_MENU":
 				msg(map[string]any{"status": "ok", "menu_closed": s.Release(ctx) == nil})
@@ -140,17 +146,17 @@ func console(ctx context.Context, s *gsx.Session) {
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	var frame string
-	var last, nextConnect time.Time
-	active := false
+	var last, nextPoll time.Time
+	healthFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		if time.Now().After(nextConnect) && !s.Connected() {
-			connect(ctx, s)
-			nextConnect = time.Now().Add(time.Second)
+		if time.Now().After(nextPoll) {
+			pollConnection(ctx, s, connect, &healthFailures)
+			nextPoll = time.Now().Add(time.Second)
 		}
 		for key, _, _ := hit.Call(); key != 0; key, _, _ = hit.Call() {
 			k, _, _ := read.Call()
@@ -162,7 +168,6 @@ func console(ctx context.Context, s *gsx.Session) {
 			case k == 0 || k == 224:
 				_, _, _ = read.Call()
 			case k == 'm' || k == 'M':
-				active = true
 				_ = s.Toggle(ctx)
 			case k == '0':
 				_ = s.Release(ctx)
@@ -172,12 +177,11 @@ func console(ctx context.Context, s *gsx.Session) {
 			}
 		}
 		next := ""
-		// Hand the menu back five seconds after the last console key
-		if active && time.Since(last) >= 5*time.Second {
-			active = false
+		// Use ownership to clear stale rows after an idle release or disconnect.
+		if s.RemoteActive() && time.Since(last) >= 5*time.Second {
 			_ = s.Release(ctx)
 		}
-		if active {
+		if s.RemoteActive() {
 			var b strings.Builder
 			for i, op := range s.ReadMenu().Options {
 				fmt.Fprintf(&b, "%d. %s\n", i+1, op)

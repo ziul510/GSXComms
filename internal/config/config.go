@@ -47,13 +47,57 @@ type Binding struct {
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
 
-// Use the current user's cache area for settings and downloaded models
+// DataDir holds shared runtime data, including downloaded models and voice packs.
 func DataDir() (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "GSXCommsGo"), nil
+}
+
+// InitializeSettings creates the portable file before Accent Setup can write it.
+// The previous settings file stays intact and is consulted only when the portable file is absent.
+func InitializeSettings(dir, previousDir string) error {
+	return initializeSettings(dir, previousDir, migrateLegacyKey)
+}
+
+func initializeSettings(dir, previousDir string, migrateKey func(string) error) error {
+	path := filepath.Join(dir, SettingsFile)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	values := Defaults()
+	var previousErr error
+	raw, err := os.ReadFile(filepath.Join(previousDir, SettingsFile))
+	if err == nil {
+		prior, key, decodeErr := decode(raw)
+		if decodeErr != nil {
+			previousErr = fmt.Errorf("could not read previous settings: %w", decodeErr)
+		} else {
+			values = prior
+			if key != "" {
+				if err := migrateKey(key); err != nil {
+					return fmt.Errorf("could not migrate Voxtral credential: %w", err)
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		previousErr = fmt.Errorf("could not read previous settings: %w", err)
+	}
+	data, err := settingsJSON(values)
+	if err != nil {
+		return err
+	}
+	// Publish only if another instance has not already created the file.
+	err = writeAtomic(path, data, moveNew)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		err = fmt.Errorf("could not create settings file %s: %w", path, err)
+	}
+	return errors.Join(previousErr, err)
 }
 
 // Load the embedded defaults once Callers edit copies
@@ -175,26 +219,26 @@ func decode(data []byte) (Values, string, error) {
 	return values, key, nil
 }
 
-// The real importer uses Windows Credential Manager Tests inject the vault operations
-func Import(dir, source string) (Values, error) {
-	return importSettings(dir, source, SaveKey, migrateLegacyKey)
+// Import keeps the settings file portable while placing vocabulary overrides in the data directory.
+func Import(settingsDir, dataDir, source string) (Values, error) {
+	return importSettings(settingsDir, dataDir, source, SaveKey, migrateLegacyKey)
 }
 
-func importSettings(dir, source string, storeKey, migrateKey func(string) error) (Values, error) {
+func importSettings(settingsDir, dataDir, source string, storeKey, migrateKey func(string) error) (Values, error) {
 	original, err := os.Stat(source)
 	if err != nil {
 		return nil, err
 	}
-	destination, err := os.Stat(dir)
+	destination, err := os.Stat(settingsDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	if destination != nil && !destination.IsDir() {
-		return nil, errors.New("app data path must be a directory")
+		return nil, errors.New("settings path must be a directory")
 	}
 	// Different paths can point to the same directory
 	if destination != nil && os.SameFile(original, destination) {
-		return nil, errors.New("choose a legacy directory separate from the app data directory")
+		return nil, errors.New("choose a legacy directory separate from the settings directory")
 	}
 	data, err := os.ReadFile(filepath.Join(source, SettingsFile))
 	if err != nil {
@@ -211,11 +255,14 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 		}
 	}
 	type asset struct {
-		name string
+		path string
 		data []byte
 	}
 	// Validate optional overrides before starting any destination writes
 	var files []asset
+	dataInfo, statErr := os.Stat(dataDir)
+	// Importing the old Go data directory already has its overrides in the right place.
+	copyOverrides := statErr != nil || !os.SameFile(original, dataInfo)
 	for _, file := range []string{"words.json", assets.AccentMappingsFile} {
 		data, err := os.ReadFile(filepath.Join(source, file))
 		if errors.Is(err, os.ErrNotExist) {
@@ -235,16 +282,23 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 		if !valid {
 			return nil, fmt.Errorf("invalid %s", file)
 		}
-		files = append(files, asset{file, data})
+		if copyOverrides {
+			files = append(files, asset{filepath.Join(dataDir, file), data})
+		}
 	}
 	settings, err := settingsJSON(values)
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, asset{SettingsFile, settings})
+	settingsPath := filepath.Join(settingsDir, SettingsFile)
+	files = append(files, asset{settingsPath, settings})
 	if key == "" {
-		// A keyless import can still overwrite a destination holding a legacy key
-		if err := preserveSettingsCredential(filepath.Join(dir, SettingsFile), migrateKey); err != nil {
+		// An import on first launch can bypass ordinary migration from AppData.
+		credentialPath := settingsPath
+		if _, err := os.Stat(settingsPath); errors.Is(err, os.ErrNotExist) {
+			credentialPath = filepath.Join(dataDir, SettingsFile)
+		}
+		if err := preserveSettingsCredential(credentialPath, migrateKey); err != nil {
 			return nil, err
 		}
 	}
@@ -257,7 +311,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 		return nil, err
 	}
 	for _, file := range files {
-		path := filepath.Join(dir, file.name)
+		path := file.path
 		prior, readErr := os.ReadFile(path)
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 			return rollback(readErr)
@@ -329,6 +383,10 @@ func preserveSettingsCredential(path string, migrateKey func(string) error) erro
 }
 
 func WriteAtomic(path string, data []byte) error {
+	return writeAtomic(path, data, Replace)
+}
+
+func writeAtomic(path string, data []byte, publish func(string, string) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -345,7 +403,7 @@ func WriteAtomic(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return Replace(file.Name(), path)
+	return publish(file.Name(), path)
 }
 
 // Normalize labels and codewords while keeping the user's service order

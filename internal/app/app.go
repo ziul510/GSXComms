@@ -69,6 +69,7 @@ type state struct {
 	speechAttempted                                  map[string]bool
 	speechChanged                                    func(string)
 	dir                                              string
+	settingsDir                                      string
 	cfg                                              config.Values
 	host                                             *gui.App
 	main                                             *gui.Window
@@ -98,9 +99,9 @@ type state struct {
 	hidPaths                                         map[string][]string
 }
 
-func Run(dir string) {
-	// Load the effective settings even if migration returned an error to report
-	settings, err := config.Load(dir)
+func Run(dir, settingsDir string) {
+	initErr := config.InitializeSettings(settingsDir, dir)
+	settings, err := config.Load(settingsDir)
 	icon, _ := assets.Files.ReadFile("app.png")
 	archives := assetDir("Accents")
 	theme := gui.ThemeDark
@@ -109,11 +110,12 @@ func Run(dir string) {
 	theme.ColorAccent = accent
 	gui.SetTheme(theme)
 	if !config.Get[bool](settings, "accent_setup_complete") {
-		settings = runFirstAccentSetup(dir, archives, settings, icon)
+		settings = runFirstAccentSetup(dir, settingsDir, archives, settings, icon)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
+	s.settingsDir = settingsDir
 	s.accentsDir = archives
 	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
 	s.services = make(map[string]bool)
@@ -137,6 +139,9 @@ func Run(dir string) {
 	go s.settingsWriter()
 	go s.debugWriter()
 	s.log("SYS", "Standby for sim connection")
+	if initErr != nil {
+		s.log("ERR", initErr.Error())
+	}
 	if err != nil {
 		s.log("SYS", err.Error())
 	}
@@ -193,10 +198,10 @@ func Run(dir string) {
 	}
 }
 
-func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte) config.Values {
+func runFirstAccentSetup(dir, settingsDir, archives string, prefs config.Values, icon []byte) config.Values {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := firstAccentWindow(ctx, dir, archives, prefs, func(saved config.Values) {
+	cfg := firstAccentWindow(ctx, dir, settingsDir, archives, prefs, func(saved config.Values) {
 		prefs = saved
 	})
 	cfg.IconPNG = icon
@@ -204,12 +209,12 @@ func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte)
 	return prefs
 }
 
-func firstAccentWindow(ctx context.Context, dir, archives string, prefs config.Values, onSaved func(config.Values)) gui.WindowCfg {
+func firstAccentWindow(ctx context.Context, dir, settingsDir, archives string, prefs config.Values, onSaved func(config.Values)) gui.WindowCfg {
 	recordings := filepath.Join(dir, "Accents")
 	var saved config.Values
 	view := accentSetupView(ctx, archives, recordings, prefs, func(enabled []string, fallback string, then func(error)) {
 		saved = accentPreferences(prefs.Copy(), enabled, fallback)
-		go func() { then(config.Save(dir, saved)) }()
+		go func() { then(config.Save(settingsDir, saved)) }()
 	}, func(w *gui.Window) {
 		onSaved(saved)
 		w.Close()
@@ -328,6 +333,7 @@ func (s *state) addJob(action func(context.Context, *gsx.Session)) bool {
 	}
 }
 
+// The simulator loop owns GSX remote control, overlay monitoring, and inferred service state.
 func (s *state) simulator() {
 	defer close(s.done)
 	// Keep polling and commands on one goroutine since they share the dispatch queue
@@ -417,6 +423,7 @@ func (s *state) simulator() {
 				high = above
 			}
 			if recovered || descended {
+				// The next ground interaction starts with fresh service state and local voices.
 				clear(s.services)
 				lastGeoPoll = time.Time{}
 				s.location.Store(nil)
@@ -426,6 +433,7 @@ func (s *state) simulator() {
 				})
 			}
 			interval, movement := 5*time.Second, 0.001
+			// A local crew changes less often in flight than it does while taxiing.
 			if altitude > 3000 || speed > 80 {
 				interval, movement = 30*time.Second, 0.02
 			}
@@ -471,6 +479,7 @@ func (s *state) simulator() {
 				s.speedKnown = err == nil
 				s.speed = speed
 				if s.overlay && len(menu.Options) > 0 {
+					// Keep the last usable page while GSX releases control or rewrites the menu.
 					s.menu = menu
 				}
 			})
@@ -478,6 +487,7 @@ func (s *state) simulator() {
 	}
 }
 
+// Manual and automatic attempts share the same cooldown.
 func (s *state) retryConnection() {
 	if config.Get[bool](s.cfg, "auto_connect_sim") && time.Since(s.lastConnect) >= 15*time.Second {
 		s.toggleConnect()
@@ -545,41 +555,41 @@ func (s *state) toggleMenu() {
 	}
 }
 
-func (s *state) choose(index int) {
-	if index < 0 || index >= len(s.menu.Options) {
-		s.log("SYS", fmt.Sprintf("GSX menu has no item %d", index+1))
-		s.cue(s.cfg.Copy(), "error", "", true)
+// selectNumber runs on the simulator loop so it can reacquire the same page after idle release.
+func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx.Menu, index int, prefs config.Values) {
+	if !s.menuWatch {
 		return
 	}
-	page := s.menu
-	s.addJob(func(ctx context.Context, session *gsx.Session) {
-		if !s.menuWatch {
+	if index < 0 || index >= len(page.Options) {
+		s.async(func() {
+			s.log("SYS", fmt.Sprintf("GSX menu has no item %d", index+1))
+			s.cue(prefs, "error", "", true)
+		})
+		return
+	}
+	s.menuActivity = time.Now()
+	current := session.ReadMenu()
+	var err error
+	if !session.RemoteActive() || len(current.Options) == 0 {
+		current, err = session.OpenMenuPage(ctx)
+	}
+	if err == nil {
+		err = session.ChooseOn(ctx, page, index)
+	}
+	s.async(func() {
+		if err != nil {
+			s.log("GSX", err.Error())
+			s.cue(prefs, "error", "", true)
+			if s.overlay && len(current.Options) > 0 {
+				s.menu = current
+			}
 			return
 		}
-		s.menuActivity = time.Now()
-		current := session.ReadMenu()
-		var err error
-		if !session.RemoteActive() || len(current.Options) == 0 {
-			current, err = session.OpenMenuPage(ctx)
-		}
-		if err == nil {
-			err = session.ChooseOn(ctx, page, index)
-		}
-		s.async(func() {
-			if err != nil {
-				s.log("GSX", err.Error())
-				s.cue(s.cfg.Copy(), "error", "", true)
-				if s.overlay && len(current.Options) > 0 {
-					s.menu = current
-				}
-				return
-			}
-			s.log("GSX", fmt.Sprintf("Menu item %d selected by number", index+1))
-		})
+		s.log("GSX", fmt.Sprintf("Menu item %d selected by number", index+1))
 	})
 }
 
-// Unknown speed blocks normal transmissions Simulator testing and the override bypass that check
+// Unknown speed blocks normal transmissions. Simulation mode and the speed override bypass the check.
 func (s *state) transmissionBlock() string {
 	if config.Get[bool](s.cfg, "simulation_mode") || config.Get[bool](s.cfg, "ignore_speed_restriction") {
 		return ""
@@ -598,34 +608,18 @@ func (s *state) submit(input string) {
 	if input == "" {
 		return
 	}
-	// Keep the command's preferences stable while it waits on the simulator queue
+	// Snapshot window state before handing the request to the simulator loop.
 	prefs := s.cfg.Copy()
-	fail := func(reason string) {
-		s.log("SYS", reason)
-		s.cue(prefs, "error", "", true)
-	}
-	if !s.connected && !config.Get[bool](prefs, "simulation_mode") {
-		s.log("CMD", input)
-		if readoutMatches(prefs, input) {
-			s.log("SYS", "SimConnect handshake required to read the GSX menu")
-		} else {
-			fail("SimConnect handshake required")
-		}
-		return
-	}
-	// Typed commands pass through the same speed gate as PTT
-	if reason := s.transmissionBlock(); reason != "" {
-		s.log("CMD", input)
-		fail(reason)
-		return
-	}
-	// A bare number is a direct selection only while the menu is visible
-	if idx, ok := commands.Number(input); ok && s.overlay && s.speechReady {
-		s.log("CMD", input)
-		s.choose(idx)
-		return
-	}
+	page, overlay := s.menu, s.overlay
+	blocked := s.transmissionBlock()
 	speechReady := s.speechReady
+	fail := func(reason string) {
+		s.async(func() {
+			s.log("CMD", input)
+			s.log("SYS", reason)
+			s.cue(prefs, "error", "", true)
+		})
+	}
 	s.addJob(func(ctx context.Context, session *gsx.Session) {
 		words, err := commands.Load(s.dir)
 		if err != nil {
@@ -634,17 +628,27 @@ func (s *state) submit(input string) {
 		}
 		raw := strings.ToLower(input)
 		text := words.Normalize(raw)
-		// Give the readout trigger first shot at both the original and normalized text
+		// Typed readouts need the simulator and Kokoro, but never require a recognizer.
 		if readoutMatches(prefs, text, raw) {
 			s.async(func() { s.log("CMD", "GSX menu readout requested") })
 			s.sayMenu(ctx, session, prefs)
 			return
 		}
+		if !session.Connected() && !config.Get[bool](prefs, "simulation_mode") {
+			fail("SimConnect handshake required")
+			return
+		}
+		if blocked != "" {
+			fail(blocked)
+			return
+		}
 		if !speechReady {
-			s.async(func() {
-				s.log("CMD", input)
-				fail("Speech recognition is unavailable or still loading")
-			})
+			fail("Speech recognition is unavailable or still loading")
+			return
+		}
+		if idx, ok := commands.Number(text); ok && overlay {
+			s.async(func() { s.log("CMD", input) })
+			s.selectNumber(ctx, session, page, idx, prefs)
 			return
 		}
 		s.menuActivity = time.Now()

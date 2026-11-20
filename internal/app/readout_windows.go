@@ -76,6 +76,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		log("SYS", "SimConnect handshake required to read the GSX menu")
 		return
 	}
+	// Couatl can still be replacing the panel after a selection.
 	if since := time.Since(s.menuActivity); since < 4*time.Second {
 		timer := time.NewTimer(4*time.Second - since)
 		defer timer.Stop()
@@ -144,6 +145,7 @@ func (s *state) output(ctx context.Context, next playback) error {
 	return playPCM(ctx, config.Get[string](next.prefs, "output_device_name"), next.pcm, next.rate)
 }
 
+// Match the legacy RMS gain limits without turning silence into noise.
 func normalizationGain(pcm []byte) float64 {
 	var sum float64
 	for i := 0; i+1 < len(pcm); i += 2 {

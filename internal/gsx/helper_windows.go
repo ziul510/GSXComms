@@ -47,6 +47,7 @@ func Connect(ctx context.Context) (Transport, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the helper beside the executable so the ZIP can launch from any working directory.
 	return connectHelper(ctx, filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
 }
 
@@ -101,6 +102,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest) (hel
 		sent <- result{reply: reply, err: err}
 	}()
 	fail := func(err error) (helperReply, error) {
+		// A lost reply can mean the simulator already processed the write.
 		t.stop()
 		if req != nil && req.Op == "set" {
 			err = errors.Join(errWriteUncertain, err)

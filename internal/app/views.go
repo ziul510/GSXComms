@@ -384,6 +384,7 @@ func (s *state) openSettings() {
 	}
 	var message string
 	var saving, closed bool
+	var readerSaving bool
 	var closePresets func()
 	var closeWindow func()
 	closeSettings := func() {
@@ -416,7 +417,7 @@ func (s *state) openSettings() {
 	}
 	view := func(w *gui.Window) gui.View {
 		if setup.step > 0 {
-			return setup.mistralPage(s, w, draft)
+			return setup.mistralPage(s, w)
 		}
 		var body []gui.View
 		// Give each group a consistent heading and short explanation in the scrolling body
@@ -494,11 +495,14 @@ func (s *state) openSettings() {
 		body = append(body, gui.Column(gui.ContainerCfg{
 			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(6),
 			Content: []gui.View{
-				setup.localCard(s, w, draft, "parakeet", "Parakeet v2 (recommended)"),
-				setup.localCard(s, w, draft, "orukeet", "Orukeet"),
-				setup.mistralCard(s, draft),
+				setup.localCard(s, w, "parakeet", "Parakeet v2 (recommended)"),
+				setup.localCard(s, w, "orukeet", "Orukeet"),
+				setup.mistralCard(s),
 			},
 		}))
+		if setup.providerError != "" {
+			body = append(body, wrapped(setup.providerError, 12, red))
+		}
 		section("Accent", "Default accent and regional packs")
 		var selectedAccents []string
 		enabled := config.Get[[]string](s.cfg, "installed_packs")
@@ -527,26 +531,43 @@ func (s *state) openSettings() {
 		toggle("enable_menu_matching", "Broader mode")
 		toggle("enable_gsx_menu_text_correction", "Match STT to GSX menu options")
 		const readKey = "read_gsx_menus_aloud_after_keyword"
-		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", config.Get[bool](draft, readKey), func(ctx gui.EventCtx) {
+		readerEnabled := config.Get[bool](s.cfg, readKey)
+		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", readerEnabled, func(ctx gui.EventCtx) {
 			ctx.Consume()
-			if config.Get[bool](draft, readKey) {
-				draft.Put(readKey, false)
+			if readerSaving {
+				return
+			}
+			setEnabled := func(enabled bool) {
+				readerSaving = true
+				s.saveSetting(readKey, enabled, func(err error) {
+					readerSaving = false
+					if err != nil {
+						message = err.Error()
+					}
+					if !closed {
+						w.InvalidateLayout()
+					}
+				})
+			}
+			if readerEnabled {
+				setEnabled(false)
 			} else if setup.local["kokoro"].ready {
-				draft.Put(readKey, true)
+				setEnabled(true)
 			} else {
+				// Failed or canceled downloads leave readout off.
 				setup.runLocal(s, w, "kokoro", "Downloading", func(err error) {
 					if err == nil && !closed {
-						draft.Put(readKey, true)
+						setEnabled(true)
 					}
 				})
 			}
 			w.InvalidateLayout()
 		}), 24))
 		// Show the keyword field only when menu readout is enabled
-		if config.Get[bool](draft, "read_gsx_menus_aloud_after_keyword") {
+		if readerEnabled {
 			body = append(body, formInput(gui.InputCfg{ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) }}))
 		}
-		body = append(body, setup.localCard(s, w, draft, "kokoro", "Kokoro menu reader"))
+		body = append(body, setup.localCard(s, w, "kokoro", "Kokoro menu reader"))
 		toggle("auto_connect_sim", "Auto-connect to simulator")
 		toggle("auto_select_operator", "Auto-select operator")
 		toggle("mute_gsx_audio_during_crew_voice", "Mute Couatl/GSX during speech")
@@ -557,8 +578,8 @@ func (s *state) openSettings() {
 			toggle("start_minimized", "Start minimized")
 		}
 		toggle("show_topmost", "Show Top Most")
-		body = append(body, settingsField("Current PTT binding", bold(s.bindingDescription(config.Get[config.Binding](draft, "ptt_bind")), 13, ink)))
-		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(draft, w) })
+		body = append(body, settingsField("Current PTT binding", bold(s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind")), 13, ink)))
+		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(w) })
 		section("Developer", "Debug mode opens a console and writes a debug.log file")
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")

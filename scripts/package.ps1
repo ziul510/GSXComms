@@ -14,6 +14,7 @@ if ($packs.Count -ne 8) { throw 'Expected all eight regional accent packs' }
 foreach ($step in 1..5) {
     if (!(Test-Path -LiteralPath "tutorial/step$step.png" -PathType Leaf)) { throw "Missing tutorial/step$step.png" }
 }
+# List runtime files explicitly so stale build outputs cannot enter a release.
 $files = @(
     Get-Item -LiteralPath 'LICENSE', 'build/THIRD_PARTY_NOTICES'
     Get-Item -LiteralPath 'build/GSXComms.exe', 'build/gsxsimconnect.exe', 'build/gsxmute.exe'

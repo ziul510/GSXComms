@@ -37,19 +37,21 @@ func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
 	forced := config.Get[string](next, "force_accent")
 	prefs = prefs.Copy()
 	prefs.Put("force_accent", forced)
-	if forced != "" && forced != "Disabled" {
+	queued := s.queueAudio(playback{
+		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(),
+	}, interrupt)
+	// Consume the accent only when the interaction actually enters playback.
+	if queued && forced != "" && forced != "Disabled" {
 		next.Put("force_accent", "Disabled")
 		s.save(next, nil)
 	}
-	s.queueAudio(playback{
-		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(),
-	}, interrupt)
 }
 
-func (s *state) queueAudio(request playback, interrupt bool) {
+func (s *state) queueAudio(request playback, interrupt bool) bool {
 	s.audioMu.Lock()
 	defer s.audioMu.Unlock()
 	if interrupt {
+		// Invalidate the clip currently being decoded as well as clips still in the queue.
 		s.audioGeneration++
 		if s.audioCancel != nil {
 			s.audioCancel()
@@ -64,11 +66,13 @@ func (s *state) queueAudio(request playback, interrupt bool) {
 	request.generation = s.audioGeneration
 	select {
 	case s.audioQueue <- request:
+		return true
 	case <-s.ctx.Done():
 	// Drop a cue on overflow so the simulator or speech worker never waits for audio output
 	default:
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 	}
+	return false
 }
 
 func (s *state) playbackLoop() {
@@ -161,6 +165,7 @@ type crewMute struct {
 	timer   *time.Timer
 }
 
+// Commands and their audio can overlap. Keep one watchdog until both finish and the grace period expires.
 func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	if !config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice") || ctx.Err() != nil {
 		return func() {}
@@ -190,6 +195,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 			timer = time.AfterFunc(3950*time.Millisecond, func() {
 				m.Lock()
 				defer m.Unlock()
+				// A newer speech window may have replaced this timer while it waited for the lock.
 				if m.timer == timer {
 					m.stop()
 				}
@@ -199,6 +205,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	}
 }
 
+// The caller holds the mute lock when stopping the watchdog.
 func (m *crewMute) stop() {
 	if m.timer != nil {
 		m.timer.Stop()

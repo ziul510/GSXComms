@@ -74,6 +74,7 @@ func (s *state) record(down bool) {
 		// Voxtral uploads audio, so a missing or busy named mic must stop capture
 		pcm, captureErr := capture(capctx, config.Get[string](prefs, "input_device_name"), config.Get[int](prefs, "max_recording_seconds"), localSpeech)
 		if captureErr == nil && capctx.Err() == nil {
+			// A full recording still waits for release so held PTT cannot transmit twice.
 			s.async(func() { s.log("SYS", "Recording cap reached. Release PTT to transmit") })
 			<-capctx.Done()
 		}
@@ -142,6 +143,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	}
 	s.sttMu.Lock()
 	defer s.sttMu.Unlock()
+	// Keep the model and hotwords stable between loading and transcribing this recording.
 	if err := s.loadRecognizer(s.ctx, m, vocab); err != nil {
 		return "", err
 	}
@@ -158,6 +160,7 @@ func downloadModel(ctx context.Context, model models.Model, dir string, progress
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	stalled := errors.New("Download stalled. Check your connection and try again")
+	// A stalled transfer can resume from its verified staging directory on retry.
 	timer := time.AfterFunc(180*time.Second, func() { cancel(stalled) })
 	defer timer.Stop()
 	err := model.Download(ctx, dir, func(done, total int64) {
@@ -226,6 +229,7 @@ func (s *state) prepareSpeech(autoDownload bool) {
 		}
 		s.async(func() {
 			if generation != s.speechGeneration {
+				// A provider change invalidates startup results already queued for the window.
 				return
 			}
 			s.speechLoading = ""
