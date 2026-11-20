@@ -1,0 +1,205 @@
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package models
+
+import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestResumeAndPublishModel(t *testing.T) {
+	const content = "example data from a pinned revision"
+	digest := sha256.Sum256([]byte(content))
+	f := File{"models/fixture", int64(len(content)), fmt.Sprintf("%x", digest)}
+	m := Model{"test", "owner/example", "pinned", []File{f}}
+	dir := t.TempDir()
+	partial := filepath.Join(m.Directory(dir)+".partial", "models", "fixture")
+	if err := os.MkdirAll(filepath.Dir(partial), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partial, []byte(content[:7]), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original := client
+	defer func() { client = original }()
+	called := false
+	client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		if got := req.Header.Get("Range"); got != "bytes=7-" {
+			t.Errorf("Range = %q", got)
+		}
+		resp := &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(content[7:]))}
+		resp.Header.Set("Content-Range", fmt.Sprintf("bytes 7-%d/%d", len(content)-1, len(content)))
+		return resp, nil
+	})}
+	if m.Ready(dir) {
+		t.Fatal("staging data became usable before verification")
+	}
+	if err := m.Download(context.Background(), dir, func(int64, int64) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !called || !m.Ready(dir) || !f.matches(m.Paths(dir)["fixture"]) {
+		t.Fatal("resumed model not committed")
+	}
+}
+
+func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
+	const body = "model"
+	f := File{"fixture", int64(len(body)), fmt.Sprintf("%x", sha256.Sum256([]byte(body)))}
+	m := Model{"test", "owner/example", "pinned", []File{f}}
+	dir := t.TempDir()
+	t.Setenv("HF_HUB_CACHE", t.TempDir())
+
+	requested := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	original := client
+	client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		close(requested)
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	defer func() { client = original }()
+	go func() { finished <- m.Download(context.Background(), dir, func(int64, int64) {}) }()
+	select {
+	case <-requested:
+	case err := <-finished:
+		t.Fatalf("download stopped before requesting the file: %v", err)
+	}
+	cacheVisible := m.Cached(dir) && !m.Ready(dir)
+	deleteErr := m.Delete(dir)
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if !cacheVisible || deleteErr == nil || !m.Ready(dir) {
+		t.Fatalf("staged=%v concurrent delete=%v ready=%v", cacheVisible, deleteErr, m.Ready(dir))
+	}
+	if err := m.Delete(dir); err != nil || m.Cached(dir) {
+		t.Fatalf("delete after publication: %v", err)
+	}
+}
+
+func TestIncompleteModelCanBeDeletedBeforeRetry(t *testing.T) {
+	m := Model{"test", "owner/example", "pinned", []File{{"fixture", 5, strings.Repeat("0", 64)}}}
+	dir := t.TempDir()
+	if err := os.MkdirAll(m.Directory(dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if !m.Cached(dir) || m.Ready(dir) {
+		t.Fatal("incomplete model must be removable")
+	}
+	if err := m.Download(context.Background(), dir, func(int64, int64) {}); err == nil {
+		t.Fatal("expected a recovery error for the incomplete model")
+	}
+	if _, err := os.Stat(m.Directory(dir) + ".partial"); !os.IsNotExist(err) {
+		t.Fatal("retry started staging before asking to remove the incomplete cache")
+	}
+	if err := m.Delete(dir); err != nil || m.Cached(dir) {
+		t.Fatalf("delete incomplete cache: %v", err)
+	}
+}
+
+func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
+	const body = "a model fixture"
+	f := File{"fixture", int64(len(body)), fmt.Sprintf("%x", sha256.Sum256([]byte(body)))}
+	m := Model{"test", "owner/example", "pinned", []File{f}}
+	dir := t.TempDir()
+	t.Setenv("HF_HUB_CACHE", t.TempDir())
+	original := client
+	defer func() { client = original }()
+	requests := 0
+	client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body[:3]))}, nil
+		}
+		if req.Header.Get("Range") != "bytes=3-" {
+			t.Fatalf("unexpected retry range %q", req.Header.Get("Range"))
+		}
+		resp := &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body[3:]))}
+		resp.Header.Set("Content-Range", fmt.Sprintf("bytes 3-%d/%d", len(body)-1, len(body)))
+		return resp, nil
+	})}
+	progress := func(int64, int64) {}
+	if err := m.Download(context.Background(), dir, progress); err == nil || m.Ready(dir) {
+		t.Fatal("truncated download did not fail")
+	}
+	if err := m.Download(context.Background(), dir, progress); err != nil || !m.Ready(dir) {
+		t.Fatalf("resuming truncated download: %v", err)
+	}
+}
+
+func TestChecksumMismatchIsNotPublished(t *testing.T) {
+	body := "bad-data"
+	f := File{"fixture", int64(len(body)), strings.Repeat("0", 64)}
+	m := Model{"test", "owner/example", "pinned", []File{f}}
+	dir := t.TempDir()
+	original := client
+	defer func() { client = original }()
+	client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	if err := m.Download(context.Background(), dir, func(int64, int64) {}); err == nil || m.Ready(dir) {
+		t.Fatal("bad model accepted")
+	}
+	if _, err := os.Stat(m.Directory(dir) + ".partial/fixture"); !os.IsNotExist(err) {
+		t.Fatal("bad file remained cached")
+	}
+}
+
+func TestCacheImportPreservesResumableModel(t *testing.T) {
+	const body = "model fixture"
+	f := File{"fixture", int64(len(body)), fmt.Sprintf("%x", sha256.Sum256([]byte(body)))}
+	m := Model{"test", "owner/example", "pinned", []File{f}}
+	for name, cacheBody := range map[string]string{"verified": body, "corrupt": strings.Repeat("x", len(body))} {
+		t.Run(name, func(t *testing.T) {
+			dir, cache := t.TempDir(), t.TempDir()
+			t.Setenv("HF_HUB_CACHE", cache)
+			partialDir := m.Directory(dir) + ".partial"
+			snapshot := filepath.Join(cache, "models--owner--example", "snapshots", m.Revision)
+			for folder, contents := range map[string]string{partialDir: body[:3], snapshot: cacheBody} {
+				if err := os.MkdirAll(folder, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(folder, f.Path), []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := client
+			t.Cleanup(func() { client = original })
+			requests := 0
+			client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				if got := req.Header.Get("Range"); got != "bytes=3-" {
+					t.Errorf("Range = %q, want bytes=3-", got)
+				}
+				resp := &http.Response{StatusCode: http.StatusPartialContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body[3:]))}
+				resp.Header.Set("Content-Range", fmt.Sprintf("bytes 3-%d/%d", len(body)-1, len(body)))
+				return resp, nil
+			})}
+			if err := m.Download(t.Context(), dir, func(int64, int64) {}); err != nil || !f.matches(m.Paths(dir)[f.Path]) {
+				t.Fatalf("publishing model: %v", err)
+			}
+			wantRequests := 0
+			if name == "corrupt" {
+				wantRequests = 1
+			}
+			if requests != wantRequests {
+				t.Fatalf("HTTP requests = %d, want %d", requests, wantRequests)
+			}
+		})
+	}
+}
