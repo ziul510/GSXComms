@@ -31,8 +31,9 @@ type helperReply struct {
 	Fatal bool     `json:"fatal"`
 }
 
-// Session and the console serialize calls to a transport.
+// Serialize individual exchanges so telemetry can run between menu operations.
 type helperTransport struct {
+	gate chan struct{}
 	cmd  *exec.Cmd
 	in   io.WriteCloser
 	out  io.ReadCloser
@@ -68,22 +69,46 @@ func connectHelper(ctx context.Context, cmd *exec.Cmd) (Transport, error) {
 		out.Close()
 		return nil, fmt.Errorf("start SimConnect helper: %w", err)
 	}
-	transport := &helperTransport{cmd: cmd, in: in, out: out, send: json.NewEncoder(in), recv: json.NewDecoder(out)}
+	transport := &helperTransport{gate: make(chan struct{}, 1), cmd: cmd, in: in, out: out, send: json.NewEncoder(in), recv: json.NewDecoder(out)}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := transport.exchange(ctx, nil); err != nil {
+	if _, err := transport.exchange(ctx, nil, nil); err != nil {
 		_ = transport.Close()
 		return nil, fmt.Errorf("SimConnect unavailable: %w", err)
 	}
 	return transport, nil
 }
 
-func (t *helperTransport) exchange(ctx context.Context, req *helperRequest) (helperReply, error) {
+func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, check func() error) (helperReply, error) {
+	select {
+	case t.gate <- struct{}{}:
+		defer func() { <-t.gate }()
+	case <-ctx.Done():
+		return helperReply{}, ctx.Err()
+	}
 	if t.cmd == nil {
 		return helperReply{}, ErrDisconnected
 	}
 	if err := ctx.Err(); err != nil {
 		return helperReply{}, err
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return helperReply{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return helperReply{}, err
+		}
+	}
+	if req != nil && req.Op == "get" {
+		req.TimeoutMS = 350
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline) - 30*time.Millisecond
+			if remaining <= 0 {
+				return helperReply{}, context.DeadlineExceeded
+			}
+			req.TimeoutMS = min(req.TimeoutMS, remaining.Milliseconds())
+		}
 	}
 	if req != nil {
 		// Bound stalled pipe writes and reads even when the console supplies no deadline.
@@ -133,15 +158,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest) (hel
 }
 
 func (t *helperTransport) Get(ctx context.Context, name string) (float64, error) {
-	ms := int64(350)
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline) - 30*time.Millisecond
-		if remaining <= 0 {
-			return 0, context.DeadlineExceeded
-		}
-		ms = min(ms, remaining.Milliseconds())
-	}
-	reply, err := t.exchange(ctx, &helperRequest{Op: "get", Name: name, TimeoutMS: ms})
+	reply, err := t.exchange(ctx, &helperRequest{Op: "get", Name: name}, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -152,11 +169,17 @@ func (t *helperTransport) Get(ctx context.Context, name string) (float64, error)
 }
 
 func (t *helperTransport) Set(ctx context.Context, name string, value float64) error {
-	_, err := t.exchange(ctx, &helperRequest{Op: "set", Name: name, Value: value})
+	return t.setChecked(ctx, name, value, nil)
+}
+
+func (t *helperTransport) setChecked(ctx context.Context, name string, value float64, check func() error) error {
+	_, err := t.exchange(ctx, &helperRequest{Op: "set", Name: name, Value: value}, check)
 	return err
 }
 
 func (t *helperTransport) Close() error {
+	t.gate <- struct{}{}
+	defer func() { <-t.gate }()
 	t.stop()
 	return nil
 }

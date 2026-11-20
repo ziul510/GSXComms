@@ -17,14 +17,14 @@ import (
 )
 
 type playback struct {
-	prefs       config.Values
-	pcm         []byte
-	rate        int
-	cue, option string
-	voice       string
-	location    *geo.Position
-	generation  uint64
-	dry         bool
+	prefs                 config.Values
+	pcm                   []byte
+	rate                  int
+	cue, option           string
+	voice                 string
+	location              *geo.Position
+	priority, stateChange bool
+	dry                   bool
 }
 
 func (s *state) randomizeVoice() {
@@ -33,13 +33,17 @@ func (s *state) randomizeVoice() {
 }
 
 func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
+	s.enqueueCue(prefs, name, option, interrupt, false)
+}
+
+func (s *state) enqueueCue(prefs config.Values, name, option string, priority, stateChange bool) {
 	next := s.settingsDraft()
 	forced := config.Get[string](next, "force_accent")
 	prefs = prefs.Copy()
 	prefs.Put("force_accent", forced)
 	queued := s.queueAudio(playback{
-		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(),
-	}, interrupt)
+		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(), stateChange: stateChange,
+	}, priority)
 	// Consume the accent only when the interaction actually enters playback.
 	if queued && forced != "" && forced != "Disabled" {
 		next.Put("force_accent", "Disabled")
@@ -47,65 +51,75 @@ func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
 	}
 }
 
+func (p playback) protected() bool { return p.priority || p.stateChange }
+
 func (s *state) queueAudio(request playback, interrupt bool) bool {
 	s.audioMu.Lock()
 	defer s.audioMu.Unlock()
+	if s.ctx.Err() != nil {
+		return false
+	}
+	request.priority = interrupt
 	if interrupt {
-		// Invalidate the clip currently being decoded as well as clips still in the queue.
-		s.audioGeneration++
 		if s.audioCancel != nil {
 			s.audioCancel()
 		}
-		for len(s.audioQueue) > 0 {
-			select {
-			case <-s.audioQueue:
-			default:
-			}
+		s.audioQueue = slices.DeleteFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+		i := 0
+		for i < len(s.audioQueue) && s.audioQueue[i].priority {
+			i++
 		}
-	}
-	request.generation = s.audioGeneration
-	select {
-	case s.audioQueue <- request:
-		return true
-	case <-s.ctx.Done():
-	// Drop a cue on overflow so the simulator or speech worker never waits for audio output
-	default:
+		s.audioQueue = slices.Insert(s.audioQueue, i, request)
+	} else if request.stateChange || len(s.audioQueue) < 16 {
+		s.audioQueue = append(s.audioQueue, request)
+	} else {
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
+		return false
 	}
-	return false
+	select {
+	case s.audioWake <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 func (s *state) playbackLoop() {
 	var missing string
 	for s.ctx.Err() == nil {
-		var next playback
-		select {
-		case next = <-s.audioQueue:
-		case <-s.ctx.Done():
-			return
+		s.audioMu.Lock()
+		if len(s.audioQueue) == 0 {
+			s.audioMu.Unlock()
+			select {
+			case <-s.audioWake:
+			case <-s.ctx.Done():
+				return
+			}
+			continue
 		}
+		next := s.audioQueue[0]
+		s.audioQueue[0] = playback{}
+		s.audioQueue = s.audioQueue[1:]
+		ctx, cancel := context.WithCancel(s.ctx)
+		if !next.protected() {
+			s.audioCancel = cancel
+		}
+		s.audioMu.Unlock()
+
 		if next.cue != "" {
 			next.pcm, next.rate = s.regionalCue(next)
-			if len(next.pcm) == 0 {
+		}
+		if ctx.Err() == nil {
+			if next.cue != "" && len(next.pcm) == 0 {
 				if missing != next.cue {
 					message := "No installed crew recording for " + next.cue
 					s.async(func() { s.log("AUDIO", message) })
+					s.trace("AUDIO", "No installed crew recording matched the cue")
 				}
 				missing = next.cue
-				continue
+			} else if err := s.output(ctx, next); err != nil && ctx.Err() == nil {
+				s.async(func() { s.log("AUDIO", err.Error()) })
+				s.traceFailure("AUDIO", "Windows audio playback failed")
 			}
-		}
-		s.audioMu.Lock()
-		if next.generation != s.audioGeneration {
-			s.audioMu.Unlock()
-			continue
-		}
-		ctx, cancel := context.WithCancel(s.ctx)
-		s.audioCancel = cancel
-		s.audioMu.Unlock()
-		err := s.output(ctx, next)
-		if err != nil && ctx.Err() == nil {
-			s.async(func() { s.log("AUDIO", err.Error()) })
 		}
 		cancel()
 		s.audioMu.Lock()
@@ -116,9 +130,17 @@ func (s *state) playbackLoop() {
 
 var statefulServices = []string{"GPU", "JETWAY", "STAIRS"}
 
+func (s *state) resetServices() {
+	s.servicesMu.Lock()
+	defer s.servicesMu.Unlock()
+	clear(s.services)
+}
+
 // Service state is inferred from successful selections, just as in the legacy app.
 func (s *state) acknowledge(prefs config.Values, service, selected string, voice bool) {
 	if slices.Contains(statefulServices, service) {
+		s.servicesMu.Lock()
+		defer s.servicesMu.Unlock()
 		was := s.services[service]
 		now, known := serviceConnected(was, selected)
 		if !known || now == was {
@@ -132,7 +154,7 @@ func (s *state) acknowledge(prefs config.Values, service, selected string, voice
 		s.async(func() {
 			s.log("GSX", fmt.Sprintf("%s %sing", service, action))
 			if voice {
-				s.cue(prefs, service, action, false)
+				s.enqueueCue(prefs, service, action, false, true)
 			}
 		})
 	} else if voice && service != "" {
@@ -140,19 +162,25 @@ func (s *state) acknowledge(prefs config.Values, service, selected string, voice
 	}
 }
 
+// Python v4.1 uses this order for GPU, jetway, and stairs
+var serviceTransitions = []struct {
+	words  []string
+	target string
+}{
+	{[]string{"disconnect", "remove", "retract", "completed", "stop", "close", "release", "dismiss", "free"}, "disconnect"},
+	{[]string{"operate"}, "toggle"},
+	{[]string{"request", "connect", "call", "open"}, "connect"},
+}
+
 func serviceConnected(was bool, selected string) (connected, known bool) {
-	selected = strings.ToLower(selected)
-	for _, word := range []string{"disconnect", "remove", "retract", "undock", "completed", "stop", "close", "release", "dismiss", "free"} {
-		if strings.Contains(selected, word) {
-			return false, true
-		}
-	}
-	if strings.Contains(selected, "operate") || strings.Contains(selected, "operating") {
-		return !was, true
-	}
-	for _, word := range []string{"request", "connect", "call", "open"} {
-		if strings.Contains(selected, word) {
-			return true, true
+	selected = strings.Join(strings.FieldsFunc(strings.ToLower(selected), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}), " ")
+	for _, transition := range serviceTransitions {
+		for _, word := range transition.words {
+			if strings.Contains(selected, word) {
+				return transition.target == "connect" || transition.target == "toggle" && !was, true
+			}
 		}
 	}
 	return was, false

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ziul510/GSXCommsGo/internal/commands"
 )
@@ -32,6 +33,7 @@ const (
 var (
 	ErrDisconnected     = errors.New("SimConnect handshake required")
 	ErrSpeedUnavailable = errors.New("ground speed unavailable")
+	ErrMenuChanged      = errors.New("GSX menu changed before selection")
 	ErrHotfix           = errors.New("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms")
 )
 
@@ -83,12 +85,13 @@ func ParseMenu(raw string) Menu {
 
 // The transport carries simulator variables The panel file carries the menu text
 type Session struct {
-	Sim         Transport
-	ReadMenu    func() Menu
-	OnReadError func(error)
-	OnChoice    func(Menu, int)
-	Sleep       func(context.Context, time.Duration) error
-	remote      bool
+	Sim          Transport
+	ReadMenu     func() Menu
+	OnReadError  func(error)
+	OnChoice     func(Menu, int)
+	BeforeChoice func() error
+	Sleep        func(context.Context, time.Duration) error
+	remote       bool
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -182,13 +185,36 @@ func (s *Session) get(ctx context.Context, name string) (float64, error) {
 }
 
 func (s *Session) set(ctx context.Context, name string, value float64) error {
+	return s.write(ctx, name, value, nil)
+}
+
+func (s *Session) write(ctx context.Context, name string, value float64, check func() error) error {
 	if s.Sim == nil {
 		return ErrDisconnected
 	}
 	// Repeat failed writes a few times before returning the last error to the caller
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		err = s.Sim.Set(ctx, name, value)
+		switch {
+		case check == nil:
+			err = s.Sim.Set(ctx, name, value)
+		default:
+			var checkErr error
+			validate := func() error {
+				checkErr = check()
+				return checkErr
+			}
+			if transport, ok := s.Sim.(interface {
+				setChecked(context.Context, string, float64, func() error) error
+			}); ok {
+				err = transport.setChecked(ctx, name, value, validate)
+			} else if validate() == nil {
+				err = s.Sim.Set(ctx, name, value)
+			}
+			if checkErr != nil {
+				return checkErr
+			}
+		}
 		if err == nil {
 			return nil
 		}
@@ -307,22 +333,30 @@ func (s *Session) Close() error {
 
 // GSX expects a zero-based slot Give the panel time to process the choice
 func (s *Session) Choose(ctx context.Context, index int) error {
-	return s.choose(ctx, s.ReadMenu(), index)
+	return s.choose(ctx, s.ReadMenu(), index, nil)
 }
 
 // ChooseOn checks the page again because a GSX slot can change while a command waits.
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
-	if !page.Same(s.ReadMenu()) || index < 0 || index >= len(page.Options) {
-		return errors.New("GSX menu changed before selection")
+	if index < 0 || index >= len(page.Options) {
+		return ErrMenuChanged
 	}
-	return s.choose(ctx, page, index)
+	return s.choose(ctx, page, index, func() error {
+		if !page.Same(s.ReadMenu()) {
+			return ErrMenuChanged
+		}
+		if s.BeforeChoice != nil {
+			return s.BeforeChoice()
+		}
+		return nil
+	})
 }
 
-func (s *Session) choose(ctx context.Context, page Menu, index int) error {
+func (s *Session) choose(ctx context.Context, page Menu, index int, check func() error) error {
 	if index < 0 || index >= maxMenuOptions {
 		return errors.New("invalid GSX item")
 	}
-	if err := s.set(ctx, MenuChoice, float64(index)); err != nil {
+	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
 		return err
 	}
 	s.remote = true
@@ -343,6 +377,20 @@ func (s *Session) OpenMenuPage(ctx context.Context) (Menu, error) {
 		if menu, err = s.WaitMenu(ctx); err == nil || ctx.Err() != nil {
 			break
 		}
+	}
+	return menu, err
+}
+
+// RefreshAndRelease takes a new page snapshot before handing the menu back to GSX
+func (s *Session) RefreshAndRelease(ctx context.Context) (Menu, error) {
+	if err := s.Release(ctx); err != nil {
+		return Menu{}, err
+	}
+	menu, err := s.OpenMenuPage(ctx)
+	if s.RemoteActive() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		err = errors.Join(err, s.Release(closeCtx))
 	}
 	return menu, err
 }
@@ -383,13 +431,18 @@ func optionContaining(options []string, keywords []string) int {
 	return -1
 }
 
-// The hotfix check looks for two different navigation-only choices
+func menuLabel(text string) string {
+	return strings.ToLower(strings.TrimRightFunc(strings.TrimSpace(text), func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r)
+	}))
+}
+
 func stuck(options []string) bool {
-	if len(options) != 2 || strings.EqualFold(options[0], options[1]) {
+	if len(options) != 2 {
 		return false
 	}
-	valid := []string{"back", "cancel", "close"}
-	return slices.Contains(valid, strings.ToLower(options[0])) && slices.Contains(valid, strings.ToLower(options[1]))
+	a, b := menuLabel(options[0]), menuLabel(options[1])
+	return a == "close" && b == "back" || a == "back" && b == "close"
 }
 
 func (s *Session) Execute(ctx context.Context, text, service string, keywords []string, autoOperator bool) (string, error) {
@@ -458,18 +511,27 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	if err := s.ChooseOn(ctx, menu, index); err != nil {
 		return "", err
 	}
-	// The operator prompt can show up after the service selection returns
+	// Only a changed operator page can trigger an automatic selection
 	if autoOperator {
-		for i := 0; i < 6; i++ {
+		for range 6 {
 			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
 				return selected, err
 			}
 			page := s.ReadMenu()
-			if i := optionContaining(page.Options, []string{"gsx choice"}); i >= 0 {
+			if page.Same(menu) || len(page.Options) == 0 {
+				continue
+			}
+			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
+			if i >= 0 {
 				return selected, s.ChooseOn(ctx, page, i)
+			}
+			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
+			if strings.Contains(title, " operator ") || strings.Contains(title, " operators ") {
+				return selected, s.dismissOperator(ctx, page)
 			}
 		}
 	}
+
 	return selected, nil
 }
 
@@ -485,4 +547,30 @@ func (s *Session) Location(ctx context.Context) (float64, float64, error) {
 
 func (s *Session) Altitude(ctx context.Context) (float64, error) {
 	return s.get(ctx, "PLANE ALTITUDE")
+}
+
+// Check the menu flag before falling back to the first row
+func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
+	if !page.Same(s.ReadMenu()) {
+		return ErrMenuChanged
+	}
+	err := s.Release(ctx)
+	if errors.Is(err, errWriteUncertain) || errors.Is(err, ErrDisconnected) {
+		return err
+	}
+	if waitErr := s.Sleep(ctx, 200*time.Millisecond); waitErr != nil {
+		return errors.Join(err, waitErr)
+	}
+	open, readErr := s.get(ctx, MenuOpen)
+	if readErr != nil || open < 0.5 {
+		return errors.Join(err, readErr)
+	}
+	if !page.Same(s.ReadMenu()) {
+		return ErrMenuChanged
+	}
+	if enableErr := s.set(ctx, Remote, 1); enableErr != nil {
+		return errors.Join(err, enableErr)
+	}
+	s.remote = true
+	return s.ChooseOn(ctx, page, 0)
 }

@@ -305,7 +305,7 @@ func (s *state) pollController(ctx context.Context) {
 					// XInput bindings use a numeric slot ID Raw Input bindings can carry a device path
 					b := config.Get[config.Binding](s.cfg, "ptt_bind")
 					var slot int
-					if b.Type == "joystick" && b.JoyButton != nil && json.Unmarshal(b.JoyID, &slot) == nil && slot == i && *b.JoyButton == button {
+					if b.Type == "joystick" && b.JoyButton != nil && strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil && slot == i && *b.JoyButton == button {
 						s.record(isDown)
 					}
 				})
@@ -346,5 +346,14 @@ func (s *state) setTopmost() {
 		}
 		// Change z-order without moving, resizing, or activating the window
 		_, _, _ = user.NewProc("SetWindowPos").Call(hwnd, placement, 0, 0, 0, 0, 0x0013)
+	}
+}
+
+func focusWindow(title string) {
+	if hwnd := windowByTitle(title); hwnd != 0 {
+		if minimized, _, _ := user.NewProc("IsIconic").Call(hwnd); minimized != 0 {
+			_, _, _ = user.NewProc("ShowWindow").Call(hwnd, windows.SW_RESTORE)
+		}
+		_, _, _ = user.NewProc("SetForegroundWindow").Call(hwnd)
 	}
 }

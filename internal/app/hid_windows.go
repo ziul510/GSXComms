@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -67,6 +68,33 @@ func (s *state) legacyHIDPath(b config.Binding) string {
 	return ""
 }
 
+var hidModelPattern = regexp.MustCompile("vid_[0-9a-f]{4}&pid_[0-9a-f]{4}")
+
+func (s *state) boundHIDPath(b config.Binding) string {
+	var path string
+	if json.Unmarshal(b.JoyID, &path) != nil || !strings.HasPrefix(path, "\\\\?\\") {
+		return ""
+	}
+	model := hidModelPattern.FindString(strings.ToLower(path))
+	var fallback string
+	count := 0
+	for _, paths := range s.hidPaths {
+		for _, candidate := range paths {
+			if strings.EqualFold(candidate, path) {
+				return candidate
+			}
+			if model != "" && hidModelPattern.FindString(strings.ToLower(candidate)) == model {
+				fallback = candidate
+				count++
+			}
+		}
+	}
+	if count == 1 {
+		return fallback
+	}
+	return ""
+}
+
 func (s *state) bindingDescription(b config.Binding) string {
 	switch b.Type {
 	case "key":
@@ -74,13 +102,15 @@ func (s *state) bindingDescription(b config.Binding) string {
 			return b.Description
 		}
 	case "joystick":
-		var path string
 		var slot int
-		if b.JoyButton != nil &&
-			((json.Unmarshal(b.JoyID, &path) == nil && path != "") ||
-				(strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil) ||
-				s.legacyHIDPath(b) != "") {
-			return b.Description
+		if b.JoyButton != nil && *b.JoyButton >= 0 {
+			if s.boundHIDPath(b) != "" ||
+				(strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil && slot >= 0 && slot < 4 && *b.JoyButton < 16) {
+				return b.Description
+			}
+			if s.legacyHIDPath(b) != "" {
+				return "Unverified name match · Rebind required"
+			}
 		}
 	}
 	return "Rebind required"
@@ -185,10 +215,12 @@ func (s *state) listenHID(ctx context.Context) {
 		case 0x00fe:
 			if msg.wParam == 2 {
 				if d := known[msg.lParam]; d != nil {
-					// An unplugged controller won't send a release for held buttons
-					for _, button := range d.buttons {
-						s.hidButton(d, int(button)-1, false)
-					}
+					path := d.path
+					s.async(func() {
+						if strings.EqualFold(s.heldHIDPath, path) {
+							s.record(false)
+						}
+					})
 				}
 				delete(known, msg.lParam)
 			}
@@ -280,13 +312,7 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 		if s.pttHeld || b.Type != "joystick" || b.JoyButton == nil || *b.JoyButton != index {
 			return
 		}
-		var id string
-		_ = json.Unmarshal(b.JoyID, &id)
-		// A legacy product name is safe only if one attached device matches.
-		if !strings.HasPrefix(id, `\\?\`) {
-			id = s.legacyHIDPath(b)
-		}
-		if id != "" && strings.EqualFold(id, path) {
+		if id := s.boundHIDPath(b); id != "" && strings.EqualFold(id, path) {
 			s.heldHIDPath, s.heldHIDButton = path, index
 			s.record(true)
 		}

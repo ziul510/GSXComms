@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -23,63 +21,77 @@ var mm = windows.NewLazySystemDLL("winmm.dll")
 // WinMM uses WAVE_MAPPER to resolve the system default endpoint
 const defaultWaveDevice = 0xffffffff
 
-func audioDevices(input bool) []string {
-	// The input and output APIs use the same capability fields with different entry points
+type audioDevice struct {
+	name, endpoint string
+}
+
+func audioDevices(input bool) []audioDevice {
 	prefix := "waveOut"
 	if input {
 		prefix = "waveIn"
 	}
 	num := mm.NewProc(prefix + "GetNumDevs")
 	caps := mm.NewProc(prefix + "GetDevCapsW")
+	message := mm.NewProc(prefix + "Message")
 	count, _, _ := num.Call()
-	out := make([]string, 0, count)
-	for i := uintptr(0); i < count; i++ {
+	out := make([]audioDevice, count)
+	for i := range out {
 		var raw [128]byte
-		r, _, _ := caps.Call(i, uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw)))
-		if r != 0 {
-			// Keep the slot so slice indices still match WinMM device IDs
-			out = append(out, "")
-			continue
-		}
-		// The product name starts at byte 8 in both WinMM capability structs
-		name := unsafe.Slice((*uint16)(unsafe.Pointer(&raw[8])), 32)
-		out = append(out, windows.UTF16ToString(name))
-	}
-	return out
-}
-
-// The settings list can skip blanks after enumeration has preserved the native device IDs
-func deviceNames(input bool) []string {
-	out := []string{"Default"}
-	for _, name := range audioDevices(input) {
-		if name != "" && !slices.Contains(out, name) {
-			out = append(out, name)
+		if err := mmCall(caps, uintptr(i), uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw))); err == nil {
+			name := unsafe.Slice((*uint16)(unsafe.Pointer(&raw[8])), 32)
+			out[i].name = windows.UTF16ToString(name)
+			out[i].endpoint = waveEndpointID(message, uintptr(i))
 		}
 	}
 	return out
 }
 
-// Resolve the saved device by name each time because WinMM indices can change
-func deviceID(input bool, name string, allowTruncated bool) uintptr {
-	if name == "Default" || name == "" {
+func waveEndpointID(message *windows.LazyProc, device uintptr) string {
+	// WinMM returns the Core Audio endpoint ID as a UTF-16 string
+	const queryID, querySize = 0x0800 + 17, 0x0800 + 18
+	var size uint32
+	if err := mmCall(message, device, querySize, uintptr(unsafe.Pointer(&size)), 0); err != nil || size < 2 || size > 8192 || size%2 != 0 {
+		return ""
+	}
+	buf := make([]uint16, size/2)
+	if err := mmCall(message, device, queryID, uintptr(unsafe.Pointer(&buf[0])), uintptr(size)); err != nil {
+		return ""
+	}
+	return windows.UTF16ToString(buf)
+}
+
+func matchAudioDevice(name, endpoint string, candidates []audioDevice) uintptr {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if endpoint == "" && (name == "" || name == "default") {
 		return defaultWaveDevice
 	}
-	return matchDeviceID(name, audioDevices(input), allowTruncated)
-}
-
-func matchDeviceID(name string, candidates []string, allowTruncated bool) uintptr {
-	id := uintptr(defaultWaveDevice)
-	for i, candidate := range candidates {
-		// WAVEINCAPSW and WAVEOUTCAPSW reserve 31 UTF-16 units for a name.
-		truncated := allowTruncated && len(utf16.Encode([]rune(candidate))) == 31 &&
-			strings.HasPrefix(strings.ToLower(name), strings.ToLower(candidate))
-		if candidate != "" && (strings.EqualFold(name, candidate) || truncated) {
-			if id != defaultWaveDevice {
-				return defaultWaveDevice
+	match := func(matches func(audioDevice) bool) (uintptr, bool) {
+		id := uintptr(defaultWaveDevice)
+		for i, candidate := range candidates {
+			if matches(candidate) {
+				if id != defaultWaveDevice {
+					return defaultWaveDevice, true
+				}
+				id = uintptr(i)
 			}
-			id = uintptr(i)
+		}
+		return id, id != defaultWaveDevice
+	}
+	if endpoint != "" {
+		if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.endpoint, endpoint) }); found {
+			return id
 		}
 	}
+	if name == "" || name == "default" {
+		return defaultWaveDevice
+	}
+	if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.name, name) }); found {
+		return id
+	}
+	id, _ := match(func(device audioDevice) bool {
+		label := strings.ToLower(device.name)
+		return label != "" && (strings.Contains(label, name) || strings.Contains(name, label))
+	})
 	return id
 }
 
@@ -124,7 +136,7 @@ func openCaptureDevice(name string, id uintptr, allowFallback bool, open func(ui
 	return open(defaultWaveDevice)
 }
 
-func capture(ctx context.Context, name string, limit int, allowFallback bool) ([]byte, error) {
+func capture(ctx context.Context, name, endpoint string, limit int, allowFallback bool, fallback func()) ([]byte, error) {
 	// Both transcription providers consume 16 kHz mono samples
 	const rate = 16000
 	limit = max(10, min(120, limit))
@@ -137,14 +149,19 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	defer windows.CloseHandle(event)
 	open := mm.NewProc("waveInOpen")
 	// Cloud transcription requires an exact microphone name before recording.
-	id := deviceID(true, name, allowFallback)
+	id := matchAudioDevice(name, endpoint, audioDevices(true))
+	actual := id
 	// CALLBACK_EVENT lets WinMM wake capture as buffers return
 	openDevice := func(id uintptr) error {
+		actual = id
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
 	err = openCaptureDevice(name, id, allowFallback, openDevice)
 	if err != nil {
 		return nil, err
+	}
+	if actual == defaultWaveDevice && name != "" && name != "Default" && fallback != nil {
+		fallback()
 	}
 	defer mmCall(mm.NewProc("waveInClose"), handle)
 	reset := mm.NewProc("waveInReset")
@@ -221,19 +238,15 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	return pcm, nil
 }
 
-func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
-	return playPCMBuffer(ctx, device, pcm, rate, false)
-}
-
-func playPCMBuffer(ctx context.Context, device string, pcm []byte, rate int, loop bool) error {
+func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rate, channels int, loop bool) error {
 	if len(pcm) == 0 {
 		return nil
 	}
-	// Validate the sample rate and alignment before handing the buffer to WinMM
-	if rate < 8000 || rate > 192000 || len(pcm)%2 != 0 {
+	if channels < 1 || channels > 2 || rate < 8000 || rate > 192000 || len(pcm)%(2*channels) != 0 {
 		return errors.New("invalid playback format")
 	}
-	format := waveFormat{tag: 1, channels: 1, rate: uint32(rate), bytesPerSecond: uint32(rate * 2), align: 2, bits: 16}
+	align := uint16(2 * channels)
+	format := waveFormat{tag: 1, channels: uint16(channels), rate: uint32(rate), bytesPerSecond: uint32(rate) * uint32(align), align: align, bits: 16}
 	event, err := windows.CreateEvent(nil, 0, 0, nil)
 	if err != nil {
 		return err
@@ -244,7 +257,7 @@ func playPCMBuffer(ctx context.Context, device string, pcm []byte, rate int, loo
 	openDevice := func(id uintptr) error {
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
-	id := deviceID(false, device, true)
+	id := matchAudioDevice(device, endpoint, audioDevices(false))
 	err = openDevice(id)
 	// Playback can use the default speakers if the selected output fails
 	if err != nil && id != defaultWaveDevice {

@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ziul510/GSXCommsGo/internal/config"
@@ -104,5 +106,32 @@ func TestLegacyDirectMenuNumbers(t *testing.T) {
 		if _, ok := Number(text); ok {
 			t.Errorf("%q was accepted as a bare menu number", text)
 		}
+	}
+}
+
+func TestVocabularyKeepsLastGoodOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "words.json")
+	var loader Loader
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("\ufeff" + "{\"CUSTOM\":{\"keywords\":\"ramp\",\"bias_variants\":[\"ramps\"]}}")
+	if vocab, warning := loader.Load(dir); warning != "" || vocab.Normalize("ramps") != "ramp" {
+		t.Fatalf("valid BOM override warning: %s", warning)
+	}
+	write("{\"CUSTOM\":{\"keywords\":[false]}}")
+	if vocab, warning := loader.Load(dir); !strings.Contains(warning, "expected strings") || vocab.Normalize("ramps") != "ramp" {
+		t.Fatalf("failed to keep last good override: %s", warning)
+	}
+	if _, warning := loader.Load(dir); warning != "" {
+		t.Fatal("repeated the parse warning without a change")
+	}
+	write("{\"CUSTOM\":{\"keywords\":[\"ramp two\"],\"bias_variants\":\"ramps\"}}")
+	if vocab, warning := loader.Load(dir); warning != "" || vocab.Normalize("ramps") != "ramp two" {
+		t.Fatalf("failed to reload corrected override: %s", warning)
 	}
 }

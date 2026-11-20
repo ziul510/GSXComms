@@ -4,6 +4,7 @@
 package app
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -15,7 +16,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 	// Reopening can overlap the previous editor's pending write.
 	entries := config.Get[[]config.Preset](s.settingsDraft(), "presets")
 	form := config.Preset{Enabled: true}
-	selected := -1
+	selected, expanded := -1, -1
 	editing, saving := false, false
 	message := ""
 	available := config.Services[0]
@@ -32,7 +33,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				message = err.Error()
 			} else {
 				entries = updated
-				selected, editing = -1, false
+				selected, expanded, editing = -1, -1, false
 				if !parent.CloseRequested() {
 					parent.InvalidateLayout()
 				}
@@ -62,15 +63,42 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		window = w
 		var body []gui.View
 		for i, p := range entries {
-			entry := buttonConfig("preset-"+strconv.Itoa(i), p.Name, 0, false, saving, func() {
-				selected, form, message, editing = i, p, "", true
-				// Editing the service order must leave the saved entry intact until Save preset
-				form.Services = slices.Clone(p.Services)
+			id := strconv.Itoa(i)
+			count := "1 service"
+			if len(p.Services) != 1 {
+				count = fmt.Sprintf("%d services", len(p.Services))
+			}
+			color := ink
+			if !p.Enabled {
+				color = muted
+				count += " | Disabled"
+			}
+			action := "Expand"
+			if expanded == i {
+				action = "Collapse"
+			}
+			entry := buttonConfig("preset-"+id, action+" "+p.Name, 0, false, saving, func() {
+				if expanded == i {
+					expanded = -1
+				} else {
+					expanded = i
+				}
 			})
 			entry.Sizing, entry.Height, entry.HAlign = gui.FillFit, 0, gui.Some(gui.HAlignLeft)
 			entry.Padding = gui.PadVH(10, 12)
-			entry.Content = []gui.View{wrapped(p.Name+" · "+p.Codeword, 13, ink)}
-			body = append(body, gui.Button(entry))
+			entry.A11YCfg.A11YLabel = action + " " + p.Name
+			entry.Content = []gui.View{wrapped(p.Name+" | "+p.Codeword+" | "+count, 13, color)}
+			rows := []gui.View{gui.Button(entry)}
+			if expanded == i {
+				for index, service := range p.Services {
+					rows = append(rows, wrapped(fmt.Sprintf("%d. %s", index+1, service), 13, color))
+				}
+				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving, func() {
+					selected, form, message, editing = i, p, "", true
+					form.Services = slices.Clone(p.Services)
+				}))
+			}
+			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(8), 5, rows...)))
 		}
 		// Show a first-preset action only while there is no editor to fill in
 		if len(entries) == 0 && !editing {
@@ -153,7 +181,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			Content: []gui.View{
 				gui.Column(gui.ContainerCfg{
 					Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(5), SizeBorder: gui.NoBorder,
-					Content: []gui.View{bold("Presets", 20, ink), wrapped("Click a preset to edit it and reorder its services", 11, muted)},
+					Content: []gui.View{bold("Presets", 20, ink), wrapped("Expand a preset to see its services", 11, muted)},
 				}),
 				gui.Button(newPreset),
 			},

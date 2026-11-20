@@ -155,3 +155,22 @@ func TestImplicitMigrationKeepsExistingVaultCredential(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyPTTBackupOmitsCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SettingsFile)
+	legacy := []byte("{\"ptt_bind\":{\"type\":\"joy\",\"joy_id\":3,\"button\":2,\"joy_name\":\"Stick\"},\"mistral_api_key\":\"fixture-secret\"}")
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(dir, Defaults(), func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path + ".ptt-backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("fixture-secret")) || !bytes.Contains(data, []byte("\"joy_id\": 3")) {
+		t.Fatal("backup lost the SDL binding or retained the secret")
+	}
+}

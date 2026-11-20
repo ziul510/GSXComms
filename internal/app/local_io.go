@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"golang.org/x/sys/windows"
@@ -53,6 +55,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		// Side effects compare with the last saved settings, even if an earlier request failed
 		previous := s.cfg
 		s.cfg = req.values
+		s.publishTransmissionPolicy()
 		if !bytes.Equal(previous["ptt_bind"], s.cfg["ptt_bind"]) {
 			// Stop recording before changing which key release the hook listens for
 			s.record(false)
@@ -60,7 +63,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		}
 		// Enabling or disabling debug output needs an event even when no log text changed
 		if config.Get[bool](previous, "debug_mode") != config.Get[bool](s.cfg, "debug_mode") {
-			s.debugLog(debugEvent{enabled: config.Get[bool](s.cfg, "debug_mode")})
+			s.setDebug(config.Get[bool](s.cfg, "debug_mode"))
 		}
 		if config.Get[bool](previous, "minimize_to_tray") != config.Get[bool](s.cfg, "minimize_to_tray") {
 			s.configureTray()
@@ -119,7 +122,7 @@ func (s *state) debugWriter() {
 			return
 		case event := <-s.debug:
 			// Switching debug off closes both outputs until an enabled event arrives
-			if !event.enabled {
+			if !event.enabled || !s.debugEnabled.Load() {
 				closeDebug()
 				continue
 			}
@@ -170,6 +173,54 @@ func rotate(dir string) error {
 		}
 	}
 	return nil
+}
+
+func (s *state) setDebug(enabled bool) {
+	s.debugEnabled.Store(enabled)
+	s.debugLog(debugEvent{enabled: enabled})
+	if enabled {
+		prefs := s.cfg
+		provider := config.Get[string](prefs, "speech_provider")
+		switch provider {
+		case "parakeet", "orukeet", "mistral":
+		default:
+			provider = "unknown"
+		}
+		s.trace("SYS", fmt.Sprintf("GSXComms starting diagnostics on %s/%s (%s)", runtime.GOOS, runtime.GOARCH, runtime.Version()))
+		s.trace("SYS", fmt.Sprintf("Speech provider %s, accent packs %d, recording cap %ds",
+			provider, len(config.Get[[]string](prefs, "installed_packs")), config.Get[int](prefs, "max_recording_seconds")))
+		s.trace("SYS", fmt.Sprintf("Auto-connect=%t, operator selection=%t, menu correction=%t, crew mute=%t, PTT bound=%t",
+			config.Get[bool](prefs, "auto_connect_sim"), config.Get[bool](prefs, "auto_select_operator"),
+			config.Get[bool](prefs, "enable_gsx_menu_text_correction"), config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice"),
+			config.Get[config.Binding](prefs, "ptt_bind").Type != ""))
+	}
+}
+
+// Diagnostics accept only app-generated facts so logs never persist transcript or credential text
+func (s *state) trace(category, detail string) {
+	if s.debugEnabled.Load() {
+		s.debugLog(debugEvent{true, fmt.Sprintf("%s [%s] %s", time.Now().Format("2006-01-02 15:04:05.000"), category, detail)})
+	}
+}
+
+func (s *state) traceFailure(category, operation string) {
+	if !s.debugEnabled.Load() {
+		return
+	}
+	s.trace(category, operation)
+	// Go function names and line numbers provide context without arguments or paths
+	var locations [6]uintptr
+	count := runtime.Callers(2, locations[:])
+	frames := runtime.CallersFrames(locations[:count])
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" {
+			s.trace(category, fmt.Sprintf("  %s:%d", frame.Function, frame.Line))
+		}
+		if !more {
+			break
+		}
+	}
 }
 
 func (s *state) debugLog(event debugEvent) {

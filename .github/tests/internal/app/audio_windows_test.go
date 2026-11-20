@@ -6,18 +6,26 @@ package app
 import (
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 )
 
-func TestCloudMicrophoneRejectsTruncatedMatch(t *testing.T) {
-	prefix := strings.Repeat("x", 31)
-	candidates := []string{prefix}
-	if got := matchDeviceID(prefix+" original microphone", candidates, false); got != defaultWaveDevice {
-		t.Fatalf("cloud capture matched a shared prefix to device %d", got)
-	}
-	if got := matchDeviceID(prefix+" original microphone", candidates, true); got != 0 {
-		t.Fatalf("local capture lost compatibility with truncated names: %d", got)
+func TestAudioEndpointMatching(t *testing.T) {
+	candidates := []audioDevice{{"Headset", "one"}, {"Headset", "two"}, {"Headset Studio", "three"}, {"Desk Mic", "four"}}
+	for _, test := range []struct {
+		name, endpoint string
+		want           uintptr
+	}{
+		{"Headset", "two", 1},
+		{"renamed", "three", 2},
+		{"Headset Studio", "gone", 2},
+		{"Desk", "", 3},
+		{"Headset", "", defaultWaveDevice},
+		{"set", "", defaultWaveDevice},
+		{"", "", defaultWaveDevice},
+	} {
+		if id := matchAudioDevice(test.name, test.endpoint, candidates); id != test.want {
+			t.Errorf("%q / %q resolved to %d, want %d", test.name, test.endpoint, id, test.want)
+		}
 	}
 }
 
