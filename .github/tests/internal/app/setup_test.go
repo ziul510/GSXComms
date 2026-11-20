@@ -87,17 +87,18 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 
 func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	dir := t.TempDir()
+	// Exercise the save gate independently of extracting hundreds of MP3s.
+	if err := os.MkdirAll(filepath.Join(dir, "Accents", packs[0].name), 0700); err != nil {
+		t.Fatal(err)
+	}
 	complete := false
-	cfg := firstAccentWindow(t.Context(), dir, filepath.Join("..", "..", "Accents"), config.Defaults(), func(prefs config.Values) {
+	cfg := firstAccentWindow(t.Context(), dir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
 		complete = config.Get[bool](prefs, "accent_setup_complete")
 	})
 	w := gui.NewTestWindow(t, cfg)
 	w.TestRender(nil)
 	if complete || w.CloseRequested() {
 		t.Fatal("setup completed before the user saved")
-	}
-	if err := w.TestClick("accent-packs:pack-" + packs[0].name); err != nil {
-		t.Fatal(err)
 	}
 	if err := w.TestClick("save-accents"); err != nil {
 		t.Fatal(err)
