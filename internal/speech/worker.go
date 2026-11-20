@@ -205,6 +205,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 		reply Frame
 		err   error
 	}
+	// The pipe goroutine may still need to send after a timeout returns.
 	resultCh := make(chan result, 1)
 	in, out := w.in, w.out
 	go func() {

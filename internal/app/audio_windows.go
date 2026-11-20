@@ -32,6 +32,7 @@ func audioDevices(input bool) []string {
 		var raw [128]byte
 		r, _, _ := caps.Call(i, uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw)))
 		if r != 0 {
+			// Keep the slot so slice indices still match WinMM device IDs.
 			out = append(out, "")
 			continue
 		}
@@ -137,6 +138,7 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	for i := range headers {
 		h := &headers[i]
 		h.data, h.length = &buffers[i][0], uint32(len(buffers[i]))
+		// WinMM keeps both pointers after waveInAddBuffer returns.
 		pins.Pin(h)
 		pins.Pin(h.data)
 		ptr := uintptr(unsafe.Pointer(h))

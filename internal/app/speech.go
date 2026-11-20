@@ -52,6 +52,7 @@ func (s *state) record(down bool) {
 	s.ptt = "Recording…"
 	go func() {
 		defer stop()
+		// Voxtral uploads audio, so a missing or busy named mic must stop capture.
 		pcm, captureErr := capture(capctx, config.Get[string](prefs, "input_device_name"), config.Get[int](prefs, "max_recording_seconds"), localSpeech)
 		if s.ctx.Err() != nil {
 			return
@@ -106,6 +107,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 		return "", fmt.Errorf("speech model is unavailable")
 	}
 	terms := vocab.Hotwords()
+	// Hotword changes need a worker reload even when the model revision stays the same.
 	signature := fmt.Sprintf("%s:%x", m.Revision, sha256.Sum256([]byte(strings.Join(terms, "\n"))))
 	if err := s.recognizer.Load(s.ctx, signature, m.Paths(s.dir), terms); err != nil {
 		return "", err

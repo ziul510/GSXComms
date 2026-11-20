@@ -178,6 +178,7 @@ func startMute(ctx context.Context, dir string) (func(), error) {
 		done <- strings.TrimSpace(line) == "ready"
 	}()
 	release := func() {
+		// The watchdog uses stdin EOF to restore audio even after the app crashes.
 		_ = in.Close()
 		go cmd.Wait()
 	}

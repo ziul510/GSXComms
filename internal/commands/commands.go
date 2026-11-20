@@ -91,6 +91,7 @@ func list(raw json.RawMessage) []string {
 }
 
 func Parse(raw []byte) (Vocabulary, error) {
+	// File order lets DEBOARDING take precedence when "deboard" also matches "board".
 	d := json.NewDecoder(bytes.NewReader(raw))
 	first, err := d.Token()
 	if err != nil || first != json.Delim('{') {

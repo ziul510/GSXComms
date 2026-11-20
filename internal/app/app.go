@@ -227,6 +227,7 @@ func (s *state) addJob(action func(context.Context, *gsx.Session)) bool {
 
 func (s *state) simulator() {
 	defer close(s.done)
+	// Keep polling and commands on one goroutine since they share the dispatch queue.
 	session := gsx.New(nil, gsx.Panel())
 	defer session.Close()
 	ticker := time.NewTicker(600 * time.Millisecond)
@@ -376,6 +377,7 @@ func (s *state) choose(index int) {
 	}
 	title, label := s.menu.Title, s.menu.Options[index]
 	if s.addJob(func(ctx context.Context, session *gsx.Session) {
+		// GSX can replace the menu while a selection waits in the job queue.
 		current := session.ReadMenu()
 		if current.Title != title || index >= len(current.Options) || current.Options[index] != label {
 			s.async(func() {
@@ -464,6 +466,7 @@ func (s *state) submit(input string) {
 		auto := config.Get[bool](prefs, "auto_select_operator")
 		log := func(sender, msg string) { s.async(func() { s.log(sender, msg) }) }
 		execute := func(service string) bool {
+			// Each preset service gets its own deadline even if earlier ones ran long.
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			defer cancel()
 			selected, err := session.Execute(serviceCtx, text, service, words.Keywords(service), auto)

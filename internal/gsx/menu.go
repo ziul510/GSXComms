@@ -190,6 +190,7 @@ func (s *Session) Open(ctx context.Context) error {
 		return err
 	}
 	s.remote = true
+	// Let GSX apply remote control before callers read or select from the menu.
 	return s.Sleep(ctx, 200*time.Millisecond)
 }
 
@@ -208,6 +209,7 @@ func (s *Session) Release(ctx context.Context) error {
 	menuErr := s.set(ctx, MenuOpen, 0)
 	_ = s.Sleep(ctx, 100*time.Millisecond)
 	err := errors.Join(menuErr, s.set(ctx, Remote, 0))
+	// Keep tracking remote control after a failed release so idle cleanup can retry.
 	s.remote = err != nil && s.Connected()
 	return err
 }
@@ -248,6 +250,7 @@ func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	var menu Menu
 	for i := 0; i < 8; i++ {
 		menu = s.ReadMenu()
+		// The panel file can still show the parent menu after a submenu choice.
 		if len(menu.Options) > 0 && (previous == nil || menu.Title != previous.Title || !slices.Equal(menu.Options, previous.Options)) {
 			return menu, nil
 		}

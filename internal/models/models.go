@@ -64,6 +64,7 @@ func (m Model) Ready(data string) bool {
 			return false
 		}
 	}
+	// Use the download's verification marker to avoid hashing models on every redraw.
 	mark, err := os.ReadFile(filepath.Join(m.Directory(data), ".verified"))
 	return err == nil && strings.TrimSpace(string(mark)) == m.Revision
 }
@@ -227,6 +228,7 @@ func (m Model) fetch(ctx context.Context, f File, dest string, progress func(int
 	if err != nil {
 		return err
 	}
+	// Request uncompressed bytes so resume offsets match the staged file.
 	req.Header.Set("Accept-Encoding", "identity")
 	if offset > 0 {
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")

@@ -194,6 +194,7 @@ func (c *connection) receive(ctx context.Context, kind uint32, request uintptr) 
 			case typeID == kind && request == 0:
 				return 0, nil
 			case typeID == kind && size >= 48:
+				// A response from a timed-out request can arrive during the next Get.
 				id := *(*uint32)(unsafe.Add(unsafe.Pointer(ptr), 12))
 				if id == uint32(request) {
 					bits := *(*uint64)(unsafe.Add(unsafe.Pointer(ptr), 40))

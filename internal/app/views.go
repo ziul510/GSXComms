@@ -298,6 +298,7 @@ func (s *state) settingsDraft() config.Values {
 
 func (s *state) mergeSettings(base, draft config.Values) config.Values {
 	next := s.settingsDraft()
+	// Keep newer saves for fields this dialog didn't edit.
 	for name, value := range draft {
 		if !bytes.Equal(base[name], value) {
 			next[name] = bytes.Clone(value)

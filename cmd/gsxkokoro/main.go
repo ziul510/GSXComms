@@ -150,6 +150,7 @@ func (s *runtimeState) phonemize(text string) (string, error) {
 			if len(seq) > contextSize {
 				return nil, errors.New("word exceeds the phonemizer context window")
 			}
+			// The exported ONNX graph expects 256 tokens even for short words.
 			padded := make([]int64, contextSize)
 			copy(padded, seq)
 			input, err := ort.NewTensor(ort.NewShape(1, contextSize), padded)
@@ -270,6 +271,7 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			for j, r := range first {
 				tokens[j+1] = s.vocab[string(r)]
 			}
+			// The voice file has a 256-float style vector for each unpadded token count.
 			styleIndex := len(first) * 256
 			audio, err := s.run(tokens, s.voice[styleIndex:styleIndex+256])
 			if err != nil {

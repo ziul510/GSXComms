@@ -66,6 +66,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 		return
 	}
 	var msg keyboardMsg
+	// Create the thread's message queue before cancellation can post WM_QUIT.
 	_, _, _ = peek.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 0)
 	id := windows.GetCurrentThreadId()
 	handle, _, _ := set.Call(13, callback, uintptr(module), 0)

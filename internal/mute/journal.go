@@ -94,6 +94,7 @@ func acquire(path string, api backend) error {
 			}
 		}
 		old = append(old, record{ID: s.ID, WasMuted: s.Muted})
+		// Recovery needs the original state on disk before muting anything.
 		if err := write(path, old); err != nil {
 			return err
 		}
@@ -125,6 +126,7 @@ func restore(path string, api backend) error {
 		return nil
 	})
 	var pending []record
+	// Unplugging an audio device can hide the session while its process is still alive.
 	for _, entry := range records {
 		if !restored[entry.ID] && api.Alive(entry.ID) {
 			pending = append(pending, entry)

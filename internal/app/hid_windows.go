@@ -54,6 +54,7 @@ func readHIDDevice(handle uintptr) *hidDevice {
 		return nil
 	}
 	path := windows.UTF16ToString(buf)
+	// Skip IG_ devices here to avoid duplicate button events from XInput.
 	if strings.Contains(strings.ToLower(path), "ig_") {
 		return nil
 	}
@@ -114,6 +115,7 @@ func (s *state) listenHID(ctx context.Context) {
 		case 0x00fe:
 			if msg.wParam == 2 {
 				if d := known[msg.lParam]; d != nil {
+					// An unplugged controller won't send a release for held buttons.
 					for _, button := range d.buttons {
 						s.hidButton(d, int(button)-1, false)
 					}

@@ -264,6 +264,7 @@ func save(dir string, values Values, migrateKey func(string) error) error {
 		return err
 	}
 	path := filepath.Join(dir, SettingsFile)
+	// The old JSON may be the only copy of the Voxtral key.
 	if err := preserveSettingsCredential(path, migrateKey); err != nil {
 		return err
 	}

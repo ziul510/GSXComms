@@ -123,6 +123,7 @@ func main() {
 				resp.Error = "app-local sherpa-onnx runtime is unavailable"
 				break
 			}
+			// The parent still tracks the old model if loading its replacement fails.
 			next, err := load(request)
 			if err != nil {
 				resp.Error = err.Error()

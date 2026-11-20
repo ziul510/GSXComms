@@ -59,6 +59,7 @@ func(b *Backend) win32Software(w *gui.Window)error{
 
 	var pixels []byte
 	last:=dibHeader{size:40,planes:1,depth:32}
+	// WM_PAINT passes nil to blit the last frame.
 	b.softwarePresent=func(w *gui.Window){
 		if w!=nil {
 			img,err:=soft.RenderDisplay(w,b.dpiScale)

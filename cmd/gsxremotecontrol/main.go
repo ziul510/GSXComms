@@ -42,6 +42,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 	connect(ctx, s)
 	send := json.NewEncoder(out)
 	msg := func(p map[string]any) { _ = send.Encode(p) }
+	// Send ready so clients can ping even while SimConnect is offline.
 	msg(map[string]any{"status": "ok", "ready": true, "connected": s.Connected()})
 	lines := make(chan string)
 	go func() {

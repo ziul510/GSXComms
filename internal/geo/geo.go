@@ -82,6 +82,7 @@ func Nearest(lat, lon float64) (Position, error) {
 	if err != nil {
 		return Position{}, err
 	}
+	// Cartesian distances work across the date line without wrapping longitude.
 	x, y, z := xyz(lat, lon)
 	best := math.Inf(1)
 	var result Position
