@@ -118,7 +118,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				bold(title, 14, ink),
 				formInput(gui.InputCfg{ID: "preset-name", Label: "Preset name", Text: form.Name, OnTextChanged: func(v string, _ gui.EventCtx) { form.Name = v }}),
 				formInput(gui.InputCfg{ID: "preset-trigger", Label: "Codeword", Text: form.Codeword, OnTextChanged: func(v string, _ gui.EventCtx) { form.Codeword = v }}),
-				toggleControl("preset-enabled", "Enabled", form.Enabled, func(ctx gui.EventCtx) {
+				toggleControl("preset-enabled", "Enabled", controlTextSize, form.Enabled, func(ctx gui.EventCtx) {
 					form.Enabled = !form.Enabled
 					ctx.Consume()
 					ctx.Window.InvalidateLayout()

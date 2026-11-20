@@ -90,7 +90,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	}
 	m, _ := models.Lookup("kokoro")
 	if !m.Ready(s.dir) {
-		log("ERR", "Kokoro menu-reader model is unavailable. Download it under Behavior in Settings")
+		log("ERR", "Kokoro menu-reader model is unavailable. Turn menu readout off and back on in Settings to retry the download")
 		return
 	}
 	select {

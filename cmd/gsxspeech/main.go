@@ -61,7 +61,8 @@ static const SherpaOnnxOfflineRecognizer *recognizer(
   // BPE phrase bias needs both the hotwords and the recognizer's token vocabulary
   if (words[0] && vocab[0]) {
     cfg.hotwords_file=words;
-    cfg.hotwords_score=2.0;
+    // Higher scores inserted unrelated service words in Parakeet smoke tests
+    cfg.hotwords_score=2.5f;
     cfg.model_config.modeling_unit="bpe";
     cfg.model_config.bpe_vocab=vocab;
   }

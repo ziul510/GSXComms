@@ -219,9 +219,9 @@ func (s *state) setDebug(enabled bool) {
 		s.trace("SYS", fmt.Sprintf("GSXComms starting diagnostics on %s/%s (%s)", runtime.GOOS, runtime.GOARCH, runtime.Version()))
 		s.trace("SYS", fmt.Sprintf("Speech provider %s, accent packs %d, recording cap %ds",
 			provider, len(config.Get[[]string](prefs, "installed_packs")), config.Get[int](prefs, "max_recording_seconds")))
-		s.trace("SYS", fmt.Sprintf("Auto-connect=%t, operator selection=%t, menu correction=%t, crew mute=%t, PTT bound=%t",
+		s.trace("SYS", fmt.Sprintf("Auto-connect=%t, operator selection=%t, Broader Mode=%t, crew mute=%t, PTT bound=%t",
 			config.Get[bool](prefs, "auto_connect_sim"), config.Get[bool](prefs, "auto_select_operator"),
-			config.Get[bool](prefs, "enable_gsx_menu_text_correction"), config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice"),
+			config.Get[bool](prefs, "enable_menu_matching"), config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice"),
 			config.Get[config.Binding](prefs, "ptt_bind").Type != ""))
 	}
 }

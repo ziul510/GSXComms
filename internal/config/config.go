@@ -165,10 +165,15 @@ func decode(data []byte) (Values, error) {
 			values[name] = raw
 		}
 	}
+	// Keep Broader Mode enabled if either previous menu option was enabled
+	if Get[bool](saved, "enable_gsx_menu_text_correction") {
+		values.Put("enable_menu_matching", true)
+	}
 	// Retired options and download flags have no meaning in the current app
 	for _, name := range []string{
 		"use_gsx_choice", "menu_delay", "key_delay", "auto_choice_delay", "menu_hotkey", "require_sim_ptt",
 		"first_launch", "model_downloaded_parakeet", "model_downloaded_orukeet", "model_downloaded_kokoro-82m-am-adam", "legacy_accent_dir",
+		"enable_gsx_menu_text_correction",
 	} {
 		delete(values, name)
 	}

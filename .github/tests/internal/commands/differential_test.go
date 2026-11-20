@@ -15,6 +15,43 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
+func TestCorrectLocalTranscript(t *testing.T) {
+	for input, want := range map[string]string{
+		"Cock pitch a ground.":            "cockpit to ground.",
+		"clock pit to ground":             "cockpit to ground",
+		"Clock picture ground.":           "cockpit to ground.",
+		"Cock pit two ground.":            "cockpit to ground.",
+		"Clock pit a ground.":             "cockpit to ground.",
+		"Clock pit to ground, X-ray GPU.": "cockpit to ground, request GPU.",
+		"Please x ray pushback":           "Please request pushback",
+		"Ground, re quest ground powder":  "Ground, request ground power",
+		"Connect the gee pee you":         "Connect the GPU",
+		"Connect the G P U":               "Connect the GPU",
+		"Connect the jet way":             "Connect the jetway",
+		"Connect the jet breach":          "Connect the jet bridge",
+		"Bring the air stainers":          "Bring the air stairs",
+		"Bring the air stares":            "Bring the air stairs",
+		"Request the fuel track":          "Request the fuel truck",
+		"Request the fool truck":          "Request the fuel truck",
+		"Request de-sing":                 "Request deicing",
+		"Start de boarding":               "Start deboarding",
+		"Request laboratory service":      "Request lavatory service",
+		"Request the laboratory truck":    "Request the lavatory truck",
+		"X-ray.":                          "request.",
+		"request x-ray juliett alfa":      "request x-ray juliett alfa",
+		"Gate X-ray four":                 "Gate X-ray four",
+		"clock pit to grounding":          "clock pit to grounding",
+		"x-raymond":                       "x-raymond",
+		"Check the fuel tracking":         "Check the fuel tracking",
+		"Gate D boarding":                 "Gate D boarding",
+		"Check the laboratory results":    "Check the laboratory results",
+	} {
+		if got := CorrectLocalTranscript(input); got != want {
+			t.Errorf("CorrectLocalTranscript(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func readTest(t *testing.T, path string, out any) {
 	t.Helper()
 	// The overlay runs this test from internal/commands, with fixtures kept under .github
