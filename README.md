@@ -2,9 +2,11 @@
 
 ## Install and start
 
-Run the x64 installer, then start **GSXComms** from **GSXComms Go** in the Start menu. Setup runs per user. Settings and models live in `%LOCALAPPDATA%\GSXCommsGo`. Uninstall removes the program and shortcut and preserves user data. Offline install, launch and uninstall passed on a Windows 10 Sandbox with graphics acceleration disabled. Signing and Windows 11 verification remain open.
+Extract the Windows ZIP and run **GSXComms.exe** from the extracted folder. You can also run the x64 installer, then start **GSXComms** from **GSXComms Go** in the Start menu. Settings and models live in `%LOCALAPPDATA%\GSXCommsGo`.
 
-In **Settings**, open **Speech model setup** to download or reload a model. The default PTT key is M. For Voxtral, validate a key in the speech dialog and choose the Mistral provider. Windows Credential Manager stores the key. Only eligible recordings in Voxtral mode go to Mistral. If a named microphone is unavailable in Voxtral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
+In **Settings**, use the speech model cards to download or reload local models. Choose **Set up Mistral** for the illustrated API key tutorial. After validating your key, choose **Save Changes** to activate Mistral. Windows Credential Manager stores the key. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
+
+Use **Accent Setup** to enable regional crew voices generated with ElevenLabs. The app uses enabled voices based on aircraft location or the forced accent in Settings. If a regional clip is unavailable, it tries your default accent and then the built-in English cue.
 
 ## Import legacy settings
 
@@ -25,13 +27,14 @@ python scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
 go vet ./...
 go build ./...
 pwsh -File scripts/build.ps1 -MakeNSIS C:\tools\nsis\makensis.exe -PhonemizerDir build\phonemizer
+pwsh -File scripts/package.ps1
 ```
 
-The unsigned package is written to `dist`.
+The installer, portable ZIP, and ZIP checksum are written to `dist/release`.
 
 ## GitHub releases
 
-Publish a GitHub Release for a tag that includes the release workflow. **Build Windows release** builds the unsigned x64 installer and attaches the executable, ZIP, and ZIP SHA-256 checksum. The ZIP also contains the license, third-party notices, and a checksum file for its contents.
+Publish a GitHub Release for a tag that includes the release workflow. **Build Windows release** attaches the unsigned x64 installer, portable ZIP, and ZIP SHA-256 checksum. The ZIP contains GSXComms.exe, the runtime files, the Accents and tutorial folders, LICENSE, third-party notices, and a checksum manifest.
 
 Run **Build Windows release** manually from Actions to get the same files as a workflow artifact.
 

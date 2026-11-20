@@ -11,19 +11,20 @@ import (
 
 	"github.com/ziul510/GSXCommsGo/internal/assets"
 	"github.com/ziul510/GSXCommsGo/internal/config"
+	"github.com/ziul510/GSXCommsGo/internal/geo"
 )
 
 // Each queued clip carries its own settings and either PCM or an embedded cue name
 type playback struct {
-	prefs config.Values
-	pcm   []byte
-	rate  int
-	cue   string
+	prefs       config.Values
+	pcm         []byte
+	rate        int
+	cue, option string
+	location    *geo.Position
 }
 
-func (s *state) cue(prefs config.Values, name string, high bool) {
-	// The bundled fallback cues are raw 24 kHz PCM
-	s.queueAudio(playback{prefs: prefs, cue: strings.ToLower(name), rate: 24000}, high)
+func (s *state) cue(prefs config.Values, name, option string, high bool) {
+	s.queueAudio(playback{prefs: prefs, cue: strings.ToLower(name), option: option, location: s.location.Load()}, high)
 }
 
 func (s *state) queueAudio(request playback, high bool) {
@@ -57,11 +58,14 @@ func (s *state) playbackLoop() {
 		}
 		// Decode bundled clips only when they reach playback Synthesized clips already have PCM
 		if next.cue != "" {
-			pcm, err := loadCue(next.cue)
-			if err != nil {
-				continue
+			next.pcm, next.rate = s.regionalCue(next)
+			if len(next.pcm) == 0 {
+				pcm, err := loadCue(next.cue)
+				if err != nil {
+					continue
+				}
+				next.pcm, next.rate = pcm, 24000
 			}
-			next.pcm = pcm
 			if next.cue == "error" {
 				// Keep the error cue's mute override local to that request
 				next.prefs = next.prefs.Copy()

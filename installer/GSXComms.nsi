@@ -34,6 +34,31 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
   ${EndIf}
 !macroend
 
+!macro Asset action folder file
+  !if "${action}" == "install"
+    SetOutPath "$INSTDIR\${folder}"
+    File "..\${folder}\${file}"
+  !else
+    Delete "$INSTDIR\${folder}\${file}"
+  !endif
+!macroend
+
+!macro TutorialAndAccents action
+  !insertmacro Asset "${action}" "Accents" "East Asia & Pacific.zip"
+  !insertmacro Asset "${action}" "Accents" "Eastern Europe.zip"
+  !insertmacro Asset "${action}" "Accents" "English-Speaking Countries.zip"
+  !insertmacro Asset "${action}" "Accents" "Latin & Southern Europe.zip"
+  !insertmacro Asset "${action}" "Accents" "Middle East & North Africa.zip"
+  !insertmacro Asset "${action}" "Accents" "South & Southeast Asia.zip"
+  !insertmacro Asset "${action}" "Accents" "Sub-Saharan Africa.zip"
+  !insertmacro Asset "${action}" "Accents" "Western & Northern Europe.zip"
+  !insertmacro Asset "${action}" "tutorial" "step1.png"
+  !insertmacro Asset "${action}" "tutorial" "step2.png"
+  !insertmacro Asset "${action}" "tutorial" "step3.png"
+  !insertmacro Asset "${action}" "tutorial" "step4.png"
+  !insertmacro Asset "${action}" "tutorial" "step5.png"
+!macroend
+
 ; Check every bundled executable and runtime before replacing or removing any of them
 !macro CheckProgramFiles
   !insertmacro CheckAvailable "GSXComms.exe"
@@ -64,6 +89,7 @@ Section "GSXComms"
   File "..\build\gsxmute.exe"
   File "..\LICENSE"
   File "..\THIRD_PARTY_NOTICES"
+  !insertmacro TutorialAndAccents "install"
   ; Both workers use the same executable name but keep separate DLL directories
   SetOutPath "$INSTDIR\workers\sherpa"
   File "..\build\workers\sherpa\gsxspeech.exe"
@@ -124,6 +150,7 @@ Section "Uninstall"
   Delete "$INSTDIR\gsxmute.exe"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES"
+  !insertmacro TutorialAndAccents "uninstall"
   ; Leave the installer registration available for another attempt if file removal fails
   ${If} ${Errors}
     MessageBox MB_OK|MB_ICONSTOP "Some program files could not be removed. Close GSXComms and run uninstall again." /SD IDOK
@@ -134,6 +161,8 @@ Section "Uninstall"
   RMDir "$INSTDIR\workers\sherpa"
   RMDir "$INSTDIR\workers\kokoro"
   RMDir "$INSTDIR\workers"
+  RMDir "$INSTDIR\Accents"
+  RMDir "$INSTDIR\tutorial"
   Delete "$SMPROGRAMS\GSXComms Go\GSXComms.lnk"
   RMDir "$SMPROGRAMS\GSXComms Go"
   DeleteRegKey HKCU "${UNINSTALL}"

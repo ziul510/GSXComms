@@ -13,7 +13,10 @@ import (
 
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
+	"github.com/ziul510/GSXCommsGo/internal/models"
 )
+
+const controlTextSize = 14
 
 // Use the Windows UI font for app labels and controls
 func labelStyle(size float32, color gui.Color) gui.TextStyle {
@@ -36,11 +39,11 @@ func wrapped(label string, size float32, color gui.Color) gui.View {
 }
 
 func buttonConfig(id, label string, width float32, primary, disabled bool, onClick func()) gui.ButtonCfg {
-	style := labelStyle(12, ink)
+	style := labelStyle(controlTextSize, ink)
 	colors := gui.ColorSet{Base: card, Hover: elevated}
 	// Primary controls use the accent fill and dark text for contrast
 	if primary {
-		style = labelStyle(13, bg).Bold()
+		style = labelStyle(controlTextSize, bg).Bold()
 		colors = gui.ColorSet{Base: accent, Hover: accentHover}
 	}
 	sizing := gui.FitFixed
@@ -49,7 +52,7 @@ func buttonConfig(id, label string, width float32, primary, disabled bool, onCli
 		sizing = gui.FixedFixed
 	}
 	return gui.ButtonCfg{
-		ID: id, Width: width, Height: 32, Sizing: sizing, Radius: gui.RadiusPx(6), Padding: gui.PadVH(0, 8),
+		ID: id, Width: width, Height: 36, Sizing: sizing, Radius: gui.RadiusPx(6), Padding: gui.PadVH(0, 8),
 		SizeBorder: gui.NoBorder, Colors: colors, Disabled: disabled, VAlign: gui.Some(gui.VAlignMiddle),
 		Content: []gui.View{gui.Label(label, style)},
 		// Consume the click and request a redraw after the callback changes app state
@@ -110,7 +113,7 @@ func mainView(w *gui.Window) gui.View {
 		topmost.Height, topmost.SizeBorder = 28, gui.BorderPx(1)
 		topmost.Colors.Border = accent
 		if !active {
-			topmost.Content = []gui.View{text("Top Most", 11, muted)}
+			topmost.Content = []gui.View{text("Top Most", controlTextSize, muted)}
 			topmost.Colors = gui.ColorSet{Base: elevated, Hover: card, Border: bg, BorderFocus: accent}
 		}
 		bar = append(bar, gui.Button(topmost), gap(4, 1))
@@ -164,10 +167,10 @@ func mainView(w *gui.Window) gui.View {
 		if title == "" {
 			title = "GSX Menu"
 		}
-		logArea.Content = append(logArea.Content, bold(title, 11, ink))
+		logArea.Content = append(logArea.Content, bold(title, 15, ink))
 		// The overlay can remain open while the next panel file is still empty
 		if len(s.menu.Options) == 0 {
-			logArea.Content = append(logArea.Content, text("No GSX menu available", 11, muted))
+			logArea.Content = append(logArea.Content, text("No GSX menu available", controlTextSize, muted))
 		}
 		for i, item := range s.menu.Options {
 			// Display one-based labels but pass the original zero-based slot back to GSX
@@ -179,7 +182,7 @@ func mainView(w *gui.Window) gui.View {
 			}
 			option.Sizing, option.Height, option.Radius = gui.FillFit, 0, gui.RadiusPx(4)
 			option.Padding, option.HAlign = gui.PadVH(7, 16), gui.Some(gui.HAlignLeft)
-			option.Content = []gui.View{wrapped(label, 11, fg)}
+			option.Content = []gui.View{wrapped(label, controlTextSize, fg)}
 			logArea.Content = append(logArea.Content, gui.Button(option))
 		}
 	} else {
@@ -190,10 +193,10 @@ func mainView(w *gui.Window) gui.View {
 	connect := buttonConfig("connect", "Connect", 120, true, s.busy, s.toggleConnect)
 	switch {
 	case s.busy:
-		connect.Content = []gui.View{bold("Connecting…", 13, bg)}
+		connect.Content = []gui.View{bold("Connecting…", controlTextSize, bg)}
 		connect.Colors = gui.ColorSet{Base: orange, Disabled: orange}
 	case s.connected:
-		connect.Content = []gui.View{bold("Disconnect", 13, bg)}
+		connect.Content = []gui.View{bold("Disconnect", controlTextSize, bg)}
 		connect.Colors = gui.ColorSet{Base: green, Hover: gui.Hex(0x48df85)}
 	}
 	connect.Height = 36
@@ -207,8 +210,8 @@ func mainView(w *gui.Window) gui.View {
 		control.Height = 36
 		control.Colors = gui.ColorSet{Base: gui.ColorTransparent, Hover: elevated, Disabled: gui.ColorTransparent}
 	}
-	menu.Content = []gui.View{text(menuLabel, 12, muted)}
-	settings.Content = []gui.View{text("Settings", 12, muted)}
+	menu.Content = []gui.View{text(menuLabel, controlTextSize, muted)}
+	settings.Content = []gui.View{text("Settings", controlTextSize, muted)}
 	return gui.Column(gui.ContainerCfg{
 		Sizing: gui.FillFill, Color: bg, Radius: gui.NoRadius, Padding: gui.NoPadding, Spacing: gui.NoSpacing, SizeBorder: gui.NoBorder,
 		Content: []gui.View{
@@ -283,13 +286,13 @@ func labelRow(label gui.View, height float32) gui.View {
 func settingsField(label string, control gui.View) gui.View {
 	return gui.Column(gui.ContainerCfg{
 		Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(6), SizeBorder: gui.NoBorder,
-		Content: []gui.View{labelRow(text(label, 11, muted), 28), control},
+		Content: []gui.View{labelRow(text(label, 13, muted), 28), control},
 	})
 }
 
 // Apply shared field styling while preserving the caller's value and callbacks
 func formInput(cfg gui.InputCfg) gui.View {
-	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(12, ink)
+	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(controlTextSize, ink)
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(6, 7), gui.RadiusPx(5), gui.BorderPx(1)
 	cfg.Colors = gui.ColorSet{Base: elevated, Border: bg, BorderFocus: accent}
 	return gui.Input(cfg)
@@ -297,7 +300,7 @@ func formInput(cfg gui.InputCfg) gui.View {
 
 // Keep dropdown styling consistent even when dialogs supply different choices
 func formSelect(cfg gui.SelectCfg) gui.View {
-	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(11, ink)
+	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(controlTextSize, ink)
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(7, 7), gui.RadiusPx(5), gui.NoBorder
 	cfg.Colors = gui.ColorSet{Base: card, Hover: elevated, BorderFocus: accent}
 	return gui.Select(cfg)
@@ -310,7 +313,7 @@ func toggleControl(id, label string, selected bool, onClick func(gui.EventCtx)) 
 		track = accent
 	}
 	return gui.Switch(gui.SwitchCfg{
-		ID: id, Label: label, Selected: selected, TextStyleLabel: labelStyle(11, ink),
+		ID: id, Label: label, Selected: selected, TextStyleLabel: labelStyle(controlTextSize, ink),
 		Width: gui.SomeF(34), Height: gui.SomeF(18), SizeBorder: gui.BorderPx(1), Padding: gui.NoPadding,
 		ColorSelect: ink, ColorUnselect: ink, Colors: gui.ColorSet{Base: track, Border: track, BorderFocus: ink},
 		OnClick: onClick,
@@ -353,30 +356,6 @@ func (s *state) save(next config.Values, then func(error)) {
 	}
 }
 
-// These are the regional choices the wizard can show even without downloadable packs
-var packs = []struct {
-	name    string
-	accents []string
-}{
-	{"English-Speaking Countries", []string{"American", "British", "Irish", "Scottish", "Australian"}},
-	{"Latin & Southern Europe", []string{"Spanish", "Portuguese", "French", "Italian", "Romanian"}},
-	{"Western & Northern Europe", []string{"German", "Swedish", "Finnish"}},
-	{"Eastern Europe", []string{"Croatian", "Russian"}},
-	{"Middle East & North Africa", []string{"Arabic", "Turkish", "Greek"}},
-	{"Sub-Saharan Africa", []string{"Nigerian"}},
-	{"South & Southeast Asia", []string{"Indian", "Malay", "Filipino", "Singaporean"}},
-	{"East Asia & Pacific", []string{"Chinese", "Japanese", "Korean"}},
-}
-
-// Settings needs one flat list containing all of the wizard's accents
-var accents = func() []string {
-	var names []string
-	for _, pack := range packs {
-		names = append(names, pack.accents...)
-	}
-	return names
-}()
-
 func (s *state) openSettings() {
 	if s.settingsOpen {
 		return
@@ -385,12 +364,23 @@ func (s *state) openSettings() {
 	// Keep an opening snapshot so Save can tell which fields this dialog changed
 	base := s.settingsDraft()
 	draft := base.Copy()
+	key, _ := config.ReadKey()
+	setup := speechSetup{hasKey: key != "", tutorialDir: assetDir("tutorial"), local: map[string]localModelStatus{}}
+	for _, id := range []string{"parakeet", "orukeet", "kokoro"} {
+		model, _ := models.Lookup(id)
+		setup.local[id] = localModelStatus{ready: model.Ready(s.dir), cached: model.Cached(s.dir)}
+	}
 	var message string
 	var saving, closed bool
 	var closePresets func()
 	closeSettings := func() {
 		if !closed {
 			closed = true
+			if setup.cancel != nil {
+				setup.cancel()
+			}
+			setup.step, setup.key = 0, ""
+			s.settingUpMistral = false
 			// Cancel any pending input capture when leaving Settings
 			if s.binding != nil {
 				s.binding(config.Binding{})
@@ -404,6 +394,9 @@ func (s *state) openSettings() {
 	}
 	inputs, outputs := []string{"Default"}, []string{"Default"}
 	view := func(w *gui.Window) gui.View {
+		if setup.step > 0 {
+			return setup.mistralPage(s, w, draft)
+		}
 		var body []gui.View
 		// Give each group a consistent heading and short explanation in the scrolling body
 		section := func(name, description string) {
@@ -467,28 +460,11 @@ func (s *state) openSettings() {
 		slider("volume_static", "Static volume", 0, 0.5, 0.01)
 		slider("volume_voice", "Voice volume", 0, 1, 0.01)
 		slider("max_recording_seconds", "Max recording (seconds)", 10, 120, 1)
-		section("Speech Recognition", "Pick a local model or the cloud Voxtral Small model")
-		provider := config.Get[string](draft, "speech_provider")
-		var modelRows []gui.View
-		// Select a provider in the draft separately from downloading or validating it
-		for _, model := range []struct{ id, label string }{
-			{"parakeet", "Standard, Recommended (Parakeet v2 0.6b)"},
-			{"orukeet", "Enhanced (Orukeet)"},
-			{"mistral", "Voxtral Small (cloud)"},
-		} {
-			right := []gui.View{button("provider-"+model.id, "Use", 56, true, false, func() { draft.Put("speech_provider", model.id) })}
-			if provider == model.id {
-				right = []gui.View{text("Active", 11, accent)}
-			}
-			row := outlinedCard(card, gui.PadVH(5, 11), 8, bold(model.label, 12, ink), spacer())
-			row.Sizing, row.Height, row.VAlign = gui.FillFixed, 44, gui.VAlignMiddle
-			row.Content = append(row.Content, right...)
-			modelRows = append(modelRows, gui.Row(row))
-		}
-		body = append(body, gui.Column(gui.ContainerCfg{
-			Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(10), SizeBorder: gui.NoBorder, Content: modelRows,
-		}), wrapped("Parakeet and Orukeet run locally. Voxtral Small sends recordings to Mistral.", 11, muted))
-		action("speech-models", "Speech model setup", false, func() { s.openSpeech(w) })
+		section("Speech Recognition", "Choose a speech model and manage local downloads")
+		body = append(body, setup.localCard(s, w, draft, "parakeet", "Parakeet v2 (recommended)"))
+		body = append(body, setup.localCard(s, w, draft, "orukeet", "Orukeet"))
+		body = append(body, setup.mistralCard(s, draft))
+		body = append(body, setup.localCard(s, w, draft, "kokoro", "Kokoro menu reader"))
 		section("Accent", "Default accent and regional packs")
 		pick("default_accent", "Default accent", accents)
 		action("accent-setup", "Open Accent Setup", false, s.openAccents)
@@ -529,10 +505,6 @@ func (s *state) openSettings() {
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
 		// Disabled leaves accent selection to the user's defaults and the aircraft location
 		pick("force_accent", "Force accent", append([]string{"Disabled"}, accents...))
-		body = append(body, gui.Row(gui.ContainerCfg{
-			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle,
-			Content: []gui.View{text("Built with ♥ by ziul510", 11, muted), spacer(), button("about", "About", 0, false, false, s.about)},
-		}))
 		save := buttonConfig("save", "Save Changes", 130, true, saving || closePresets != nil || s.binding != nil, func() {
 			message = "Saving…"
 			saving = true
@@ -551,7 +523,6 @@ func (s *state) openSettings() {
 				s.main.InvalidateLayout()
 			})
 		})
-		save.Height = 28
 		scrollPadding := gui.NoPadding
 		scrollPadding.Right = 16
 		return gui.Column(gui.ContainerCfg{
@@ -568,6 +539,11 @@ func (s *state) openSettings() {
 					Sizing: gui.FillFixed, Height: 44, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle,
 					Content: []gui.View{wrapped(message, 11, muted), spacer(), gui.Button(save)},
 				}),
+				gui.Row(gui.ContainerCfg{
+					Sizing: gui.FillFixed, Height: 32, Padding: gui.NoPadding, SizeBorder: gui.NoBorder,
+					HAlign: gui.HAlignCenter, VAlign: gui.VAlignMiddle,
+					Content: []gui.View{text("Built with ♥ by ziul510", 13, muted)},
+				}),
 			},
 		})
 	}
@@ -578,61 +554,6 @@ func (s *state) openSettings() {
 		in, out := deviceNames(true), deviceNames(false)
 		s.async(func() { inputs, outputs = in, out; s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() }) })
 	}()
-}
-
-func (s *state) about() {
-	if s.aboutOpen {
-		return
-	}
-	s.aboutOpen = true
-	// Display the app and dependency licenses shipped with the executable
-	contents := strings.TrimSpace(readNotice("LICENSE") + "\n\n" + readNotice("THIRD_PARTY_NOTICES"))
-	close := func() { s.aboutOpen = false }
-	s.dialog(gui.WindowCfg{Title: "About GSXComms", Width: 640, Height: 520}, close, func(w *gui.Window) gui.View {
-		return page("notices", []gui.View{bold("GSXComms", 22, ink), text("Copyright 2026 ziul510", 12, muted)}, []gui.View{wrapped(contents, 12, ink)}, []gui.View{spacer(), button("close", "Close", 80, true, false, func() { close(); w.Close() })})
-	})
-}
-
-func (s *state) openAccents() {
-	if s.accentOpen {
-		return
-	}
-	s.accentOpen = true
-	close := func() { s.accentOpen = false }
-	s.dialog(gui.WindowCfg{Title: "GSXComms Accent Setup", Width: 720, Height: 600, MinWidth: 520, MinHeight: 420}, close, func(w *gui.Window) gui.View {
-		// Show the supported regions while this build has no accent archives to install
-		var rows []gui.View
-		for _, pack := range packs {
-			rows = append(rows, gui.Column(outlinedCard(panel, gui.PadVH(12, 14), 4,
-				labelRow(bold(pack.name, 14, ink), 22), labelRow(wrapped("Includes: "+strings.Join(pack.accents, ", "), 12, muted), 24))))
-		}
-		list := outlinedCard(card, gui.PadVH(12, 16), 12, rows...)
-		list.ID, list.Sizing, list.Scrollable = "accent-packs", gui.FillFill, true
-		list.ScrollMode, list.ScrollbarCfgY = gui.ScrollVerticalOnly, &slimScrollbar
-		list.Padding.Right = 26
-		done := buttonConfig("continue", "Done", 140, true, false, func() {
-			next := s.settingsDraft()
-			// Remember that the welcome wizard was completed so startup won't show it again
-			next.Put("accent_setup_complete", true)
-			s.save(next, nil)
-			close()
-			w.Close()
-		})
-		done.Height = 40
-		padding := gui.PadVH(30, 40)
-		padding.Top = 40
-		return gui.Column(gui.ContainerCfg{
-			Sizing: gui.FillFill, Color: bg, Padding: padding, Spacing: gui.SpacingPx(20), SizeBorder: gui.NoBorder,
-			Content: []gui.View{
-				gui.Column(gui.ContainerCfg{
-					Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8),
-					Content: []gui.View{bold("Accent Setup", 24, ink), wrapped("Accent archives are unavailable in this build.", 13, muted)},
-				}),
-				labelRow(text("Regional accent packs", 13, muted), 28), gui.Column(list),
-				gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Content: []gui.View{spacer(), gui.Button(done)}}),
-			},
-		})
-	})
 }
 
 func (s *state) showHotfix() {

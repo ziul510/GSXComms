@@ -1,0 +1,251 @@
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"image"
+	_ "image/png"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/go-gui-org/go-gui/gui"
+	"github.com/ziul510/GSXCommsGo/internal/config"
+	"github.com/ziul510/GSXCommsGo/internal/models"
+	"github.com/ziul510/GSXCommsGo/internal/speech"
+	"golang.org/x/sys/windows"
+)
+
+type localModelStatus struct {
+	ready, cached bool
+	message       string
+}
+
+type speechSetup struct {
+	local       map[string]localModelStatus
+	running     string
+	cancel      context.CancelFunc
+	step        int
+	key         string
+	hasKey      bool
+	keyMessage  string
+	tutorialDir string
+	images      []tutorialImage
+}
+
+func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values, id, label string) gui.View {
+	m, _ := models.Lookup(id)
+	status := setup.local[id]
+	note := status.message
+	if note == "" {
+		note = "Available for download"
+		if status.ready {
+			note = "Downloaded"
+		}
+	}
+	current := config.Get[string](draft, "speech_provider") == id
+	busy := setup.running != ""
+	run := func(operation string) {
+		ctx, cancel := context.WithCancel(s.ctx)
+		setup.running = id
+		setup.cancel = cancel
+		status.message = operation + "…"
+		setup.local[id] = status
+		go func() {
+			defer cancel()
+			var err error
+			var result string
+			if operation == "Downloading" {
+				err = m.Download(ctx, s.dir, func(done, total int64) {
+					w.QueueCommand(func(w *gui.Window) {
+						status := setup.local[id]
+						status.message = fmt.Sprintf("Downloading %.1f / %.1f MiB", float64(done)/(1<<20), float64(total)/(1<<20))
+						setup.local[id] = status
+						w.InvalidateLayout()
+					})
+				})
+				result = "Downloaded"
+			} else {
+				if id == "kokoro" {
+					s.reader.Reset()
+				} else {
+					s.recognizer.Reset()
+				}
+				result = "Model will reload next time it is used"
+				if operation == "Deleting" {
+					err = m.Delete(s.dir)
+					result = "Model deleted"
+				}
+			}
+			if err != nil {
+				result = err.Error()
+			}
+			next := localModelStatus{ready: m.Ready(s.dir), cached: m.Cached(s.dir), message: result}
+			w.QueueCommand(func(w *gui.Window) {
+				setup.running, setup.cancel = "", nil
+				setup.local[id] = next
+				w.InvalidateLayout()
+			})
+		}()
+	}
+	actions := []gui.View{
+		button("download-"+id, "Download", 0, !status.ready, busy || status.ready, func() { run("Downloading") }),
+		button("reload-"+id, "Reload", 0, false, busy || !status.ready, func() { run("Reloading") }),
+		button("delete-"+id, "Delete", 0, false, busy || !status.cached, func() { run("Deleting") }),
+	}
+	if setup.running == id && strings.HasPrefix(status.message, "Downloading") {
+		actions = append(actions, button("stop-download", "Cancel", 0, false, false, setup.cancel))
+	}
+	heading := []gui.View{bold(label, 15, ink), spacer()}
+	if current {
+		heading = append(heading, text("Active", 13, accent))
+	} else if id != "kokoro" {
+		heading = append(heading, button("provider-"+id, "Use", 56, true, false, func() { draft.Put("speech_provider", id) }))
+	}
+	return gui.Column(outlinedCard(card, gui.PadAll(12), 8, speechRow(heading...), wrapped(note, 13, muted), speechRow(actions...)))
+}
+
+func speechRow(content ...gui.View) gui.View {
+	return gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8), VAlign: gui.VAlignMiddle, Content: content})
+}
+
+const mistralWarning = "When you use Mistral, GSXComms sends your voice recordings to Mistral for transcription. Mistral may use them to train AI models, depending on your plan and privacy settings."
+
+var mistralSteps = []string{
+	"Open Mistral Studio and sign in or create an account with API access.",
+	"In Mistral Studio, choose API Keys.",
+	"Select Create new key.",
+	"Name the key GSXComms, choose an expiration date and workspace, then select Create new key.",
+	"Copy the key before closing the dialog. Mistral shows the full key only once.",
+}
+
+type tutorialImage struct {
+	path          string
+	width, height float32
+}
+
+func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
+	heading := []gui.View{bold("Mistral · Voxtral Small", 15, ink), spacer()}
+	if config.Get[string](draft, "speech_provider") == "mistral" {
+		heading = append(heading, text("Active", 13, accent))
+	}
+	open := func() {
+		setup.step = 1
+		s.settingUpMistral = true
+		// Read image dimensions once so screenshots can scale without distorting
+		if setup.images == nil {
+			setup.images = make([]tutorialImage, len(mistralSteps))
+			for i := range setup.images {
+				path := filepath.Join(setup.tutorialDir, fmt.Sprintf("step%d.png", i+1))
+				file, err := os.Open(path)
+				if err != nil {
+					continue
+				}
+				size, _, err := image.DecodeConfig(file)
+				file.Close()
+				if err == nil && size.Width > 0 && size.Height > 0 {
+					setup.images[i] = tutorialImage{path, float32(size.Width), float32(size.Height)}
+				}
+			}
+		}
+	}
+	control := buttonConfig("provider-mistral", "Set up Mistral", 0, false, false, open)
+	control.Sizing, control.Height = gui.FillFit, 0
+	control.Padding, control.SizeBorder = gui.PadAll(12), gui.BorderPx(1)
+	control.Colors.Border, control.Colors.BorderFocus = elevated, accent
+	control.A11YCfg.A11YLabel = "Set up Mistral"
+	control.Content = []gui.View{gui.Column(gui.ContainerCfg{
+		Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8),
+		Content: []gui.View{speechRow(heading...), wrapped("Cloud transcription · Requires an API key", 13, muted), bold("Set up Mistral", 14, accent)},
+	})}
+	return gui.Button(control)
+}
+
+func (setup *speechSetup) mistralPage(s *state, w *gui.Window, draft config.Values) gui.View {
+	header := []gui.View{bold("Set up Mistral", 20, ink)}
+	leave := func() {
+		setup.step, setup.key, setup.keyMessage = 0, "", ""
+		s.settingUpMistral = false
+	}
+	back := button("mistral-back", "Back to Settings", 0, false, s.savingKey, leave)
+	if setup.step <= len(mistralSteps) {
+		i := setup.step - 1
+		header = append(header, wrapped(fmt.Sprintf("Step %d of %d", setup.step, len(mistralSteps)), 13, muted))
+		body := []gui.View{wrapped(mistralSteps[i], 15, ink)}
+		if i == 0 {
+			body = append(body, wrapped(mistralWarning, 14, orange), button("mistral-studio", "Open Mistral Studio", 0, false, false, func() {
+				err := windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), windows.StringToUTF16Ptr("https://console.mistral.ai/"), nil, nil, windows.SW_SHOWNORMAL)
+				if err != nil {
+					setup.keyMessage = "Open console.mistral.ai in your browser."
+				}
+			}))
+			if setup.keyMessage != "" {
+				body = append(body, wrapped(setup.keyMessage, 13, muted))
+			}
+		}
+		if screenshot := setup.images[i]; screenshot.path != "" {
+			width, _ := w.WindowSize()
+			scale := min(1, float32(max(1, width-64))/screenshot.width, 420/screenshot.height)
+			body = append(body, gui.Image(gui.ImageCfg{
+				ID: "mistral-screenshot", Src: screenshot.path, Width: screenshot.width * scale, Height: screenshot.height * scale,
+				A11YCfg: gui.A11YCfg{A11YLabel: mistralSteps[i]},
+			}))
+		}
+		nextLabel := "Next"
+		if setup.step == len(mistralSteps) {
+			nextLabel = "Enter API key"
+		}
+		return page("mistral-tutorial", header, body, []gui.View{back, spacer(),
+			button("mistral-previous", "Previous", 0, false, i == 0, func() { setup.step--; w.ScrollVerticalToPct("mistral-tutorial", 0) }),
+			button("mistral-next", nextLabel, 0, true, false, func() {
+				setup.step++
+				setup.keyMessage = ""
+				w.ScrollVerticalToPct("mistral-tutorial", 0)
+			}),
+		})
+	}
+	useMistral := func() {
+		draft.Put("speech_provider", "mistral")
+		leave()
+	}
+	body := []gui.View{
+		bold("Voice privacy", 16, ink), wrapped(mistralWarning, 14, orange),
+		wrapped("Paste your key below. Windows Credential Manager stores it after validation.", 14, muted),
+		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: true, Disabled: s.savingKey,
+			OnTextChanged: func(v string, _ gui.EventCtx) { setup.key = v; w.InvalidateLayout() }}),
+		button("save-key", "Validate key and select Mistral", 0, true, s.savingKey || strings.TrimSpace(setup.key) == "", func() {
+			token := strings.TrimSpace(setup.key)
+			setup.key, setup.keyMessage, s.savingKey = "", "Validating key…", true
+			go func() {
+				err := speech.ValidateMistral(s.ctx, token)
+				if err == nil {
+					err = config.SaveKey(token)
+				}
+				s.async(func() {
+					s.savingKey = false
+					if err != nil {
+						setup.keyMessage = err.Error()
+					} else {
+						setup.hasKey = true
+						if setup.step > 0 {
+							useMistral()
+						}
+					}
+					s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+				})
+			}()
+		}),
+	}
+	if setup.hasKey {
+		body = append(body, button("use-saved-key", "Select Mistral with saved key", 0, false, s.savingKey, useMistral))
+	}
+	if setup.keyMessage != "" {
+		body = append(body, wrapped(setup.keyMessage, 13, muted))
+	}
+	return page("mistral-key", header, body, []gui.View{back, spacer(),
+		button("mistral-last-step", "Previous", 0, false, s.savingKey, func() { setup.step--; setup.key = ""; setup.keyMessage = "" }),
+	})
+}

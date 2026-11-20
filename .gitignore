@@ -41,7 +41,8 @@ coverage.out
 .coverage
 .coverage.*
 logs/
-/Accents/
+/Accents/*
+!/Accents/*.zip
 /models/
 
 # Local databases and dumps

@@ -7,9 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-gui-org/go-gui/gui"
@@ -41,36 +41,37 @@ var (
 
 // UI state stays on the window thread Workers communicate through queues and callbacks
 type state struct {
-	audioQueue, audioPriority                       chan playback
-	saves                                           chan *saveRequest
-	pendingSave                                     *saveRequest
-	saved                                           chan struct{}
-	debug                                           chan debugEvent
-	location                                        geo.Position
-	reader                                          *speech.Worker
-	speaking                                        chan struct{}
-	pttHeld, processing, speechOpen, savingKey      bool
-	recording                                       context.CancelFunc
-	recognizer                                      *speech.Worker
-	dir                                             string
-	cfg                                             config.Values
-	host                                            *gui.App
-	main                                            *gui.Window
-	tray                                            *gui.SystemTrayHandle
-	icon                                            []byte
-	ctx                                             context.Context
-	cancel                                          context.CancelFunc
-	jobs                                            chan func(context.Context, *gsx.Session)
-	done                                            chan struct{}
-	lines                                           []string
-	input                                           string
-	ptt                                             string
-	connected, ready, busy, overlay, speedKnown     bool
-	menu                                            gsx.Menu
-	speed                                           float64
-	highlight                                       int
-	settingsOpen, aboutOpen, accentOpen, hotfixOpen bool
-	binding                                         func(config.Binding)
+	audioQueue, audioPriority                        chan playback
+	saves                                            chan *saveRequest
+	pendingSave                                      *saveRequest
+	saved                                            chan struct{}
+	debug                                            chan debugEvent
+	location                                         atomic.Pointer[geo.Position]
+	accentsDir, crewVoice                            string
+	reader                                           *speech.Worker
+	speaking                                         chan struct{}
+	pttHeld, processing, savingKey, settingUpMistral bool
+	recording                                        context.CancelFunc
+	recognizer                                       *speech.Worker
+	dir                                              string
+	cfg                                              config.Values
+	host                                             *gui.App
+	main                                             *gui.Window
+	tray                                             *gui.SystemTrayHandle
+	icon                                             []byte
+	ctx                                              context.Context
+	cancel                                           context.CancelFunc
+	jobs                                             chan func(context.Context, *gsx.Session)
+	done                                             chan struct{}
+	lines                                            []string
+	input                                            string
+	ptt                                              string
+	connected, ready, busy, overlay, speedKnown      bool
+	menu                                             gsx.Menu
+	speed                                            float64
+	highlight                                        int
+	settingsOpen, accentOpen, hotfixOpen             bool
+	binding                                          func(config.Binding)
 }
 
 func Run(dir string) {
@@ -80,6 +81,8 @@ func Run(dir string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
+	s.accentsDir = assetDir("Accents")
+	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
 	// Use separate native workers for input transcription and menu readout
 	s.recognizer = speech.NewWorker("sherpa")
 	s.reader = speech.NewWorker("kokoro")
@@ -253,7 +256,6 @@ func (s *state) simulator() {
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
 	var lastRemote, timeAtLocation time.Time
-	var lastLocation geo.Position
 	failed := 0
 	for {
 		select {
@@ -283,6 +285,8 @@ func (s *state) simulator() {
 			// Require consecutive failures before dropping the transport and hiding stale UI state
 			if failed >= 3 {
 				_ = session.Close()
+				s.location.Store(nil)
+				timeAtLocation = time.Time{}
 				failed = 0
 				s.async(func() {
 					s.connected = false
@@ -300,16 +304,15 @@ func (s *state) simulator() {
 				lat, lon, err := session.Location(geoCtx)
 				stop()
 				if err == nil {
-					// Update the stored location on a region change The accent lookup here is for debug output
-					if pos, err := geo.Nearest(lat, lon); err == nil && pos != lastLocation {
-						lastLocation = pos
+					previous := s.location.Load()
+					if pos, err := geo.Nearest(lat, lon); err == nil && (previous == nil || pos != *previous) {
+						s.location.Store(&pos)
 						overrides := geo.Overrides(s.dir)
 						s.async(func() {
-							s.location = pos
 							fallback := config.Get[string](s.cfg, "default_accent")
 							forced := config.Get[string](s.cfg, "force_accent")
 							if config.Get[bool](s.cfg, "debug_mode") {
-								selected := geo.Accent(s.location, overrides, fallback, forced)
+								selected := geo.Accent(pos, overrides, fallback, forced)
 								s.debugLog(debugEvent{true, "GEO: country " + pos.Country + ", accent " + selected})
 							}
 						})
@@ -344,6 +347,7 @@ func (s *state) toggleConnect() {
 	s.busy = s.addJob(func(ctx context.Context, session *gsx.Session) {
 		if session.Connected() {
 			_ = session.Close()
+			s.location.Store(nil)
 			s.async(func() {
 				s.connected = false
 				s.ready = false
@@ -368,7 +372,7 @@ func (s *state) toggleConnect() {
 			s.speed = speed
 			s.speedKnown = statusErr == nil
 			s.log("SYS", "Connected to SimConnect")
-			s.cue(s.cfg.Copy(), "connected", true)
+			s.cue(s.cfg.Copy(), "connected", "", true)
 		})
 	})
 }
@@ -520,7 +524,7 @@ func (s *state) submit(input string) {
 			}
 			log("GSX", fmt.Sprintf("Menu option %q matched and selected", selected))
 			if service != "" {
-				s.cue(prefs, service, true)
+				s.cue(prefs, service, selected, true)
 			}
 			return true
 		}
@@ -545,25 +549,15 @@ func (s *state) submit(input string) {
 		case "menu":
 			execute("")
 		case "greeting":
-			s.cue(prefs, "greeting", false)
+			s.cue(prefs, "greeting", "", false)
 			log("GSX", "Ground crew greeting")
 		// Play the error cue and leave GSX alone when several services match
 		case "ambiguous":
-			s.cue(prefs, "error", true)
+			s.cue(prefs, "error", "", true)
 			log("SYS", "Multiple cmds detected")
 		default:
 			log("SYS", "No command recognised")
-			s.cue(prefs, "error", true)
+			s.cue(prefs, "error", "", true)
 		}
 	})
-}
-
-// Installed notices live beside the executable A local build can read them from the working directory
-func readNotice(name string) string {
-	exe, _ := os.Executable()
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), name))
-	if err != nil {
-		data, _ = os.ReadFile(name)
-	}
-	return string(data)
 }

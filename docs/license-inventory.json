@@ -51,6 +51,13 @@
         "LICENSE"
       ]
     },
+    "github.com/hajimehoshi/go-mp3": {
+      "version": "v0.3.4",
+      "license": "Apache-2.0",
+      "files": [
+        "LICENSE"
+      ]
+    },
     "github.com/rivo/uniseg": {
       "version": "v0.4.7",
       "license": "MIT",
@@ -198,12 +205,11 @@
       "terms": "https://github.com/NeuralVox/OpenPhonemizer/blob/main/LICENSE"
     },
     {
-      "name": "ElevenLabs legacy accent recordings",
-      "version": "reference snapshot",
-      "license": "generation-plan and voice rights are unverified",
+      "name": "Regional accent recordings",
+      "version": "generated with ElevenLabs",
+      "license": "redistribution authorized by the asset owner, ziul510",
       "source": "https://elevenlabs.io/terms-of-use",
-      "mode": "blocked from bundle and import",
-      "alternative": "Use recordings from consenting speakers with documented redistribution terms."
+      "mode": "bundled regional crew voices"
     },
     {
       "name": "GeoNames city coordinates and admin regions",
@@ -215,12 +221,11 @@
       "terms": "https://creativecommons.org/licenses/by/4.0/"
     },
     {
-      "name": "Legacy Voxtral tutorial captures",
-      "version": "reference snapshot",
-      "license": "third-party UI screenshot redistribution unverified",
+      "name": "Mistral Studio tutorial screenshots",
+      "version": "supplied by ziul510",
+      "license": "redistribution authorized by the asset owner, ziul510",
       "source": "https://docs.mistral.ai/",
-      "mode": "blocked from bundle",
-      "alternative": "Use original tutorial copy with vendor links."
+      "mode": "bundled API key setup tutorial"
     },
     {
       "name": "GPU provider DLLs",
