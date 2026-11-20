@@ -10,8 +10,8 @@ The supplied Python v4.1 snapshot is the baseline. Mark each workflow as passed,
 | MSFS 2024 and GSX transport | `sim_bridge.py`, `gsxremotecontrol.py` | FlyByWireless passed a live handshake, Couatl and aircraft reads, menu open, Additional Services selection, close, and remote-control release at KMCO Gate 34. Verify the main-window reconnect through a simulator restart. |
 | MSFS 2020 and GSX transport | Same GSX LVars and panel file | Live verification pending. |
 | PTT, crew audio and muting | `input_mapper.py`, `audio_engine.py`, `gsx_audio_muter.py` | Fixtures cover service state, gain, and the durable mute journal. Verify hardware bindings, non-default endpoints, recording static, and crash recovery with an actual Couatl session. |
-| Recognizers and model management | `stt_engine.py`, `main.py` | Existing fixtures cover cached files, resumed downloads, and worker recovery. Verify fresh auto-download, cancel and retry, Parakeet and Orukeet with representative recordings, and Voxtral with an authorized API key. |
-| Kokoro | `kokoro_tts.py`, `phonemizer_engine.py` | Pinned CPU runtime and phonemizer ship in the ZIP. Verify keyword readout in a live menu and CUDA with a compatible local runtime. |
-| Distribution | `scripts/build.ps1`, `scripts/package.ps1` | Verify ZIP contents and launch from a clean extraction without installing an SDK. |
+| Recognizers and model management | `stt_engine.py`, `main.py` | Cached Parakeet and Orukeet passed worker restart tests. Existing fixtures cover resumed downloads. Verify fresh auto-download, cancel and retry, speech accuracy with representative recordings, and Voxtral with an authorized API key. |
+| Kokoro | `kokoro_tts.py`, `phonemizer_engine.py` | The worker from the extracted ZIP synthesized menu text as 24 kHz PCM on CPU using the pinned model. Verify keyword readout in a live menu and CUDA with a compatible local runtime. |
+| Distribution | `scripts/build.ps1`, `scripts/package.ps1` | The ZIP allowlist passed. The user selected an accent pack from a fresh extraction and reached the main window. Both packaged speech workers initialized. Clean Windows 11 coverage remains open. |
 
 Launcher internals and performance benchmarking are outside this workflow checklist.
