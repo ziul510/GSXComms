@@ -300,7 +300,7 @@ func (s *state) simulator() {
 				lat, lon, err := session.Location(geoCtx)
 				stop()
 				if err == nil {
-					// Recalculate the accent only when the closest country or region changes.
+					// Update the stored location on a region change. The accent lookup here is for debug output.
 					if pos, err := geo.Nearest(lat, lon); err == nil && pos != lastLocation {
 						lastLocation = pos
 						overrides := geo.Overrides(s.dir)

@@ -304,7 +304,7 @@ func formSelect(cfg gui.SelectCfg) gui.View {
 }
 
 func toggleControl(id, label string, selected bool, onClick func(gui.EventCtx)) gui.View {
-	// Switch the track color according to the saved boolean state.
+	// Use the passed-in value so toggles can show draft edits before Save.
 	track := disabledInk
 	if selected {
 		track = accent

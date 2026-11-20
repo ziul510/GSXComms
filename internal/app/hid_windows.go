@@ -41,7 +41,7 @@ var (
 )
 
 func readHIDDevice(handle uintptr) *hidDevice {
-	// Raw Input uses separate queries for the device path and HID report descriptor.
+	// Query the path separately from the preparsed data used to decode HID reports.
 	const deviceName = 0x20000007
 	const preparse = 0x20000005
 	var size uint32
@@ -49,7 +49,7 @@ func readHIDDevice(handle uintptr) *hidDevice {
 	if uint32(result) == 0xffffffff || size == 0 || size > 4096 {
 		return nil
 	}
-	// The device-name query returns a character count. The descriptor query returns bytes.
+	// RIDI_DEVICENAME returns a character count. RIDI_PREPARSEDDATA returns bytes.
 	buf := make([]uint16, size)
 	result, _, _ = getRawDevice.Call(handle, deviceName, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
 	if uint32(result) == 0xffffffff {
@@ -117,7 +117,7 @@ func (s *state) listenHID(ctx context.Context) {
 			return
 		}
 		switch msg.msg {
-		// WM_INPUT_DEVICE_CHANGE can invalidate both the cached descriptor and held buttons.
+		// On device removal, release held buttons and discard the cached preparsed data.
 		case 0x00fe:
 			if msg.wParam == 2 {
 				if d := known[msg.lParam]; d != nil {
@@ -175,7 +175,7 @@ func (s *state) listenHID(ctx context.Context) {
 func (s *state) hidReport(d *hidDevice, report []byte) {
 	var usages [256]uint16
 	size := uint32(len(usages))
-	// Ask the HID parser for input usages on the Button page using this device's descriptor.
+	// Use the device's preparsed data to decode input usages on the Button page.
 	code, _, _ := getUsages.Call(0, 9, 0, uintptr(unsafe.Pointer(&usages[0])), uintptr(unsafe.Pointer(&size)), uintptr(unsafe.Pointer(&d.preparsed[0])), uintptr(unsafe.Pointer(&report[0])), uintptr(len(report)))
 	if uint32(code) != 0x00110000 || size > uint32(len(usages)) {
 		return
