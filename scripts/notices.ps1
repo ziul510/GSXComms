@@ -6,10 +6,12 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $inventory = Get-Content -LiteralPath 'docs/license-inventory.json' -Raw | ConvertFrom-Json -AsHashtable
 $notice = [Text.StringBuilder]::new()
+# Build one notice file without emitting a pipeline result for each appended line.
 function Add-Notice([string]$text) { [void]$notice.AppendLine($text) }
 Add-Notice 'Third-party notices for GSXComms'
 Add-Notice 'Copyright 2026 ziul510. Apache License 2.0 applies to the rewrite code.'
 Add-Notice ''
+# Include separately shipped data, libraries, and assets that Go cannot inventory.
 foreach ($entry in $inventory.components) {
     Add-Notice "$($entry.name) $($entry.version) — $($entry.license)"
     Add-Notice "Use: $($entry.mode)"
@@ -22,6 +24,7 @@ $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 # Include dependencies linked by the native speech workers in the inventory.
 $env:CGO_ENABLED = '1'
+# Inventory packages reachable from the command binaries instead of every module in go.sum.
 $modules = go list -deps -f '{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}' ./cmd/... |
     Where-Object { $_ -and $_ -notmatch '^github.com/ziul510/GSXCommsGo\|' } | Sort-Object -Unique
 if ($LASTEXITCODE -ne 0) { throw 'Failed to inventory linked modules' }
@@ -31,6 +34,7 @@ foreach ($line in $modules) {
     # A version change requires a fresh license review before packaging.
     if (!$approved -or $approved.version -ne $version) { throw "Unreviewed linked module $path $version" }
     Add-Notice "========== $path $version ($($approved.license)) =========="
+    # Include each reviewed license from the exact version selected by Go.
     foreach ($license in $approved.files) {
         Add-Notice (Get-Content -LiteralPath (Join-Path $dir $license) -Raw)
     }
@@ -46,6 +50,7 @@ foreach ($file in (Get-ChildItem 'docs/licenses' -File | Sort-Object Name)) {
     Add-Notice "========== $($file.Name) =========="
     Add-Notice (Get-Content -LiteralPath $file.FullName -Raw)
 }
+# Include NSIS's terms when the notice file is being prepared for an installer.
 if ($NSISRoot) {
     Add-Notice '========== NSIS installer =========='
     Add-Notice (Get-Content -LiteralPath (Join-Path $NSISRoot 'COPYING') -Raw)

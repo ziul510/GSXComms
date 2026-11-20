@@ -34,6 +34,7 @@ var (
 	target     = windows.StringToUTF16Ptr("GSXCommsGo/Voxtral")
 )
 
+// Match CREDENTIALW layout for the Windows credential calls.
 type credential struct {
 	Flags       uint32
 	Type        uint32
@@ -51,12 +52,14 @@ type credential struct {
 
 var credentialWrites sync.Mutex
 
+// Serialize explicit saves with implicit migration so an older key can't win a race.
 func SaveKey(token string) error {
 	credentialWrites.Lock()
 	defer credentialWrites.Unlock()
 	return writeKey(token)
 }
 
+// Only seed the vault when no current credential exists.
 func migrateLegacyKey(token string) error {
 	return migrateKeyIfMissing(token, ReadKey, writeKey)
 }
@@ -75,6 +78,7 @@ func migrateKeyIfMissing(token string, read func() (string, error), write func(s
 func writeKey(token string) error {
 	const generic = 1
 	const localMachine = 2
+	// An empty value removes the stored credential. An absent entry is already clear.
 	if token == "" {
 		ok, _, err := credDelete.Call(uintptr(unsafe.Pointer(target)), generic, 0)
 		if ok == 0 && !errors.Is(err, windows.ERROR_NOT_FOUND) {
@@ -82,6 +86,7 @@ func writeKey(token string) error {
 		}
 		return nil
 	}
+	// Pass the token as a byte blob and clear the temporary copy after the call.
 	blob := []byte(token)
 	defer clear(blob)
 	if len(blob) > 2560 {
@@ -89,6 +94,7 @@ func writeKey(token string) error {
 	}
 	entry := credential{Type: generic, Target: target, Size: uint32(len(blob)), Blob: &blob[0], Persist: localMachine}
 	ok, _, err := credWrite.Call(uintptr(unsafe.Pointer(&entry)), 0)
+	// The entry contains pointers that Windows uses during CredWrite.
 	runtime.KeepAlive(entry)
 	if ok == 0 {
 		return err
@@ -100,6 +106,7 @@ func ReadKey() (string, error) {
 	var entry *credential
 	ok, _, err := credRead.Call(uintptr(unsafe.Pointer(target)), 1, 0, uintptr(unsafe.Pointer(&entry)))
 	if ok == 0 {
+		// Treat an empty vault as a normal state when setting up or migrating the key.
 		if errors.Is(err, windows.ERROR_NOT_FOUND) {
 			return "", nil
 		}

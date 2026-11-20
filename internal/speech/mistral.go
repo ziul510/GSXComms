@@ -29,6 +29,7 @@ func Usable(pcm []byte) bool {
 	if len(pcm) < 8000 || len(pcm)%2 != 0 {
 		return false
 	}
+	// Read signed samples so loud negative peaks can pass the amplitude gate.
 	for i := 0; i < len(pcm); i += 2 {
 		s := int16(binary.LittleEndian.Uint16(pcm[i:]))
 		if s >= 350 || s <= -350 {
@@ -39,8 +40,10 @@ func Usable(pcm []byte) bool {
 }
 
 func wave(pcm []byte) []byte {
+	// Wrap the captured mono PCM16 in a standard 44-byte WAV header for the API.
 	wav := make([]byte, 44+len(pcm))
 	copy(wav, "RIFF")
+	// The RIFF chunk length excludes the first eight header bytes.
 	binary.LittleEndian.PutUint32(wav[4:], uint32(len(pcm)+36))
 	copy(wav[8:], "WAVEfmt ")
 	binary.LittleEndian.PutUint32(wav[16:], 16)
@@ -57,6 +60,7 @@ func wave(pcm []byte) []byte {
 }
 
 func request(ctx context.Context, key, method, endpoint string, data []byte, timeout time.Duration) ([]byte, error) {
+	// Fail before building a request when no vault credential is available.
 	if strings.TrimSpace(key) == "" {
 		return nil, errors.New("Mistral API key is not set")
 	}
@@ -78,6 +82,7 @@ func request(ctx context.Context, key, method, endpoint string, data []byte, tim
 		return nil, errors.New("Mistral network error")
 	}
 	defer resp.Body.Close()
+	// Translate service errors into UI messages without exposing the response body.
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -90,12 +95,14 @@ func request(ctx context.Context, key, method, endpoint string, data []byte, tim
 	}
 }
 
+// Check the credential with the models endpoint so validation uploads no recording.
 func ValidateMistral(ctx context.Context, key string) error {
 	_, err := request(ctx, key, http.MethodGet, "models", nil, 10*time.Second)
 	return err
 }
 
 func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string, error) {
+	// Apply the upload gate here even if a caller skipped the UI's check.
 	if !Usable(pcm) {
 		return "", nil
 	}
@@ -130,6 +137,7 @@ func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string,
 	if json.Unmarshal(data, &result) != nil {
 		return "", errInvalidTranscription
 	}
+	// A successful response can still contain no transcript.
 	if len(result.Choices) == 0 || result.Choices[0].Message.Content == nil {
 		return "", nil
 	}
@@ -142,6 +150,7 @@ func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string,
 			return "", errInvalidTranscription
 		}
 		var all strings.Builder
+		// Join text parts in order and skip any non-text content.
 		for _, part := range parts {
 			if part.Type == "text" {
 				all.WriteString(part.Text)

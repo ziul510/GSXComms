@@ -17,6 +17,7 @@ func main() {
 	dir := flag.String("data-dir", "", "GSXComms settings directory")
 	recovery := flag.Bool("restore", false, "restore audio from an interrupted playback")
 	flag.Parse()
+	// The player and recovery process need the same absolute journal path.
 	if !filepath.IsAbs(*dir) {
 		os.Exit(2)
 	}
@@ -27,6 +28,7 @@ func main() {
 			if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
 				return err
 			}
+			// A closed pipe signals playback ended or the parent exited.
 			_, err := io.Copy(io.Discard, os.Stdin)
 			return err
 		}

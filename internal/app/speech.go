@@ -17,6 +17,7 @@ import (
 )
 
 func (s *state) record(down bool) {
+	// A release ends capture. The collected audio still has to pass the speech gate.
 	if !down {
 		s.pttHeld = false
 		if s.recording != nil {
@@ -29,12 +30,14 @@ func (s *state) record(down bool) {
 		return
 	}
 	s.pttHeld = true
+	// Only one capture or transcription may be active for the PTT control.
 	if s.recording != nil || s.processing {
 		return
 	}
 	if !s.connected && !config.Get[bool](s.cfg, "simulation_mode") {
 		return
 	}
+	// Check the current flight state before opening the microphone.
 	if s.transmissionBlock() != "" {
 		return
 	}
@@ -42,6 +45,7 @@ func (s *state) record(down bool) {
 	prefs := s.cfg.Copy()
 	provider := config.Get[string](prefs, "speech_provider")
 	localSpeech := provider != "mistral"
+	// Local capture needs the selected pinned model on disk before recording can begin.
 	if localSpeech {
 		model, ok := models.Lookup(provider)
 		if !ok || !model.Ready(s.dir) {
@@ -59,9 +63,11 @@ func (s *state) record(down bool) {
 		if s.ctx.Err() != nil {
 			return
 		}
+		// Skip recognition for empty, quiet, or failed captures.
 		usable := captureErr == nil && speech.Usable(pcm)
 		s.async(func() {
 			s.recording = nil
+			// Move the UI from recording to transcription only if audio will be submitted.
 			s.processing = usable
 			s.ptt = "Idle"
 			if captureErr != nil {
@@ -87,6 +93,7 @@ func (s *state) record(down bool) {
 				s.log("SYS", "No speech recognized")
 				return
 			}
+			// Recognized speech and typed commands share routing and the current speed gate.
 			s.submit(transcript)
 		})
 	}()
@@ -98,11 +105,13 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Only the explicitly selected cloud provider reads the credential and sends audio.
 	if provider == "mistral" {
 		key, err := config.ReadKey()
 		if err != nil {
 			return "", err
 		}
+		// Send the vocabulary table so cloud transcription uses the same service words as routing.
 		return speech.Voxtral(s.ctx, key, config.Get[string](prefs, "mistral_model"), vocab.HotwordTable(), pcm)
 	}
 	m, ok := models.Lookup(provider)
@@ -119,6 +128,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 }
 
 func (s *state) openSpeech(parent *gui.Window) {
+	// The speech setup dialog owns its current operation and should only open once.
 	if s.speechOpen {
 		return
 	}
@@ -126,6 +136,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 	var cancel context.CancelFunc
 	var message, key string
 	var busy bool
+	// Closing setup cancels its download. Native model resets have their own worker lifecycle.
 	closing := func() {
 		if cancel != nil {
 			cancel()
@@ -135,6 +146,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 	labels := map[string]string{"parakeet": "Standard, Recommended (Parakeet v2 0.6b)", "orukeet": "Enhanced (Orukeet)", "kokoro": "Kokoro 82M menu reader"}
 	s.dialog(gui.WindowCfg{Title: "Speech Recognition", Width: 530, Height: 630, MinWidth: 440, MinHeight: 450}, closing, func(w *gui.Window) gui.View {
 		var body []gui.View
+		// Disable model actions while this dialog is downloading, resetting, or deleting a bundle.
 		unavailable := busy || cancel != nil
 		for _, id := range []string{"parakeet", "orukeet", "kokoro"} {
 			m, _ := models.Lookup(id)
@@ -150,6 +162,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 					message = "Checking available disk space…"
 					go func() {
 						defer stop()
+						// Model downloads run off the UI thread and queue progress updates back to the dialog.
 						err := m.Download(ctx, s.dir, func(done, total int64) {
 							w.QueueCommand(func(w *gui.Window) {
 								message = fmt.Sprintf("%s — %.1f / %.1f MiB", labels[id], float64(done)/(1<<20), float64(total)/(1<<20))
@@ -167,6 +180,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 						})
 					}()
 				}),
+				// Reload clears the worker now. The next transmission or readout opens the chosen model.
 				button("reload-"+id, "Reload", 72, false, unavailable || !ready, func() {
 					busy = true
 					go func() {
@@ -219,6 +233,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 				key = ""
 				message = "Validating key…"
 				go func() {
+					// Validate the candidate key before replacing what is stored in Credential Manager.
 					err := speech.ValidateMistral(s.ctx, token)
 					if err == nil {
 						err = config.SaveKey(token)

@@ -12,6 +12,7 @@ import (
 )
 
 func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose func()) func() {
+	// Edit the parent's draft while Settings owns the dialog.
 	entries := config.Get[[]config.Preset](draft, "presets")
 	form := config.Preset{Enabled: true}
 	selected := -1
@@ -23,6 +24,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 		editing = true
 	}
 	save := func() {
+		// Check duplicates against every other draft entry before inserting or replacing one.
 		value, err := config.ValidatePreset(form, entries, selected)
 		if err != nil {
 			message = err.Error()
@@ -39,6 +41,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 		selected = -1
 		editing = false
 		message = ""
+		// Refresh the preset count shown in the Settings window.
 		parent.InvalidateLayout()
 	}
 	var closeDialog func()
@@ -55,6 +58,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 			entry.Content = []gui.View{wrapped(p.Name+" · "+p.Codeword, 13, ink)}
 			body = append(body, gui.Button(entry))
 		}
+		// Show a first-preset action only while there is no editor to fill in.
 		if len(entries) == 0 && !editing {
 			create := buttonConfig("create-preset", "Create a preset", 160, true, false, startNew)
 			create.Height = 36
@@ -89,6 +93,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 					}
 				}),
 			}
+			// The order shown here is the order GSX will receive the services.
 			for i, service := range form.Services {
 				id := strconv.Itoa(i)
 				editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle, Content: []gui.View{
@@ -102,6 +107,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 				editor = append(editor, wrapped(message, 11, red))
 			}
 			var actions []gui.View
+			// Deletion is available only when the form refers to an existing preset.
 			if selected >= 0 {
 				actions = append(actions, button("delete", "Delete", 0, false, false, func() {
 					entries = slices.Delete(entries, selected, selected+1)

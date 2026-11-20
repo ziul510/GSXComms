@@ -12,6 +12,7 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
+// Match the endpoint, session instance, and process lifetime before restoring audio.
 type identity struct {
 	Endpoint       string
 	Session        string
@@ -36,6 +37,7 @@ type backend interface {
 	Alive(identity) bool
 }
 
+// A missing journal means there is no interrupted mute to recover.
 func read(path string) ([]record, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -49,6 +51,7 @@ func read(path string) ([]record, error) {
 	return records, err
 }
 
+// Replace the whole journal atomically so a crash can't leave half a JSON record.
 func write(path string, records []record) error {
 	b, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
@@ -87,6 +90,7 @@ func acquire(path string, api backend) error {
 		}
 	}
 	return api.Visit(func(s audioSession) error {
+		// Record only matching sessions with a complete identity and an active change to make.
 		if !match(s.Label) || s.Muted || s.ID.PID == 0 || s.ID.Session == "" || s.ID.Endpoint == "" || s.ID.ProcessStarted == 0 {
 			return nil
 		}
@@ -116,6 +120,7 @@ func restore(path string, api backend) error {
 	restored := map[identity]bool{}
 	var failures error
 	err = api.Visit(func(s audioSession) error {
+		// Restore only an exact identity match. A similarly named session may be unrelated.
 		for _, entry := range records {
 			if entry.ID == s.ID {
 				// One failed restore should leave the other sessions eligible for recovery.
@@ -142,6 +147,7 @@ func restore(path string, api backend) error {
 	return errors.Join(err, failures, write(path, pending))
 }
 
+// Treat an already absent journal as a successful cleanup.
 func clearJournal(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {

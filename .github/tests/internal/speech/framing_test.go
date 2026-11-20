@@ -16,6 +16,7 @@ import (
 func TestProtocol(t *testing.T) {
 	f := Frame{Version: Version, ID: 5, Op: "transcribe", SampleRate: 16000, PCM: []byte{0, 128, 0, 0}}
 	var stream bytes.Buffer
+	// Round-trip a frame containing binary audio as well as metadata.
 	if err := Write(&stream, f); err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +69,7 @@ func TestWorkerRequiresExplicitRetryAfterRepeatedFailures(t *testing.T) {
 func TestCanceledExchangeSkipsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+	// The canceled context should return before any child or pipe is needed.
 	w := NewWorker("sherpa")
 	if _, err := w.exchange(ctx, time.Second, Frame{Op: "transcribe"}); !errors.Is(err, context.Canceled) || w.sequence != 0 {
 		t.Fatalf("sequence=%d err=%v", w.sequence, err)

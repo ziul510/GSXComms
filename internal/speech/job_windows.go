@@ -17,6 +17,7 @@ func createJob() (windows.Handle, error) {
 	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	// Windows can clean up assigned workers if the app exits before Reset.
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	// Enable kill-on-close before a child can be assigned to the job.
 	_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
 	if err != nil {
 		_ = windows.CloseHandle(job)
@@ -31,6 +32,7 @@ func assignJob(job windows.Handle, pid uint32) error {
 	if err != nil {
 		return err
 	}
+	// The job keeps the assignment after this temporary process handle closes.
 	defer windows.CloseHandle(process)
 	return windows.AssignProcessToJobObject(job, process)
 }

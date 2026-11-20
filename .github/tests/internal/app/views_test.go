@@ -17,6 +17,7 @@ import (
 
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	s := &state{cfg: config.Defaults(), ptt: "Idle", highlight: -1}
+	// Include the optional command field in the minimum-width layout check.
 	s.cfg.Put("enable_keyboard_input", true)
 	w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
 	layout := w.TestRender(mainView)
@@ -48,6 +49,7 @@ func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
 
 func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	s := &state{cfg: config.Defaults(), saves: make(chan *saveRequest, 2)}
+	// Take the opening snapshot before simulating a save from a separate dialog.
 	base := s.settingsDraft()
 	draft := base.Copy()
 	draft.Put("input_device_name", "Cockpit")
@@ -100,6 +102,7 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 	cfg.Width, cfg.Height = 480, 680
 	settings := gui.NewTestWindow(t, cfg)
 	layout := settings.TestRender(nil)
+	// Require the sliders to fill the settings column without extending beyond the window.
 	for _, key := range []string{"volume_static", "volume_voice", "max_recording_seconds"} {
 		node, ok := layout.FindByID("settings-scroll:" + key)
 		if !ok || node.Shape.Width < 400 || node.Shape.X+node.Shape.Width > 480 {
@@ -121,6 +124,7 @@ func TestPresetEmptyStateCreatesPreset(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Use the actual empty-state action so this exercises the editor callbacks.
 	click("create-preset")
 	if err := manager.TestType("presets-scroll:preset-name", "Arrival"); err != nil {
 		t.Fatal(err)
@@ -128,6 +132,7 @@ func TestPresetEmptyStateCreatesPreset(t *testing.T) {
 	if err := manager.TestType("presets-scroll:preset-trigger", "arrival"); err != nil {
 		t.Fatal(err)
 	}
+	// A fresh form starts with GPU as the service picker value.
 	click("add-service")
 	click("save-preset")
 	presets := config.Get[[]config.Preset](draft, "presets")
@@ -143,6 +148,7 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		speed                float64
 		block                bool
 	}{
+		// Cover unknown speed, the exact limit, and both explicit bypasses.
 		{false, false, false, 0, true},
 		{true, false, false, 50, false},
 		{true, false, false, 51, true},
@@ -163,11 +169,13 @@ type menuChoices struct {
 	afterChoice func()
 }
 
+// Zero lets the session exercise its normal closed-menu sequence in tests.
 func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Record only choices. Remote and open flag writes aren't part of this assertion.
 	if name == gsx.MenuChoice {
 		m.selected = append(m.selected, int(value))
 		if m.afterChoice != nil {
@@ -176,7 +184,7 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 	}
 	return nil
 }
-func (*menuChoices) Close() error { return nil }
+func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture.
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, jobs: make(chan func(context.Context, *gsx.Session), 1), audioPriority: make(chan playback, 3)}
@@ -198,6 +206,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 
 	s.cfg.Put("enable_menu_matching", false)
+	// Text correction must fetch the current page even when broader matching is disabled.
 	current = gsx.ParseMenu("Operators\nSwissport")
 	s.submit("Swissport")
 	(<-s.jobs)(s.ctx, session)
@@ -219,6 +228,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 }
 
 func TestMenuReadoutFormatting(t *testing.T) {
+	// Use actual panel labels to check number formatting and punctuation cleanup together.
 	options := gsx.ParseMenu("GSX\n1. Request de-icing\n2. Stand B-12")
 	want := "One: Request de icing. Two: Stand B 12."
 	if got := formatReadout(options.Options); got != want {

@@ -20,6 +20,7 @@ import (
 )
 
 func addCUDA(options *ort.SessionOptions) bool {
+	// Probe only the driver tool installed in the Windows system directory.
 	dir, err := windows.GetSystemDirectory()
 	if err != nil {
 		return false
@@ -49,6 +50,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 		if a != nil || b != nil || c != nil || id < 0 || memory < 1024 || util > 80 {
 			continue
 		}
+		// Prefer more free memory. Break ties with the current GPU load.
 		if memory > free || (memory == free && util < load) {
 			device, free, load = id, memory, util
 		}
@@ -60,6 +62,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 	if err != nil {
 		return false
 	}
+	// SessionOptions keeps the configured provider after the temporary CUDA options are freed.
 	defer cuda.Destroy()
 	return cuda.Update(map[string]string{"device_id": strconv.Itoa(device)}) == nil && options.AppendExecutionProviderCUDA(cuda) == nil
 }

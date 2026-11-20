@@ -17,6 +17,7 @@ import (
 
 type transportFunc func(*http.Request) (*http.Response, error)
 
+// Inject the response through the HTTP client's normal transport path.
 func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestResumeAndPublishModel(t *testing.T) {
@@ -81,6 +82,7 @@ func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
 	}
 	// Pause the download so deletion hits the lock while staging is active.
 	cacheVisible := m.Cached(dir) && !m.Ready(dir)
+	// The first delete attempts to acquire the same lock as the paused download.
 	deleteErr := m.Delete(dir)
 	close(release)
 	if err := <-finished; err != nil {
@@ -97,6 +99,7 @@ func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
 func TestIncompleteModelCanBeDeletedBeforeRetry(t *testing.T) {
 	m := Model{"test", "owner/example", "pinned", []File{{"fixture", 5, strings.Repeat("0", 64)}}}
 	dir := t.TempDir()
+	// A directory can exist without verified files. The UI must offer deletion in that state.
 	if err := os.MkdirAll(m.Directory(dir), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +150,7 @@ func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
 
 func TestChecksumMismatchIsNotPublished(t *testing.T) {
 	body := "bad-data"
+	// Use valid length and the wrong digest so only the checksum check can catch the file.
 	f := File{"fixture", int64(len(body)), strings.Repeat("0", 64)}
 	m := Model{"test", "owner/example", "pinned", []File{f}}
 	dir := t.TempDir()

@@ -73,6 +73,7 @@ func TestReferenceCorpus(t *testing.T) {
 }
 
 func TestParseRejectsTrailingVocabulary(t *testing.T) {
+	// A decoder that stops after the first object would otherwise accept this input.
 	if _, err := Parse([]byte("{} {}")); err == nil {
 		t.Fatal("accepted a second vocabulary object")
 	}
@@ -80,6 +81,7 @@ func TestParseRejectsTrailingVocabulary(t *testing.T) {
 
 func TestMatchRequiresWholeNumberTokens(t *testing.T) {
 	options := []string{"Jetway", "Catering"}
+	// Keep multi-digit numbers from matching a single-digit menu slot.
 	for text, want := range map[string]int{
 		"option 10":              -1,
 		"number 21":              -1,

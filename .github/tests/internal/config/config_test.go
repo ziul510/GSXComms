@@ -79,6 +79,7 @@ func TestImportRejectsMalformedAccentEntries(t *testing.T) {
 	if err := os.WriteFile(path, prior, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Try both the wrong entry shape and the wrong field type.
 	for _, raw := range []string{`[42]`, `[{"country":"Canada","accent_used":42}]`} {
 		if err := os.WriteFile(filepath.Join(source, filename), []byte(raw), 0600); err != nil {
 			t.Fatal(err)
@@ -94,6 +95,7 @@ func TestImportRejectsMalformedAccentEntries(t *testing.T) {
 }
 
 func TestMigrateDownloadFlags(t *testing.T) {
+	// Retired download flags should be removed while the installed accent selection survives.
 	values, _, err := decode([]byte(`{"first_launch":true,"model_downloaded_parakeet":true,"installed_packs":["custom"]}`))
 	if err != nil || values["first_launch"] != nil || values["model_downloaded_parakeet"] != nil {
 		t.Fatalf("obsolete settings survived migration: %v", err)
@@ -105,6 +107,7 @@ func TestMigrateDownloadFlags(t *testing.T) {
 
 func TestInvalidBindingUsesCleanDefaults(t *testing.T) {
 	values := Defaults()
+	// Use a partially decodable binding to catch stale fields leaking into the fallback.
 	values.Put("ptt_bind", map[string]any{"type": 12, "joy_name": "stale"})
 	binding := Get[Binding](values, "ptt_bind")
 	if binding.Type != "key" || binding.JoyName != "" {
@@ -171,6 +174,7 @@ func TestSettingsSavePreservesLegacyCredentialUntilMigrated(t *testing.T) {
 	if err != nil || Get[bool](saved, "auto_connect_sim") || saved[legacySecret] != nil {
 		t.Fatalf("retry failed to persist the preference: %v", err)
 	}
+	// After a successful retry the key must only remain in the vault.
 	got, err = os.ReadFile(path)
 	if err != nil || bytes.Contains(got, []byte(legacySecret)) {
 		t.Fatalf("legacy credential remained in the settings file: %v", err)
@@ -180,6 +184,7 @@ func TestSettingsSavePreservesLegacyCredentialUntilMigrated(t *testing.T) {
 func TestImportWithoutCredentialPreservesUnmigratedDestination(t *testing.T) {
 	source, dest := t.TempDir(), t.TempDir()
 	path := filepath.Join(dest, SettingsFile)
+	// The legacy credential lives only in the destination during this import.
 	legacy := []byte(`{"mistral_api_key":"old-fixture"}`)
 	for name, data := range map[string][]byte{
 		path:                                legacy,

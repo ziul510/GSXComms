@@ -9,10 +9,12 @@ import sys
 
 # Import the legacy engine without writing bytecode into the reference tree.
 sys.dont_write_bytecode = True
+# Import phonemizer_engine from the supplied legacy snapshot.
 sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
 
 from phonemizer_engine import phonemize
 
+# Sample service wording independently from the gate, carrier, and aircraft contexts.
 actions = [
     "Request boarding", "Connect jetway", "Disconnect ground power",
     "Select the operator", "Request potable water", "Request de-icing",
@@ -32,5 +34,6 @@ contexts = [
 # Pair each action with every context so each pronunciation challenge repeats across commands.
 samples = [f"{action} {context}." for action in actions for context in contexts]
 assert len(samples) == 300 and len(set(samples)) == 300
+# Use CPU for the reference capture so it doesn't depend on a CUDA installation.
 records = [{"text": text, "ipa": phonemize(text, disable_gpu=True)} for text in samples]
 print(json.dumps(records, ensure_ascii=True, indent=2))

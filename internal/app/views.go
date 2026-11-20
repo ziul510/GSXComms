@@ -15,18 +15,22 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
+// Use the Windows UI font for app labels and controls.
 func labelStyle(size float32, color gui.Color) gui.TextStyle {
 	return gui.TextStyle{Size: size, Color: color, Family: "Segoe UI"}
 }
 
+// A plain label suits compact text that fits in a single row.
 func text(label string, size float32, color gui.Color) gui.View {
 	return gui.Label(label, labelStyle(size, color))
 }
 
+// Keep headings and status text on the same typography as plain labels.
 func bold(label string, size float32, color gui.Color) gui.View {
 	return gui.Label(label, labelStyle(size, color).Bold())
 }
 
+// Use a wrapping text view for longer strings that have to fit a narrow window.
 func wrapped(label string, size float32, color gui.Color) gui.View {
 	return gui.Text(gui.TextCfg{Text: label, Mode: gui.TextModeWrap, TextStyle: labelStyle(size, color)})
 }
@@ -34,11 +38,13 @@ func wrapped(label string, size float32, color gui.Color) gui.View {
 func buttonConfig(id, label string, width float32, primary, disabled bool, onClick func()) gui.ButtonCfg {
 	style := labelStyle(12, ink)
 	colors := gui.ColorSet{Base: card, Hover: elevated}
+	// Primary controls use the accent fill and dark text for contrast.
 	if primary {
 		style = labelStyle(13, bg).Bold()
 		colors = gui.ColorSet{Base: accent, Hover: accentHover}
 	}
 	sizing := gui.FitFixed
+	// A zero width lets buttons size themselves to their labels.
 	if width > 0 {
 		sizing = gui.FixedFixed
 	}
@@ -46,18 +52,22 @@ func buttonConfig(id, label string, width float32, primary, disabled bool, onCli
 		ID: id, Width: width, Height: 32, Sizing: sizing, Radius: gui.RadiusPx(6), Padding: gui.PadVH(0, 8),
 		SizeBorder: gui.NoBorder, Colors: colors, Disabled: disabled, VAlign: gui.Some(gui.VAlignMiddle),
 		Content: []gui.View{gui.Label(label, style)},
+		// Consume the click and request a redraw after the callback changes app state.
 		OnClick: func(ctx gui.EventCtx) { ctx.Consume(); onClick(); ctx.Window.InvalidateLayout() },
 	}
 }
 
+// Use the shared button defaults when the caller needs no layout overrides.
 func button(id, label string, width float32, primary, disabled bool, onClick func()) gui.View {
 	return gui.Button(buttonConfig(id, label, width, primary, disabled, onClick))
 }
 
+// A fill-width spacer pushes later controls to the far edge of a row.
 func spacer() gui.View {
 	return gui.Rectangle(gui.RectangleCfg{Sizing: gui.FillFixed, Height: 1})
 }
 
+// Use a fixed-size gap when the layout needs stable spacing.
 func gap(width, height float32) gui.View {
 	return gui.Rectangle(gui.RectangleCfg{Sizing: gui.FixedFixed, Width: width, Height: height})
 }
@@ -69,6 +79,7 @@ var slimScrollbar = gui.ScrollbarCfg{
 
 func mainView(w *gui.Window) gui.View {
 	s := gui.State[state](w)
+	// The status bar distinguishes the SimConnect connection from Couatl readiness.
 	status, statusColor, gsxColor := "Offline", muted, muted
 	switch {
 	case s.busy:
@@ -79,6 +90,7 @@ func mainView(w *gui.Window) gui.View {
 			gsxColor = green
 		}
 	}
+	// Show a placeholder until a valid speed is available. Warn visually above the PTT limit.
 	speed, speedColor := "-- kts", muted
 	if s.connected && s.speedKnown {
 		speed, speedColor = fmt.Sprintf("%d kts", int(s.speed)), accent
@@ -87,6 +99,7 @@ func mainView(w *gui.Window) gui.View {
 		}
 	}
 	bar := []gui.View{bold("● "+status, 12, statusColor), bold("● GSX", 12, gsxColor), spacer()}
+	// The settings can hide the topmost control without resetting its active value.
 	if config.Get[bool](s.cfg, "show_topmost") {
 		active := config.Get[bool](s.cfg, "topmost_active")
 		topmost := buttonConfig("top-most", "Top Most", 86, active, false, func() {
@@ -113,6 +126,7 @@ func mainView(w *gui.Window) gui.View {
 		Padding: gui.PadVH(0, 11), SizeBorder: gui.BorderPx(1), VAlign: gui.VAlignMiddle, Spacing: gui.SpacingPx(6),
 		Content: []gui.View{text("PTT", 11, muted), bold(s.ptt, 13, pttColor), spacer(), text(binding, 11, muted)},
 	})}
+	// Only show the command field when typed input is enabled.
 	if config.Get[bool](s.cfg, "enable_keyboard_input") {
 		const label = "Type command: (e.g. 'connect jetway')"
 		body = append(body, gui.Column(gui.ContainerCfg{
@@ -128,6 +142,7 @@ func mainView(w *gui.Window) gui.View {
 					OnTextChanged: func(value string, _ gui.EventCtx) { s.input = value },
 					OnEnter: func(ctx gui.EventCtx) {
 						ctx.Consume()
+						// Clear the field before routing the saved text through the normal command path.
 						value := s.input
 						s.input = ""
 						s.submit(value)
@@ -142,6 +157,7 @@ func mainView(w *gui.Window) gui.View {
 		Color: terminal, ColorBorder: elevated, Radius: gui.RadiusPx(6), Padding: gui.PadAll(13),
 		Spacing: gui.SpacingPx(3), SizeBorder: gui.BorderPx(1),
 	}
+	// Use the conversation space for the live menu while keeping the surrounding controls in place.
 	if s.overlay {
 		logArea.ColorBorder, logArea.Padding = accent, gui.PadAll(8)
 		title := s.menu.Title
@@ -149,10 +165,12 @@ func mainView(w *gui.Window) gui.View {
 			title = "GSX Menu"
 		}
 		logArea.Content = append(logArea.Content, bold(title, 11, ink))
+		// The overlay can remain open while the next panel file is still empty.
 		if len(s.menu.Options) == 0 {
 			logArea.Content = append(logArea.Content, text("No GSX menu available", 11, muted))
 		}
 		for i, item := range s.menu.Options {
+			// Display one-based labels but pass the original zero-based slot back to GSX.
 			label := fmt.Sprintf("%d. %s", i+1, item)
 			option := buttonConfig("option-"+strconv.Itoa(i), label, 0, i == s.highlight, false, func() { s.choose(i) })
 			fg := ink
@@ -168,6 +186,7 @@ func mainView(w *gui.Window) gui.View {
 		logArea.Content = []gui.View{gui.Text(gui.TextCfg{ID: "log-content", Text: strings.Join(s.lines, "\n"), Mode: gui.TextModeWrap, TextStyle: gui.TextStyle{Size: 12, Family: "Consolas", Color: terminalInk, LetterSpacing: 0.4}, Focusable: true})}
 	}
 	body = append(body, gui.Column(logArea))
+	// Use the same control for connect and disconnect while disabling it during a handshake.
 	connect := buttonConfig("connect", "Connect", 120, true, s.busy, s.toggleConnect)
 	switch {
 	case s.busy:
@@ -208,6 +227,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 	var window *gui.Window
 	closed := false
 	closeDialog := func() {
+		// Run cleanup once even if both the parent and the window request closure.
 		if !closed {
 			closed = true
 			onClose()
@@ -232,6 +252,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 	return closeDialog
 }
 
+// Scroll the middle panel while keeping the title and actions visible.
 func page(id string, header, body, footer []gui.View) gui.View {
 	scrollPadding := gui.NoPadding
 	scrollPadding.Right = 16
@@ -242,6 +263,7 @@ func page(id string, header, body, footer []gui.View) gui.View {
 	}})
 }
 
+// Let cards grow with their contents and use the common outline treatment.
 func outlinedCard(fill gui.Color, padding gui.Padding, spacing float32, content ...gui.View) gui.ContainerCfg {
 	return gui.ContainerCfg{
 		Sizing: gui.FillFit, Color: fill, ColorBorder: elevated, SizeBorder: gui.BorderPx(1),
@@ -249,6 +271,7 @@ func outlinedCard(fill gui.Color, padding gui.Padding, spacing float32, content 
 	}
 }
 
+// Align short labels vertically within the fixed space reserved for their rows.
 func labelRow(label gui.View, height float32) gui.View {
 	return gui.Row(gui.ContainerCfg{
 		Sizing: gui.FillFixed, Height: height, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle,
@@ -256,6 +279,7 @@ func labelRow(label gui.View, height float32) gui.View {
 	})
 }
 
+// Place the field caption over a control that can use the full column width.
 func settingsField(label string, control gui.View) gui.View {
 	return gui.Column(gui.ContainerCfg{
 		Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(6), SizeBorder: gui.NoBorder,
@@ -263,6 +287,7 @@ func settingsField(label string, control gui.View) gui.View {
 	})
 }
 
+// Apply shared field styling while preserving the caller's value and callbacks.
 func formInput(cfg gui.InputCfg) gui.View {
 	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(12, ink)
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(6, 7), gui.RadiusPx(5), gui.BorderPx(1)
@@ -270,6 +295,7 @@ func formInput(cfg gui.InputCfg) gui.View {
 	return gui.Input(cfg)
 }
 
+// Keep dropdown styling consistent even when dialogs supply different choices.
 func formSelect(cfg gui.SelectCfg) gui.View {
 	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(11, ink)
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(7, 7), gui.RadiusPx(5), gui.NoBorder
@@ -278,6 +304,7 @@ func formSelect(cfg gui.SelectCfg) gui.View {
 }
 
 func toggleControl(id, label string, selected bool, onClick func(gui.EventCtx)) gui.View {
+	// Switch the track color according to the saved boolean state.
 	track := disabledInk
 	if selected {
 		track = accent
@@ -312,9 +339,11 @@ func (s *state) mergeSettings(base, draft config.Values) config.Values {
 func (s *state) save(next config.Values, then func(error)) {
 	req := &saveRequest{next, then}
 	select {
+	// Only advertise a pending draft once the writer has accepted it.
 	case s.saves <- req:
 		s.pendingSave = req
 	default:
+		// Report a full queue through the dialog callback or the main conversation.
 		err := errors.New("settings save queue is busy")
 		if then != nil {
 			then(err)
@@ -324,6 +353,7 @@ func (s *state) save(next config.Values, then func(error)) {
 	}
 }
 
+// These are the regional choices the wizard can show even without downloadable packs.
 var packs = []struct {
 	name    string
 	accents []string
@@ -338,6 +368,7 @@ var packs = []struct {
 	{"East Asia & Pacific", []string{"Chinese", "Japanese", "Korean"}},
 }
 
+// Settings needs one flat list containing all of the wizard's accents.
 var accents = func() []string {
 	var names []string
 	for _, pack := range packs {
@@ -351,6 +382,7 @@ func (s *state) openSettings() {
 		return
 	}
 	s.settingsOpen = true
+	// Keep an opening snapshot so Save can tell which fields this dialog changed.
 	base := s.settingsDraft()
 	draft := base.Copy()
 	var message string
@@ -359,6 +391,7 @@ func (s *state) openSettings() {
 	closeSettings := func() {
 		if !closed {
 			closed = true
+			// Cancel any pending input capture when leaving Settings.
 			if s.binding != nil {
 				s.binding(config.Binding{})
 			}
@@ -372,10 +405,12 @@ func (s *state) openSettings() {
 	inputs, outputs := []string{"Default"}, []string{"Default"}
 	view := func(w *gui.Window) gui.View {
 		var body []gui.View
+		// Give each group a consistent heading and short explanation in the scrolling body.
 		section := func(name, description string) {
 			body = append(body, gui.Column(outlinedCard(card, gui.PadVH(12, 11), 4,
 				labelRow(bold(name, 13, ink), 26), labelRow(wrapped(description, 11, muted), 26))))
 		}
+		// Control changes update the draft immediately. Disk writes wait for Save.
 		toggle := func(key, label string) {
 			body = append(body, labelRow(toggleControl(key, label, config.Get[bool](draft, key), func(ctx gui.EventCtx) {
 				draft.Put(key, !config.Get[bool](draft, key))
@@ -435,6 +470,7 @@ func (s *state) openSettings() {
 		section("Speech Recognition", "Pick a local model or the cloud Voxtral Small model")
 		provider := config.Get[string](draft, "speech_provider")
 		var modelRows []gui.View
+		// Select a provider in the draft separately from downloading or validating it.
 		for _, model := range []struct{ id, label string }{
 			{"parakeet", "Standard, Recommended (Parakeet v2 0.6b)"},
 			{"orukeet", "Enhanced (Orukeet)"},
@@ -465,6 +501,7 @@ func (s *state) openSettings() {
 			summary = fmt.Sprintf("%d presets", len(presets))
 		}
 		body = append(body, text(summary, 11, muted))
+		// Wait for the preset editor to close before saving the shared draft.
 		action("presets", "Open Preset Manager", closePresets != nil || saving, func() {
 			closePresets = s.openPresets(draft, w, func() { closePresets = nil; w.InvalidateLayout() })
 		})
@@ -472,6 +509,7 @@ func (s *state) openSettings() {
 		toggle("enable_menu_matching", "Broader mode")
 		toggle("enable_gsx_menu_text_correction", "Match STT to GSX menu options")
 		toggle("read_gsx_menus_aloud_after_keyword", "Read GSX menus aloud after a keyword")
+		// Show the keyword field only when menu readout is enabled.
 		if config.Get[bool](draft, "read_gsx_menus_aloud_after_keyword") {
 			body = append(body, formInput(gui.InputCfg{ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) }}))
 		}
@@ -489,6 +527,7 @@ func (s *state) openSettings() {
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
+		// Disabled leaves accent selection to the user's defaults and the aircraft location.
 		pick("force_accent", "Force accent", append([]string{"Disabled"}, accents...))
 		body = append(body, gui.Row(gui.ContainerCfg{
 			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle,
@@ -497,9 +536,11 @@ func (s *state) openSettings() {
 		save := buttonConfig("save", "Save Changes", 130, true, saving || closePresets != nil || s.binding != nil, func() {
 			message = "Saving…"
 			saving = true
+			// Merge only edits made in this window onto the latest queued settings.
 			next := s.mergeSettings(base, draft)
 			s.save(next, func(err error) {
 				saving = false
+				// Leave Settings open on a write failure so the draft can be retried.
 				if err != nil {
 					message = err.Error()
 					w.InvalidateLayout()
@@ -544,6 +585,7 @@ func (s *state) about() {
 		return
 	}
 	s.aboutOpen = true
+	// Display the app and dependency licenses shipped with the executable.
 	contents := strings.TrimSpace(readNotice("LICENSE") + "\n\n" + readNotice("THIRD_PARTY_NOTICES"))
 	close := func() { s.aboutOpen = false }
 	s.dialog(gui.WindowCfg{Title: "About GSXComms", Width: 640, Height: 520}, close, func(w *gui.Window) gui.View {
@@ -558,6 +600,7 @@ func (s *state) openAccents() {
 	s.accentOpen = true
 	close := func() { s.accentOpen = false }
 	s.dialog(gui.WindowCfg{Title: "GSXComms Accent Setup", Width: 720, Height: 600, MinWidth: 520, MinHeight: 420}, close, func(w *gui.Window) gui.View {
+		// Show the supported regions while this build has no accent archives to install.
 		var rows []gui.View
 		for _, pack := range packs {
 			rows = append(rows, gui.Column(outlinedCard(panel, gui.PadVH(12, 14), 4,
@@ -569,6 +612,7 @@ func (s *state) openAccents() {
 		list.Padding.Right = 26
 		done := buttonConfig("continue", "Done", 140, true, false, func() {
 			next := s.settingsDraft()
+			// Remember that the welcome wizard was completed so startup won't show it again.
 			next.Put("accent_setup_complete", true)
 			s.save(next, nil)
 			close()
@@ -592,6 +636,7 @@ func (s *state) openAccents() {
 }
 
 func (s *state) showHotfix() {
+	// Avoid duplicate prompts and respect an earlier acknowledgment.
 	if s.hotfixOpen || config.Get[bool](s.cfg, "gsx_hotfix_completed") {
 		return
 	}
@@ -602,6 +647,7 @@ func (s *state) showHotfix() {
 			spacer(), button("hotfix-close", "Close", 0, false, false, func() { close(); w.Close() }),
 			button("hotfix-ack", "I applied the hotfix", 0, true, false, func() {
 				next := s.settingsDraft()
+				// Remember the acknowledgment so future stuck menus won't reopen this prompt.
 				next.Put("gsx_hotfix_completed", true)
 				s.save(next, nil)
 				close()

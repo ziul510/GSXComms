@@ -48,6 +48,7 @@ func TestIPCKeepsPollingBeforeSimulatorStarts(t *testing.T) {
 	if _, err := io.WriteString(client, "PING\nSHUTDOWN\n"); err != nil {
 		t.Fatal(err)
 	}
+	// Wait for the IPC goroutine before reading the reply buffer.
 	<-done
 	var ready, ping, shutdown struct {
 		Status    string
@@ -69,12 +70,14 @@ func TestIPCKeepsPollingBeforeSimulatorStarts(t *testing.T) {
 type ipcTestTransport struct{}
 
 func (ipcTestTransport) Get(ctx context.Context, _ string) (float64, error) {
+	// A healthy fake needs only to respect the same cancellation as a real status request.
 	return 0, ctx.Err()
 }
 func (ipcTestTransport) Set(ctx context.Context, _ string, _ float64) error {
+	// Accept menu writes unless the request was canceled.
 	return ctx.Err()
 }
-func (ipcTestTransport) Close() error { return nil }
+func (ipcTestTransport) Close() error { return nil } // The healthy fake has no simulator handle to release.
 
 type ipcDroppedTransport struct {
 	ipcTestTransport
@@ -82,10 +85,12 @@ type ipcDroppedTransport struct {
 }
 
 func (*ipcDroppedTransport) Get(context.Context, string) (float64, error) {
+	// Force every status read to fail so IPC exercises its reconnect path.
 	return 0, errors.New("connection lost")
 }
 
 func (s *ipcDroppedTransport) Close() error {
+	// Record the close so the test can prove IPC released the dead transport.
 	s.closed = true
 	return nil
 }
@@ -105,6 +110,7 @@ func TestIPCReconnectsAfterEstablishedTransportFails(t *testing.T) {
 		defer close(done)
 		defer in.Close()
 		ipc(ctx, session, in, &out, func(_ context.Context, s *gsx.Session) {
+			// Swap in a known-good fake only after IPC clears the failed transport.
 			if !s.Connected() {
 				s.Sim = ipcTestTransport{}
 				close(reconnected)

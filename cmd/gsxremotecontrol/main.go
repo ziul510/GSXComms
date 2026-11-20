@@ -21,6 +21,7 @@ import (
 )
 
 func main() {
+	// Both front ends close the shared GSX session when interrupted.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	session := gsx.New(nil, gsx.Panel())
@@ -32,6 +33,7 @@ func main() {
 	console(ctx, session)
 }
 
+// Leave the current transport in place until the health loop closes it.
 func connect(ctx context.Context, s *gsx.Session) {
 	if !s.Connected() {
 		s.Sim, _ = gsx.Connect(ctx)
@@ -76,6 +78,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			}
 			if _, _, err := s.Status(ctx); err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
 				healthFailures++
+				// Allow transient failures before closing the transport. The next tick will reconnect.
 				if healthFailures >= 3 {
 					_ = s.Close()
 					healthFailures = 0
@@ -87,12 +90,14 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			if !ok {
 				return
 			}
+			// Count input as activity even if a blank line skips the command switch.
 			last = time.Now()
 			switch {
 			case line == "":
 				continue
 			case line == "PING":
 				msg(map[string]any{"status": "ok", "connected": s.Connected()})
+			// Report success only after choices arrive in the panel file.
 			case line == "OPEN_MENU":
 				err := s.Open(ctx)
 				if err == nil {
@@ -104,6 +109,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			case line == "GET_MENU":
 				menu := s.ReadMenu()
 				msg(map[string]any{"status": "ok", "title": menu.Title, "options": menu.Options, "active": menu.Active, "remote_active": s.RemoteActive()})
+			// IPC clients supply the zero-based index expected by the transport.
 			case strings.HasPrefix(line, "SELECT:"):
 				n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "SELECT:")))
 				if err != nil {
@@ -117,12 +123,14 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			default:
 				msg(map[string]any{"status": "error", "message": "Unknown command: " + line})
 			}
+			// Start the idle timer again after commands that can take several seconds.
 			last = time.Now()
 		}
 	}
 }
 
 func console(ctx context.Context, s *gsx.Session) {
+	// Read single keystrokes so the menu stays interactive without Enter.
 	crt := windows.NewLazySystemDLL("msvcrt.dll")
 	hit, read := crt.NewProc("_kbhit"), crt.NewProc("_getch")
 	if hit.Find() != nil || read.Find() != nil {
@@ -150,6 +158,7 @@ func console(ctx context.Context, s *gsx.Session) {
 			switch {
 			case k == 27 || k == 'q' || k == 'Q':
 				return
+			// The CRT sends a prefix byte for extended keys. Consume its second byte too.
 			case k == 0 || k == 224:
 				_, _, _ = read.Call()
 			case k == 'm' || k == 'M':
@@ -163,6 +172,7 @@ func console(ctx context.Context, s *gsx.Session) {
 			}
 		}
 		next := ""
+		// Hand the menu back five seconds after the last console key.
 		if active && time.Since(last) >= 5*time.Second {
 			active = false
 			_ = s.Release(ctx)

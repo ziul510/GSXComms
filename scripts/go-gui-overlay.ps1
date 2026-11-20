@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
 $version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
+# Stop if the selected module differs from the source these patches target.
 if ($version -ne 'v0.96.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.96.0' }
 # Patch a local copy so other builds can keep using the upstream module cache.
 $destination = Join-Path $PWD 'build/go-gui-win32'
@@ -13,11 +14,13 @@ New-Item -ItemType Directory -Force $copy | Out-Null
 if (!(Test-Path -LiteralPath (Join-Path $copy 'go.mod'))) {
     Copy-Item -Path (Join-Path $module '*') -Destination $copy -Recurse -Force
 }
+# Module cache copies may be read-only. Make only the local output writable.
 function Publish-Patch([string]$relative,[string]$source) {
     $name = Join-Path $copy $relative
     if (Test-Path -LiteralPath $name) { [IO.File]::SetAttributes($name, [IO.FileAttributes]::Normal) }
     [IO.File]::WriteAllText($name,$source)
 }
+# Start from the upstream source each time so repeated runs can't apply patches twice.
 function Source([string]$relative) {
     return [IO.File]::ReadAllText((Join-Path $module $relative)).Replace(([string][char]13+[char]10),[string][char]10)
 }
@@ -27,6 +30,7 @@ function Change([string]$source,[string]$before,[string]$after) {
     return $source.Replace($before,$after)
 }
 
+# Add alternate presentation and resize hooks while leaving the normal GL path available.
 $file = 'gui/backend/gl/backend.go'
 $src = Source $file
 $src = Change $src 'type Backend struct {' ("type Backend struct {"+[char]10+'softwarePresent func(*gui.Window)'+[char]10+'softwareRelease func()')
@@ -59,6 +63,7 @@ if err := b.win32Renderer(w); err != nil {
 
 
 '@ + $src.Substring($end)
+# Software presentation needs its own release path before destroying the window.
 $src = Change $src 'func (b *Backend) Destroy() {' @'
 func (b *Backend) Destroy() {
     if b.softwareRelease != nil {
@@ -69,6 +74,7 @@ func (b *Backend) Destroy() {
 '@
 Publish-Patch $file $src
 
+# Repaint the cached bitmap if Windows asks for a paint between application frames.
 $file='gui/backend/gl/events_win32.go'
 $src=Source $file
 $src=Change $src 'case wmPaint:' @'
@@ -77,6 +83,7 @@ case wmPaint:
 '@
 Publish-Patch $file $src
 
+# The software display needs text measurement without running headless window initialization.
 $file='gui/backend/soft/render.go'
 $src=Source $file
 $src=Change $src 'tm, err := prepare(w, scale)' 'tm, err := prepare(w, scale, true)'
@@ -105,6 +112,7 @@ func RenderDisplay(w *gui.Window, scale float32) (*image.RGBA, error) {
 func drawDisplay(w *gui.Window, tm *textMeasurer, scale float32) (*image.RGBA, error) {
     logicalW, logicalH := w.WindowSize()
 '@
+# Remove the headless update from the shared draw path now that the caller owns it.
 $repeated = (
     ([string][char]9 + 'w.BackingScale = scale'),
     ([string][char]9 + 'w.SetHeadlessRender(true)'),
@@ -114,6 +122,7 @@ $repeated = (
 $src=Change $src $repeated ([string][char]9+'cmds := w.Renderers()')
 Publish-Patch $file $src
 
+# Install the adapter next to the patched GL backend so it can use internal renderer methods.
 Publish-Patch 'gui/backend/gl/gsxcomms_software_windows.go' ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'win32-software.go.in')))
 # The alternate modfile keeps the local replacement out of go.mod.
 $modfile = Join-Path $destination 'gsxcomms.mod'

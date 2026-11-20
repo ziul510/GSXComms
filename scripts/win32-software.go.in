@@ -18,6 +18,7 @@ import (
 
 var stretchDIBits = windows.NewLazySystemDLL("gdi32.dll").NewProc("StretchDIBits")
 
+// Match the native BITMAPINFOHEADER fields used by StretchDIBits.
 type dibHeader struct {
 	size uint32
 	width,height int32
@@ -28,11 +29,14 @@ type dibHeader struct {
 }
 
 func (b *Backend) win32Renderer(w *gui.Window) error {
+	// Both rendering paths need the current scale and physical client size.
 	b.dpiScale=windowScale(b.plat.hwnd)
 	b.physW,b.physH=clientSize(b.plat.hwnd)
 	b.initCaches(w.Config)
+	// An explicit software renderer setting can bypass WGL entirely.
 	if os.Getenv("GOGUI_RENDERER")=="soft" { return b.win32Software(w) }
 
+	// Prefer the native GL renderer when initialization succeeds.
 	context,err:=createContextFunc(b.plat.hdc)
 	if err==nil {
 		b.plat.hglrc=context
@@ -53,6 +57,7 @@ func (b *Backend) win32Renderer(w *gui.Window) error {
 }
 
 func(b *Backend) win32Software(w *gui.Window)error{
+	// Prepare software drawing and disable shader-only rendering for this window.
 	if err:=soft.PrepareDisplay(w,b.dpiScale);err!=nil{return err}
 	w.BackingScale=b.dpiScale
 	w.SetNativePlatform(&nativePlatform{b:b})
@@ -69,15 +74,19 @@ func(b *Backend) win32Software(w *gui.Window)error{
 			// A negative DIB height keeps the top row first.
 			last.height=-int32(img.Rect.Dy())
 			if cap(pixels)<len(img.Pix){pixels=make([]byte,len(img.Pix))}else{pixels=pixels[:len(img.Pix)]}
+			// GDI needs blue and red in the opposite byte order from the software image.
 			for i:=0;i+3<len(pixels);i+=4{
 				pixels[i],pixels[i+1],pixels[i+2],pixels[i+3]=img.Pix[i+2],img.Pix[i+1],img.Pix[i],255
 			}
 		}
+		// Skip presentation before the first frame or when the client area has no size.
 		if len(pixels)==0||b.physW<=0||b.physH<=0{return}
+		// Scale the cached image to the current physical client area.
 		stretchDIBits.Call(b.plat.hdc,0,0,uintptr(b.physW),uintptr(b.physH),
 			0,0,uintptr(last.width),uintptr(-last.height),uintptr(unsafe.Pointer(&pixels[0])),
 			uintptr(unsafe.Pointer(&last)),0,0x00CC0020)
 	}
+	// Release the software painter's resources when the native window closes.
 	b.softwareRelease=func(){soft.Release(w)}
 	return nil
 }

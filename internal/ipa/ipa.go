@@ -16,6 +16,7 @@ import (
 	"golang.org/x/text/language"
 )
 
+// The exporter writes this tokenizer metadata alongside the ONNX graph.
 type tokenizer struct {
 	Tokens         map[string]int64
 	End, Start     int64
@@ -41,6 +42,7 @@ func Load(path string, infer func([]int64) ([]int64, error)) (*Phonemizer, error
 	if err := json.Unmarshal(raw, out); err != nil {
 		return nil, err
 	}
+	// Require valid repeat counts because they control encoding and decoding strides.
 	if out.Text.Repeated < 1 || out.Phones.Repeated < 1 || len(out.Text.Tokens) == 0 || len(out.Phones.Tokens) == 0 {
 		return nil, errors.New("invalid phonemizer tokenizers")
 	}
@@ -59,6 +61,7 @@ var digits = regexp.MustCompile(`[0-9]+`)
 const separators = "().,:?!/– "
 
 func (p *Phonemizer) Convert(text string) (string, error) {
+	// Normalize spacing before splitting the input into words and pauses.
 	text = strings.Join(strings.Fields(text), " ")
 	text = strings.ReplaceAll(strings.ReplaceAll(text, " .", "."), ".", " .")
 	var numberErr error
@@ -75,6 +78,7 @@ func (p *Phonemizer) Convert(text string) (string, error) {
 		return "", numberErr
 	}
 	var output, word strings.Builder
+	// Run the dictionary and model on one word while passing separators through unchanged.
 	flush := func() error {
 		if word.Len() == 0 {
 			return nil
@@ -114,6 +118,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 			return value, nil
 		}
 	}
+	// Expand mixed-case or hyphenated words only once to avoid repeatedly splitting fragments.
 	if expand {
 		var expanded strings.Builder
 		for i, c := range word {
@@ -139,6 +144,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 		return value, nil
 	}
 	var ids []int64
+	// Add boundary tokens when the checkpoint's input tokenizer calls for them.
 	if p.Text.Bounded {
 		ids = append(ids, p.Text.Start)
 	}
@@ -167,6 +173,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 	// Collapse repeated predictions before undoing the tokenizer's own repeats.
 	var previous int64
 	for _, id := range tokens {
+		// Zero is blank. Skip repeated predictions until the phone sequence ends.
 		if id == 0 || id == previous {
 			continue
 		}
@@ -177,6 +184,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 		}
 	}
 	var result strings.Builder
+	// Boundary positions are separate from the repeated phone tokens in the middle.
 	if p.Phones.Bounded && len(dedup) >= 2 {
 		result.WriteString(p.phones[dedup[0]])
 		for i := 1; i < len(dedup)-1; i += p.Phones.Repeated {
@@ -200,6 +208,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 var low = []string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"}
 var tens = []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
 
+// Spell numbers in the checkpoint frontend's English style, including the and between groups.
 func english(n uint64) string {
 	switch {
 	case n < 20:
@@ -217,6 +226,7 @@ func english(n uint64) string {
 		}
 		return value
 	}
+	// Pick the largest decimal group first and spell the rest recursively.
 	for _, m := range []struct {
 		value uint64
 		label string

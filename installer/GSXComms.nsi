@@ -1,6 +1,7 @@
 ; Copyright 2026 ziul510
 ; SPDX-License-Identifier: Apache-2.0
 Unicode True
+; Setup uses the current user's application directory and registry hive.
 RequestExecutionLevel user
 SetCompressor /SOLID zlib
 Name "GSXComms (Test Build)"
@@ -33,6 +34,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
   ${EndIf}
 !macroend
 
+; Check every bundled executable and runtime before replacing or removing any of them.
 !macro CheckProgramFiles
   !insertmacro CheckAvailable "GSXComms.exe"
   !insertmacro CheckAvailable "gsxremotecontrol.exe"
@@ -44,6 +46,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
   !insertmacro CheckAvailable "workers\kokoro\onnxruntime.dll"
 !macroend
 
+; The packaged Windows binaries are all x64.
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "GSXComms requires 64-bit Windows."
@@ -53,6 +56,7 @@ FunctionEnd
 
 Section "GSXComms"
   SetShellVarContext current
+  ; Abort before copying if the running app or a worker has a file locked.
   !insertmacro CheckProgramFiles
   SetOutPath "$INSTDIR"
   File "..\build\GSXComms.exe"
@@ -71,6 +75,7 @@ Section "GSXComms"
   File "..\build\workers\kokoro\phonemizer.onnx"
   File "..\build\workers\kokoro\phonemizer.json"
   SetOutPath "$INSTDIR"
+  ; Register the uninstaller with the current user's Apps list.
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\GSXComms Go"
   CreateShortcut "$SMPROGRAMS\GSXComms Go\GSXComms.lnk" "$INSTDIR\GSXComms.exe"
@@ -96,12 +101,14 @@ Section "Uninstall"
       StrCpy $1 $INSTDIR
     ${EndIf}
   ${EndIf}
+  ; Restrict removal to the installation this uninstaller belongs to.
   ${If} $1 != $INSTDIR
     MessageBox MB_OK|MB_ICONSTOP "Run the uninstaller from the registered GSXComms installation." /SD IDOK
     SetErrorLevel 2
     Abort
   ${EndIf}
   !insertmacro CheckProgramFiles
+  ; Remove only files owned by this installer. Settings and downloads live outside the program directory.
   ClearErrors
   Delete "$INSTDIR\workers\sherpa\onnxruntime.dll"
   Delete "$INSTDIR\workers\sherpa\sherpa-onnx-c-api.dll"
@@ -117,6 +124,7 @@ Section "Uninstall"
   Delete "$INSTDIR\gsxmute.exe"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES"
+  ; Leave the installer registration available for another attempt if file removal fails.
   ${If} ${Errors}
     MessageBox MB_OK|MB_ICONSTOP "Some program files could not be removed. Close GSXComms and run uninstall again." /SD IDOK
     SetErrorLevel 2

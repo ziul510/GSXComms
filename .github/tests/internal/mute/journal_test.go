@@ -16,8 +16,10 @@ type mock struct {
 	before func(bool)
 }
 
+// The mock keeps exactly one process identity alive.
 func (m *mock) Alive(id identity) bool { return m.id == id }
 func (m *mock) Visit(visit func(audioSession) error) error {
+	// Expose a Couatl session whose backend can observe the precise point where mute changes.
 	return visit(audioSession{m.id, m.muted, "Couatl64_MSFS", func(next bool) error {
 		if m.before != nil {
 			m.before(next)
@@ -62,6 +64,7 @@ func TestFailedWriteLeavesAudioAlone(t *testing.T) {
 
 type sessions []audioSession
 
+// Treat all configured test sessions as live for retry decisions.
 func (s sessions) Alive(id identity) bool {
 	for _, session := range s {
 		if session.ID == id {
@@ -71,6 +74,7 @@ func (s sessions) Alive(id identity) bool {
 	return false
 }
 
+// Enumerate deterministically so one failing session can precede a healthy one.
 func (s sessions) Visit(visit func(audioSession) error) error {
 	for _, session := range s {
 		if err := visit(session); err != nil {
@@ -82,6 +86,7 @@ func (s sessions) Visit(visit func(audioSession) error) error {
 
 func TestRestoreContinuesPastUnavailableSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
+	// One failed mute restore should leave only that session in the journal.
 	first := identity{"endpoint", "first", 35, 9}
 	second := identity{"endpoint", "second", 35, 9}
 	api := sessions{
@@ -112,6 +117,7 @@ type hiddenSession struct {
 	hidden identity
 }
 
+// Model a process whose endpoint is absent from the current enumeration.
 func (h hiddenSession) Alive(id identity) bool { return id == h.hidden || h.mock.Alive(id) }
 
 func TestPendingEndpointDoesNotBlockNewSessions(t *testing.T) {

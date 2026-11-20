@@ -13,6 +13,7 @@ import (
 
 type mistralTestTransport func(*http.Request) (*http.Response, error)
 
+// Use a canned server response behind the normal request construction.
 func (f mistralTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestVoxtralTranscriptionResponse(t *testing.T) {
@@ -38,6 +39,7 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
 			transcript, err := Voxtral(t.Context(), "dummy-test-key", "", "", pcm)
+			// Unexpected response content must surface as the sanitized user-facing error.
 			if tc.invalid {
 				if err == nil || err.Error() != "Mistral returned an invalid transcription response" {
 					t.Fatalf("expected sanitized transcription error, got %v", err)

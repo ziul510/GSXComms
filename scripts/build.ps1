@@ -7,6 +7,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $repo = $PWD.Path
 if (!$MakeNSIS) { $MakeNSIS = (Get-Command makensis.exe -ErrorAction Stop).Source }
 $MakeNSIS = (Resolve-Path -LiteralPath $MakeNSIS).Path
+# Build the installer with the NSIS version the release workflow pins.
 if ((& $MakeNSIS /VERSION) -notmatch '^v3\.12(?:$|\.)') { throw 'Use NSIS 3.12' }
 $PhonemizerDir = (Resolve-Path -LiteralPath $PhonemizerDir).Path
 $tts = Join-Path $repo 'build/workers/kokoro'
@@ -19,12 +20,14 @@ foreach ($file in $export.files.Keys) {
     }
     Copy-Item -LiteralPath (Join-Path $PhonemizerDir $file) -Destination $tts -Force
 }
+# Fetch the package that carries the prebuilt x64 Windows runtime DLLs.
 $sherpa = go mod download -json 'github.com/k2-fsa/sherpa-onnx-go-windows/v2@v2.0.1' | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or !$sherpa.Dir) { throw 'sherpa-onnx module download failed' }
 $modules = Join-Path $sherpa.Dir 'lib/x86_64-pc-windows-gnu'
 $worker = Join-Path $repo 'build/workers/sherpa'
 New-Item -ItemType Directory -Path $worker,(Join-Path $repo 'dist') -Force | Out-Null
 $inventory = Get-Content -LiteralPath 'docs/license-inventory.json' -Raw | ConvertFrom-Json -AsHashtable
+# Only inventory entries marked as native runtime files are copied from this package.
 $runtimeHashes = @{}
 foreach ($entry in $inventory.components) {
     if ($entry.runtimeFile) { $runtimeHashes[$entry.runtimeFile] = $entry.sha256 }
@@ -42,12 +45,14 @@ $env:GOARCH = 'amd64'
 $env:CGO_ENABLED = '1'
 go build -trimpath -o (Join-Path $worker 'gsxspeech.exe') ./cmd/gsxspeech
 if ($LASTEXITCODE -ne 0) { throw 'Speech worker build failed' }
+# Each worker loads ONNX Runtime from its own executable directory.
 Copy-Item -LiteralPath (Join-Path $worker 'onnxruntime.dll') -Destination $tts -Force
 # Worker launch always looks for gsxspeech.exe under the selected provider directory.
 go build -trimpath -o (Join-Path $tts 'gsxspeech.exe') ./cmd/gsxkokoro
 if ($LASTEXITCODE -ne 0) { throw 'Kokoro worker build failed' }
 # Native model libraries run in the workers, so the main executable can build without CGO.
 $env:CGO_ENABLED = '0'
+# Use the patched Windows renderer only for the main application build.
 $modfile = & "$PSScriptRoot/go-gui-overlay.ps1"
 go build -modfile $modfile -trimpath -ldflags '-H windowsgui' -o 'build/GSXComms.exe' ./cmd/gsxcomms
 if ($LASTEXITCODE -ne 0) { throw 'Main executable build failed' }
@@ -55,6 +60,7 @@ go build -trimpath -o 'build/gsxremotecontrol.exe' ./cmd/gsxremotecontrol
 if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
 go build -trimpath -o 'build/gsxmute.exe' ./cmd/gsxmute
 if ($LASTEXITCODE -ne 0) { throw 'GSX mute watchdog build failed' }
+# Generate notices before the installer reads the packaged license files.
 & "$PSScriptRoot/notices.ps1" -Output 'THIRD_PARTY_NOTICES' -NSISRoot (Split-Path -Parent $MakeNSIS)
 # NSIS uses a single file for the license page.
 Set-Content -LiteralPath 'build/setup-notices.txt' -Encoding utf8 -Value @(

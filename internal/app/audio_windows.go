@@ -17,9 +17,11 @@ import (
 
 var mm = windows.NewLazySystemDLL("winmm.dll")
 
+// WinMM uses WAVE_MAPPER to resolve the system default endpoint.
 const defaultWaveDevice = 0xffffffff
 
 func audioDevices(input bool) []string {
+	// The input and output APIs use the same capability fields with different entry points.
 	prefix := "waveOut"
 	if input {
 		prefix = "waveIn"
@@ -43,6 +45,7 @@ func audioDevices(input bool) []string {
 	return out
 }
 
+// The settings list can skip blanks after enumeration has preserved the native device IDs.
 func deviceNames(input bool) []string {
 	out := []string{"Default"}
 	for _, name := range audioDevices(input) {
@@ -53,6 +56,7 @@ func deviceNames(input bool) []string {
 	return out
 }
 
+// Resolve the saved device by name each time because WinMM indices can change.
 func deviceID(input bool, name string) uintptr {
 	if name != "Default" && name != "" {
 		for i, candidate := range audioDevices(input) {
@@ -64,12 +68,14 @@ func deviceID(input bool, name string) uintptr {
 	return defaultWaveDevice
 }
 
+// The calls pass the native WAVEFORMATEX field layout for mono PCM16.
 type waveFormat struct {
 	tag, channels        uint16
 	rate, bytesPerSecond uint32
 	align, bits, extra   uint16
 }
 
+// WinMM updates the byte count and flags in this WAVEHDR while the buffer is queued.
 type waveHeader struct {
 	data             *byte
 	length, recorded uint32
@@ -80,6 +86,7 @@ type waveHeader struct {
 
 //go:uintptrescapes
 func mmCall(proc *windows.LazyProc, args ...uintptr) error {
+	// WinMM APIs report MMRESULT directly. Zero is success.
 	if result, _, _ := proc.Call(args...); result != 0 {
 		return fmt.Errorf("%s failed (%d)", proc.Name, result)
 	}
@@ -87,6 +94,7 @@ func mmCall(proc *windows.LazyProc, args ...uintptr) error {
 }
 
 func openCaptureDevice(name string, id uintptr, allowFallback bool, open func(uintptr) error) error {
+	// An unmatched named microphone can look like WAVE_MAPPER after device lookup.
 	if !allowFallback && id == defaultWaveDevice && name != "" && name != "Default" {
 		return errors.New("selected microphone is unavailable")
 	}
@@ -94,6 +102,7 @@ func openCaptureDevice(name string, id uintptr, allowFallback bool, open func(ui
 	if err == nil || id == defaultWaveDevice {
 		return err
 	}
+	// Cloud capture also rejects a named device that exists but won't open.
 	if !allowFallback {
 		return fmt.Errorf("could not open selected microphone: %w", err)
 	}
@@ -101,6 +110,7 @@ func openCaptureDevice(name string, id uintptr, allowFallback bool, open func(ui
 }
 
 func capture(ctx context.Context, name string, limit int, allowFallback bool) ([]byte, error) {
+	// Both transcription providers consume 16 kHz mono samples.
 	const rate = 16000
 	limit = max(10, min(120, limit))
 	format := waveFormat{tag: 1, channels: 1, rate: rate, bytesPerSecond: rate * 2, align: 2, bits: 16}
@@ -132,6 +142,7 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	var pins runtime.Pinner
 	defer pins.Unpin()
 	prepared := 0
+	// Return queued buffers before unpreparing the headers and releasing pinned memory.
 	defer func() {
 		_ = mmCall(reset, handle)
 		for i := 0; i < prepared; i++ {
@@ -173,14 +184,17 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 		for count := 0; count < len(headers); count++ {
 			i := next
 			h := &headers[i]
+			// WHDR_DONE marks a buffer returned by the driver. Drain in the order queued.
 			if h.flags&1 == 0 {
 				break
 			}
+			// Use the recorded count because the last returned buffer may be partial.
 			n := min(int(h.recorded), len(buffers[i]), limit*rate*2-len(pcm))
 			if n > 0 {
 				pcm = append(pcm, buffers[i][:n]...)
 			}
 			next = (next + 1) % len(headers)
+			// Reuse a drained header only while capture is still running.
 			if active {
 				if err := mmCall(add, handle, uintptr(unsafe.Pointer(h)), hs); err != nil {
 					return nil, err
@@ -195,6 +209,7 @@ func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
 	if len(pcm) == 0 {
 		return nil
 	}
+	// Validate the sample rate and alignment before handing the buffer to WinMM.
 	if rate < 8000 || rate > 192000 || len(pcm)%2 != 0 {
 		return errors.New("invalid playback format")
 	}
@@ -211,6 +226,7 @@ func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
 	}
 	id := deviceID(false, device)
 	err = openDevice(id)
+	// Playback can use the default speakers if the selected output fails.
 	if err != nil && id != defaultWaveDevice {
 		err = openDevice(defaultWaveDevice)
 	}
@@ -220,6 +236,7 @@ func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
 	defer mmCall(mm.NewProc("waveOutClose"), handle)
 	h := waveHeader{data: &pcm[0], length: uint32(len(pcm))}
 	var pins runtime.Pinner
+	// Keep the output header and samples fixed until the asynchronous write is done.
 	pins.Pin(&h)
 	pins.Pin(h.data)
 	defer pins.Unpin()

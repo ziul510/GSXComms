@@ -41,6 +41,7 @@ var (
 )
 
 func readHIDDevice(handle uintptr) *hidDevice {
+	// Raw Input uses separate queries for the device path and HID report descriptor.
 	const deviceName = 0x20000007
 	const preparse = 0x20000005
 	var size uint32
@@ -48,6 +49,7 @@ func readHIDDevice(handle uintptr) *hidDevice {
 	if uint32(result) == 0xffffffff || size == 0 || size > 4096 {
 		return nil
 	}
+	// The device-name query returns a character count. The descriptor query returns bytes.
 	buf := make([]uint16, size)
 	result, _, _ = getRawDevice.Call(handle, deviceName, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
 	if uint32(result) == 0xffffffff {
@@ -58,6 +60,7 @@ func readHIDDevice(handle uintptr) *hidDevice {
 	if strings.Contains(strings.ToLower(path), "ig_") {
 		return nil
 	}
+	// Use the path as a display name only until the device supplies a product string.
 	product := path
 	if fd, err := windows.CreateFile(&buf[0], 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0); err == nil {
 		var name [128]uint16
@@ -87,6 +90,7 @@ func (s *state) listenHID(ctx context.Context) {
 	if err := windows.GetModuleHandleEx(windows.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, nil, &module); err != nil {
 		return
 	}
+	// A message-only window receives controller input without adding a visible window.
 	class := windows.StringToUTF16Ptr("STATIC")
 	hwnd, _, _ := user.NewProc("CreateWindowExW").Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, ^uintptr(2), 0, uintptr(module), 0)
 	if hwnd == 0 {
@@ -113,6 +117,7 @@ func (s *state) listenHID(ctx context.Context) {
 			return
 		}
 		switch msg.msg {
+		// WM_INPUT_DEVICE_CHANGE can invalidate both the cached descriptor and held buttons.
 		case 0x00fe:
 			if msg.wParam == 2 {
 				if d := known[msg.lParam]; d != nil {
@@ -123,6 +128,7 @@ func (s *state) listenHID(ctx context.Context) {
 				}
 				delete(known, msg.lParam)
 			}
+		// WM_INPUT carries a variable-size packet. Ask Windows how much data to allocate.
 		case 0x00ff:
 			var size uint32
 			const input = 0x10000003
@@ -149,8 +155,10 @@ func (s *state) listenHID(ctx context.Context) {
 			if d == nil {
 				break
 			}
+			// RAWHID stores report size and count immediately after the raw input header.
 			length := binary.LittleEndian.Uint32(data[head:])
 			count := binary.LittleEndian.Uint32(data[head+4:])
+			// Check the full byte count before slicing any of the reports.
 			if length == 0 || uint64(length)*uint64(count) > uint64(len(data)-int(head)-8) {
 				break
 			}
@@ -167,6 +175,7 @@ func (s *state) listenHID(ctx context.Context) {
 func (s *state) hidReport(d *hidDevice, report []byte) {
 	var usages [256]uint16
 	size := uint32(len(usages))
+	// Ask the HID parser for input usages on the Button page using this device's descriptor.
 	code, _, _ := getUsages.Call(0, 9, 0, uintptr(unsafe.Pointer(&usages[0])), uintptr(unsafe.Pointer(&size)), uintptr(unsafe.Pointer(&d.preparsed[0])), uintptr(unsafe.Pointer(&report[0])), uintptr(len(report)))
 	if uint32(code) != 0x00110000 || size > uint32(len(usages)) {
 		return
@@ -174,6 +183,7 @@ func (s *state) hidReport(d *hidDevice, report []byte) {
 	next := usages[:size]
 	// HID reports list held buttons, so compare with the prior report for releases.
 	for _, value := range d.buttons {
+		// HID button usages are one-based. The settings store zero-based indices.
 		if value > 0 && !slices.Contains(next, value) {
 			s.hidButton(d, int(value)-1, false)
 		}
@@ -200,6 +210,7 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 		}
 		var id string
 		_ = json.Unmarshal(b.JoyID, &id)
+		// An explicit device path must match exactly apart from case. Names are for legacy bindings.
 		if strings.HasPrefix(id, `\\?\`) {
 			if strings.EqualFold(id, path) {
 				s.record(down)

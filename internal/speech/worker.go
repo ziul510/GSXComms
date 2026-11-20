@@ -23,6 +23,7 @@ import (
 const Version = 1
 const MaxFrame = 16 << 20
 
+// The parent and both native workers share this request and reply payload.
 type Frame struct {
 	Version    int               `json:"version"`
 	ID         uint64            `json:"id"`
@@ -37,6 +38,7 @@ type Frame struct {
 
 func Read(r io.Reader) (Frame, error) {
 	var f Frame
+	// Read the little-endian length first, then exactly one JSON message.
 	var size uint32
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return f, err
@@ -52,6 +54,7 @@ func Read(r io.Reader) (Frame, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return f, err
 	}
+	// Reject a packaged worker that speaks a different protocol version.
 	if f.Version != Version {
 		return f, errors.New("incompatible speech worker version")
 	}
@@ -59,14 +62,17 @@ func Read(r io.Reader) (Frame, error) {
 }
 
 func Write(w io.Writer, f Frame) error {
+	// All callers use the same header and protocol version.
 	f.Version = Version
 	b, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
+	// Enforce the size limit before writing a header the receiving side would reject.
 	if len(b) > MaxFrame {
 		return errors.New("speech worker frame is too large")
 	}
+	// Put the byte count ahead of the JSON so messages can share the same pipe.
 	if err := binary.Write(w, binary.LittleEndian, uint32(len(b))); err != nil {
 		return err
 	}
@@ -87,6 +93,7 @@ type Worker struct {
 	failures int
 }
 
+// Construction records the provider. The subprocess starts on the first load.
 func NewWorker(kind string) *Worker { return &Worker{kind: kind} }
 
 func (w *Worker) Load(ctx context.Context, signature string, paths map[string]string, hotwords []string) error {
@@ -111,6 +118,7 @@ func (w *Worker) Load(ctx context.Context, signature string, paths map[string]st
 	if r.Error != "" {
 		return errors.New(r.Error)
 	}
+	// Only cache the signature after the worker confirms it opened the model.
 	w.loaded = signature
 	return nil
 }
@@ -121,6 +129,7 @@ func (w *Worker) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 	if w.cmd == nil || w.loaded == "" {
 		return "", errors.New("speech model is unloaded")
 	}
+	// Serialize requests through the worker's single stdin and stdout pair.
 	resp, err := w.exchange(ctx, 240*time.Second, Frame{Op: "transcribe", SampleRate: 16000, PCM: pcm})
 	if err != nil {
 		return "", err
@@ -136,6 +145,7 @@ func (w *Worker) start(ctx context.Context) error {
 	if w.failures >= 2 {
 		return errors.New("speech worker stopped after repeated failures; reload the model to retry")
 	}
+	// Back off briefly after a crash before starting another child.
 	if !w.failed.IsZero() && time.Since(w.failed) < time.Second {
 		t := time.NewTimer(time.Second - time.Since(w.failed))
 		defer t.Stop()
@@ -149,6 +159,7 @@ func (w *Worker) start(ctx context.Context) error {
 		w.fail()
 		return err
 	}
+	// Check that the child loaded its native runtime before sending a model.
 	r, err := w.exchange(ctx, 5*time.Second, Frame{Op: "hello"})
 	if err != nil {
 		w.stop()
@@ -181,6 +192,7 @@ func (w *Worker) launch() error {
 		in.Close()
 		return err
 	}
+	// Create the Windows job before launch so the worker can be tied to the parent.
 	job, err := createJob()
 	if err != nil {
 		in.Close()
@@ -193,6 +205,7 @@ func (w *Worker) launch() error {
 		out.Close()
 		return err
 	}
+	// Record resources before assignment so a failed assignment can still be cleaned up.
 	w.cmd, w.in, w.out, w.job = cmd, in, out, job
 	return assignJob(job, uint32(cmd.Process.Pid))
 }
@@ -203,6 +216,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// A monotonically increasing ID separates calls even when the worker gets restarted.
 	w.sequence++
 	req.ID = w.sequence
 	type result struct {
@@ -238,6 +252,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 			}
 			t.Stop()
 		}
+		// Count a timeout toward the retry budget. A canceled caller only stops the process.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			w.fail()
 		} else {
@@ -261,17 +276,21 @@ func (w *Worker) stop() {
 	if w.cmd == nil {
 		return
 	}
+	// Close the job and kill any child that wasn't assigned to it successfully.
 	_ = windows.CloseHandle(w.job)
 	_ = w.cmd.Process.Kill()
 	_ = w.in.Close()
 	_ = w.out.Close()
 	_ = w.cmd.Wait()
+	// Clear the signature along with the child so the next request loads a fresh model.
 	w.cmd, w.in, w.out, w.job, w.loaded = nil, nil, nil, 0, ""
 }
 
+// Reset waits for the current pipe exchange before asking the worker to shut down.
 func (w *Worker) Reset() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Offer a graceful shutdown before forcing the child down and clearing its retry state.
 	if w.cmd != nil {
 		_, _ = w.exchange(context.Background(), 2*time.Second, Frame{Op: "shutdown"})
 	}
@@ -292,6 +311,7 @@ func (w *Worker) Synthesize(ctx context.Context, text string) ([]byte, int, erro
 	if resp.Error != "" {
 		return nil, 0, errors.New(resp.Error)
 	}
+	// Playback expects the Kokoro worker's fixed rate and complete PCM16 samples.
 	if resp.SampleRate != 24000 || len(resp.PCM)%2 != 0 {
 		return nil, 0, errors.New("Kokoro worker returned invalid PCM")
 	}
