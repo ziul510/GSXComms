@@ -10,6 +10,8 @@ import (
 	"math"
 	"math/rand/v2"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,15 +46,18 @@ var (
 
 // UI state stays on the window thread Workers communicate through queues and callbacks
 type state struct {
-	audioQueue                                       chan playback
+	audioQueue                                       []playback
+	audioWake                                        chan struct{}
+	clipCache                                        []cachedClip
 	audioMu                                          sync.Mutex
 	audioCancel                                      context.CancelFunc
-	audioGeneration                                  uint64
 	crewMute                                         crewMute
 	saves                                            chan *saveRequest
 	pendingSave                                      *saveRequest
 	saved                                            chan struct{}
 	debug                                            chan debugEvent
+	debugEnabled                                     atomic.Bool
+	logSecret                                        *regexp.Regexp
 	location                                         atomic.Pointer[geo.Position]
 	accentsDir, crewVoice                            string
 	reader                                           *speech.Worker
@@ -83,16 +88,17 @@ type state struct {
 	lines                                            []string
 	input                                            string
 	ptt                                              string
-	connected, ready, busy, overlay, speedKnown      bool
+	connected, ready, busy, overlay                  bool
 	menu                                             gsx.Menu
 	menuWatch                                        bool // owned by the simulator loop
 	menuActivity                                     time.Time
 	lastConnect                                      time.Time
+	servicesMu                                       sync.Mutex
 	services                                         map[string]bool
-	speed                                            float64
-	highlight                                        int
-	highlightPage                                    gsx.Menu
-	highlightUntil                                   time.Time
+	groundSpeed                                      atomic.Pointer[speedReading]
+	policy                                           atomic.Pointer[transmissionPolicy]
+	highlights                                       []menuHighlight
+	vocabulary                                       commands.Loader
 	settingsOpen, accentOpen, hotfixOpen             bool
 	binding                                          func(config.Binding)
 	hidPaths                                         map[string][]string
@@ -115,7 +121,7 @@ func Run(dir string) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
+	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle"}
 	s.accentsDir = archives
 	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
 	s.services = make(map[string]bool)
@@ -124,7 +130,7 @@ func Run(dir string) {
 	s.speechAttempted = make(map[string]bool)
 	s.reader = speech.NewWorker("kokoro")
 	s.speaking = make(chan struct{}, 1)
-	s.audioQueue = make(chan playback, 16)
+	s.audioWake = make(chan struct{}, 1)
 	// Keep all local audio on one playback loop so it can share the mute watchdog
 	go s.playbackLoop()
 	defer s.reader.Reset()
@@ -138,6 +144,9 @@ func Run(dir string) {
 	s.debug = make(chan debugEvent, 128)
 	go s.settingsWriter()
 	go s.debugWriter()
+	key, _ := config.ReadKey()
+	s.setLogSecret(key)
+	s.setDebug(config.Get[bool](s.cfg, "debug_mode"))
 	s.log("SYS", "Standby for sim connection")
 	if initErr != nil {
 		s.log("ERR", initErr.Error())
@@ -256,9 +265,10 @@ func (s *state) configureTray() {
 		OnAction: func(id string) {
 			s.main.QueueCommand(func(w *gui.Window) {
 				switch id {
-				case "show":
+				case "", "show":
 					w.Show()
 					w.Restore()
+					focusWindow("GSXComms")
 				case "quit":
 					s.quit()
 				}
@@ -287,17 +297,24 @@ func (s *state) minimizeToTray(hwnd uintptr) {
 	})
 }
 
+func (s *state) setLogSecret(key string) {
+	if key == "" {
+		s.logSecret = nil
+	} else {
+		s.logSecret = regexp.MustCompile("(?i)" + regexp.QuoteMeta(key))
+	}
+}
+
 func (s *state) log(sender, message string) {
-	// Store separate transcript rows Mirror them to disk only in debug mode
+	if s.logSecret != nil {
+		message = s.logSecret.ReplaceAllString(message, "[redacted]")
+	}
+	// Persist only the event category for transcript rows
 	for _, line := range strings.Split(strings.TrimSpace(message), "\n") {
 		if line != "" {
 			s.lines = append(s.lines, fmt.Sprintf("[%s]: %s", sender, line))
-			if config.Get[bool](s.cfg, "debug_mode") {
-				level := "INFO"
-				if sender == "ERR" {
-					level = "ERROR"
-				}
-				s.debugLog(debugEvent{true, fmt.Sprintf("%s [%s] [%s] %s", time.Now().Format("2006-01-02 15:04:05.000"), level, sender, line)})
+			if sender == "ERR" {
+				s.trace("ERR", "An application error appeared in the conversation")
 			}
 		}
 	}
@@ -327,131 +344,91 @@ func (s *state) addJob(action func(context.Context, *gsx.Session)) bool {
 	case s.jobs <- action:
 		return true
 	default:
-		s.log("SYS", "The GSX command queue is busy")
+		const message = "The GSX command queue is busy"
+		s.log("SYS", message)
+		if s.main != nil {
+			s.main.Toast(gui.ToastCfg{Title: message})
+		}
+		s.trace("GSX", "Command rejected because the queue is full")
 		return false
 	}
 }
 
-// The simulator loop owns GSX remote control, overlay monitoring, and inferred service state.
+type menuHighlight struct {
+	page  gsx.Menu
+	index int
+	until time.Time
+}
+
+// One lane owns all menu operations and decisions about remote control
 func (s *state) simulator() {
 	defer close(s.done)
-	// Keep polling and commands on one goroutine since they share the dispatch queue
 	session := gsx.New(nil, gsx.Panel())
 	defer session.Close()
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
 	var lastMenu gsx.Menu
-	var lastReopen, lastGeoPoll time.Time
-	var geoLat, geoLon float64
-	var high, fast bool
-	failed := 0
-	session.OnReadError = func(err error) {
-		s.async(func() { s.log("GSX", "Could not read panel menu: "+err.Error()) })
+	var lastReopen time.Time
+	var pollDone chan struct{}
+	pollCtx, stopPoll := context.WithCancel(s.ctx)
+	defer func() {
+		stopPoll()
+		if pollDone != nil {
+			<-pollDone
+		}
+	}()
+	session.OnReadError = func(error) {
+		s.trace("GSX", "Failed to read the panel menu")
+		s.async(func() { s.log("GSX", "Could not read panel menu") })
 	}
 	session.OnChoice = func(page gsx.Menu, index int) {
+		s.trace("GSX", fmt.Sprintf("Selected slot %d of %d", index+1, len(page.Options)))
 		s.menuActivity = time.Now()
 		s.async(func() {
 			if !s.overlay {
 				return
 			}
-			until := time.Now().Add(time.Second)
-			s.highlight, s.highlightPage, s.highlightUntil = index, page, until
+			s.highlights = append(s.highlights, menuHighlight{page, index, time.Now().Add(time.Second)})
 			time.AfterFunc(time.Second, func() {
 				s.async(func() {
-					if s.highlightUntil == until {
-						s.highlight = -1
-					}
+					s.highlights = slices.DeleteFunc(s.highlights, func(h menuHighlight) bool {
+						return !time.Now().Before(h.until)
+					})
 				})
 			})
 		})
 	}
 	for {
+		// Prefer retiring an offline connection before processing more jobs
+		select {
+		case <-pollDone:
+			_ = session.Close()
+			pollDone = nil
+			s.location.Store(nil)
+			lastMenu, lastReopen, s.menuActivity = gsx.Menu{}, time.Time{}, time.Time{}
+			s.menuWatch = false
+			s.resetServices()
+		default:
+		}
 		select {
 		case <-s.ctx.Done():
 			return
-		// Connect, menu, and routing jobs share the same simulator session and timeout budget per job
+		case <-pollDone:
+			continue
 		case job := <-s.jobs:
 			ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			if ctx.Err() == nil {
 				job(ctx, session)
 			}
 			cancel()
+			if session.Connected() && pollDone == nil {
+				pollDone = make(chan struct{})
+				go s.pollSimulator(pollCtx, session.Sim, pollDone)
+			}
 		case <-ticker.C:
 			if !session.Connected() {
 				s.async(s.retryConnection)
 				continue
-			}
-			ctx, cancel := context.WithTimeout(s.ctx, 500*time.Millisecond)
-			ready, speed, err := session.Status(ctx)
-			cancel()
-			// Only transport failures count toward disconnecting An unknown speed still blocks PTT
-			if err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
-				failed++
-			} else {
-				failed = 0
-			}
-			// Require consecutive failures before dropping the transport and hiding stale UI state
-			if failed >= 3 || errors.Is(err, gsx.ErrDisconnected) {
-				_ = session.Close()
-				s.location.Store(nil)
-				lastGeoPoll, lastReopen, s.menuActivity = time.Time{}, time.Time{}, time.Time{}
-				lastMenu = gsx.Menu{}
-				s.menuWatch, high, fast = false, false, false
-				clear(s.services)
-				failed = 0
-				s.async(func() {
-					s.connected = false
-					s.ready = false
-					s.overlay = false
-					s.log("SYS", "Disconnected from SimConnect")
-				})
-				continue
-			}
-			altCtx, stop := context.WithTimeout(s.ctx, 420*time.Millisecond)
-			altitude, altErr := session.Altitude(altCtx)
-			stop()
-			recovered, descended := err == nil && fast && speed <= 50, altErr == nil && high && altitude <= 10000
-			if err == nil {
-				fast = speed > 50
-			}
-			if altErr == nil {
-				above := altitude > 10000
-				if above && !high {
-					s.async(func() { s.log("SYS", "Cruise: crew will refresh on descent") })
-				}
-				high = above
-			}
-			if recovered || descended {
-				// The next ground interaction starts with fresh service state and local voices.
-				clear(s.services)
-				lastGeoPoll = time.Time{}
-				s.location.Store(nil)
-				s.async(func() {
-					s.randomizeVoice()
-					s.log("SYS", "Ground service state reset. Crew refreshed")
-				})
-			}
-			interval, movement := 5*time.Second, 0.001
-			// A local crew changes less often in flight than it does while taxiing.
-			if altitude > 3000 || speed > 80 {
-				interval, movement = 30*time.Second, 0.02
-			}
-			if time.Since(lastGeoPoll) >= interval {
-				lastGeoPoll = time.Now()
-				geoCtx, stop := context.WithTimeout(s.ctx, 850*time.Millisecond)
-				lat, lon, err := session.Location(geoCtx)
-				stop()
-				if err == nil && (s.location.Load() == nil || math.Abs(lat-geoLat) > movement || math.Abs(lon-geoLon) > movement) {
-					if pos, err := geo.Nearest(lat, lon); err == nil {
-						geoLat, geoLon = lat, lon
-						s.location.Store(&pos)
-						s.async(func() {
-							if config.Get[bool](s.cfg, "debug_mode") {
-								s.debugLog(debugEvent{true, "GEO: country " + pos.Country + ", region " + pos.Region})
-							}
-						})
-					}
-				}
 			}
 			menu := session.ReadMenu()
 			if session.RemoteActive() {
@@ -460,8 +437,19 @@ func (s *state) simulator() {
 				}
 				switch {
 				case time.Since(s.menuActivity) >= 10*time.Second:
-					ctx, cancel := context.WithTimeout(s.ctx, time.Second)
-					_ = session.Release(ctx)
+					s.trace("GSX", "Releasing the idle menu")
+					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+					if s.menuWatch {
+						page, err := session.RefreshAndRelease(ctx)
+						if len(page.Options) > 0 {
+							menu = page
+						}
+						if err != nil {
+							s.traceFailure("GSX", "Could not refresh and release the idle menu")
+						}
+					} else {
+						_ = session.Release(ctx)
+					}
 					cancel()
 				case s.menuWatch && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
@@ -472,16 +460,108 @@ func (s *state) simulator() {
 					cancel()
 				}
 			}
+			if len(menu.Options) > 0 {
+				s.async(func() {
+					if s.overlay {
+						s.menu = menu
+					}
+				})
+			}
+		}
+	}
+}
+
+// Telemetry shares the transport one exchange at a time, independently of preset timing
+func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan struct{}) {
+	defer close(done)
+	defer s.groundSpeed.Store(nil)
+	session := gsx.New(sim, "")
+	ticker := time.NewTicker(600 * time.Millisecond)
+	defer ticker.Stop()
+	var lastGeoPoll time.Time
+	var geoLat, geoLon float64
+	var high, fast bool
+	failed := 0
+	for ctx.Err() == nil {
+		statusCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
+		ready, speed, err := session.Status(statusCtx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			s.groundSpeed.Store(&speedReading{speed, time.Now()})
+		} else {
+			s.groundSpeed.Store(nil)
+		}
+		if err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
+			failed++
+		} else {
+			failed = 0
+		}
+		if failed >= 3 || errors.Is(err, gsx.ErrDisconnected) {
+			s.traceFailure("GSX", "SimConnect poll lost the connection")
 			s.async(func() {
-				s.ready = ready
-				// Keep speed availability separate so a failed read can't look like the aircraft is stopped
-				s.speedKnown = err == nil
-				s.speed = speed
-				if s.overlay && len(menu.Options) > 0 {
-					// Keep the last usable page while GSX releases control or rewrites the menu.
-					s.menu = menu
-				}
+				s.connected, s.ready, s.overlay = false, false, false
+				s.menu, s.highlights = gsx.Menu{}, nil
+				s.log("SYS", "Disconnected from SimConnect")
 			})
+			return
+		}
+		if err != nil {
+			s.trace("GSX", "SimConnect poll did not return a valid speed")
+		}
+		s.async(func() { s.ready = ready })
+		altCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 420*time.Millisecond)
+		altitude, altErr := session.Altitude(altCtx)
+		stop()
+		if ctx.Err() != nil {
+			return
+		}
+		recovered, descended := err == nil && fast && speed <= 50, altErr == nil && high && altitude <= 10000
+		if err == nil {
+			fast = speed > 50
+		}
+		if altErr == nil {
+			above := altitude > 10000
+			if above && !high {
+				s.async(func() { s.log("SYS", "Cruise: crew will refresh on descent") })
+			}
+			high = above
+		}
+		if recovered || descended {
+			// The next ground interaction starts with fresh service state and local voices.
+			s.resetServices()
+			lastGeoPoll = time.Time{}
+			s.location.Store(nil)
+			s.async(func() {
+				s.randomizeVoice()
+				s.log("SYS", "Ground service state reset. Crew refreshed")
+			})
+		}
+		interval, movement := 5*time.Second, 0.001
+		// A local crew changes less often in flight than it does while taxiing.
+		if altitude > 3000 || speed > 80 {
+			interval, movement = 30*time.Second, 0.02
+		}
+		if time.Since(lastGeoPoll) >= interval {
+			lastGeoPoll = time.Now()
+			geoCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 850*time.Millisecond)
+			lat, lon, err := session.Location(geoCtx)
+			stop()
+			if err == nil && (s.location.Load() == nil || math.Abs(lat-geoLat) > movement || math.Abs(lon-geoLon) > movement) {
+				if pos, err := geo.Nearest(lat, lon); err == nil {
+					geoLat, geoLon = lat, lon
+					s.location.Store(&pos)
+					s.trace("GEO", "Updated aircraft country and region")
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -503,18 +583,16 @@ func (s *state) toggleConnect() {
 	s.busy = s.addJob(func(ctx context.Context, session *gsx.Session) {
 		sim, err := gsx.Connect(ctx)
 		if err != nil {
+			s.traceFailure("GSX", "SimConnect handshake failed")
 			s.async(func() { s.busy = false; s.log("ERR", err.Error()) })
 			return
 		}
 		// A successful SimConnect handshake and GSX startup are separate states
 		session.Sim = sim
-		ready, speed, statusErr := session.Status(ctx)
+		s.trace("GSX", "SimConnect handshake succeeded")
 		s.async(func() {
 			s.busy = false
 			s.connected = true
-			s.ready = ready
-			s.speed = speed
-			s.speedKnown = statusErr == nil
 			s.log("SYS", "Connected to SimConnect")
 		})
 	})
@@ -550,7 +628,7 @@ func (s *state) toggleMenu() {
 			}
 		})
 	}) {
-		s.menu, s.overlay = gsx.Menu{}, true
+		s.menu, s.highlights, s.overlay = gsx.Menu{}, nil, true
 	}
 }
 
@@ -574,12 +652,15 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	}
 	if err == nil {
 		err = session.ChooseOn(ctx, page, index)
+		if err != nil {
+			current = session.ReadMenu()
+		}
 	}
 	s.async(func() {
 		if err != nil {
 			s.log("GSX", err.Error())
 			s.cue(prefs, "error", "", true)
-			if s.overlay && len(current.Options) > 0 {
+			if s.overlay && (errors.Is(err, gsx.ErrMenuChanged) || len(current.Options) > 0) {
 				s.menu = current
 			}
 			return
@@ -588,18 +669,56 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	})
 }
 
-// Unknown speed blocks normal transmissions. Simulation mode and the speed override bypass the check.
-func (s *state) transmissionBlock() string {
-	if config.Get[bool](s.cfg, "simulation_mode") || config.Get[bool](s.cfg, "ignore_speed_restriction") {
+const speedFreshness = 2 * time.Second
+
+type speedReading struct {
+	knots float64
+	at    time.Time
+}
+
+type transmissionPolicy struct {
+	simulation, ignoreSpeed, speechReady bool
+}
+
+func (s *state) publishTransmissionPolicy() {
+	s.policy.Store(&transmissionPolicy{
+		simulation:  config.Get[bool](s.cfg, "simulation_mode"),
+		ignoreSpeed: config.Get[bool](s.cfg, "ignore_speed_restriction"),
+		speechReady: s.speechReady,
+	})
+}
+
+func (r *speedReading) fresh() bool {
+	return r != nil && time.Since(r.at) <= speedFreshness
+}
+
+func (s *state) speedBlock(policy *transmissionPolicy) string {
+	if policy.simulation || policy.ignoreSpeed {
 		return ""
 	}
-	if !s.speedKnown {
-		return "Taxi speed unavailable for transmission"
+	if speed := s.groundSpeed.Load(); speed.fresh() {
+		if speed.knots > 50 {
+			return "Taxi speed too high for transmission"
+		}
+		return ""
 	}
-	if s.speed > 50 {
-		return "Taxi speed too high for transmission"
+	return "Taxi speed unavailable for transmission"
+}
+
+func (s *state) transmissionBlock() string {
+	s.publishTransmissionPolicy()
+	return s.speedBlock(s.policy.Load())
+}
+
+func (s *state) loadVocabulary() commands.Vocabulary {
+	vocab, warning := s.vocabulary.Load(s.dir)
+	if warning != "" {
+		s.async(func() {
+			s.log("ERR", warning)
+			s.main.Toast(gui.ToastCfg{Title: warning})
+		})
 	}
-	return ""
+	return vocab
 }
 
 func (s *state) submit(input string) {
@@ -610,8 +729,7 @@ func (s *state) submit(input string) {
 	// Snapshot window state before handing the request to the simulator loop.
 	prefs := s.cfg.Copy()
 	page, overlay := s.menu, s.overlay
-	blocked := s.transmissionBlock()
-	speechReady := s.speechReady
+	s.publishTransmissionPolicy()
 	fail := func(reason string) {
 		s.async(func() {
 			s.log("CMD", input)
@@ -620,11 +738,7 @@ func (s *state) submit(input string) {
 		})
 	}
 	s.addJob(func(ctx context.Context, session *gsx.Session) {
-		words, err := commands.Load(s.dir)
-		if err != nil {
-			s.async(func() { s.log("ERR", "Command vocabulary is unreadable") })
-			return
-		}
+		words := s.loadVocabulary()
 		raw := strings.ToLower(input)
 		text := words.Normalize(raw)
 		// Typed readouts need the simulator and Kokoro, but never require a recognizer.
@@ -633,25 +747,31 @@ func (s *state) submit(input string) {
 			s.sayMenu(ctx, session, prefs)
 			return
 		}
-		if !session.Connected() && !config.Get[bool](prefs, "simulation_mode") {
-			fail("SimConnect handshake required")
+		gate := func() error {
+			policy := s.policy.Load()
+			if !session.Connected() && !policy.simulation {
+				return gsx.ErrDisconnected
+			}
+			if blocked := s.speedBlock(policy); blocked != "" {
+				return errors.New(blocked)
+			}
+			if !policy.speechReady {
+				return errors.New("Speech recognition is unavailable or still loading")
+			}
+			return nil
+		}
+		if err := gate(); err != nil {
+			fail(err.Error())
 			return
 		}
-		if blocked != "" {
-			fail(blocked)
-			return
-		}
-		if !speechReady {
-			fail("Speech recognition is unavailable or still loading")
-			return
-		}
+		session.BeforeChoice = gate
+		defer func() { session.BeforeChoice = nil }()
 		if idx, ok := commands.Number(text); ok && overlay {
 			s.async(func() { s.log("CMD", input) })
 			s.selectNumber(ctx, session, page, idx, prefs)
 			return
 		}
 		s.menuActivity = time.Now()
-		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		log := func(sender, msg string) { s.async(func() { s.log(sender, msg) }) }
 		corrected := false
 		if session.Connected() && config.Get[bool](prefs, "enable_gsx_menu_text_correction") {
@@ -664,12 +784,22 @@ func (s *state) submit(input string) {
 				log("CMD", fmt.Sprintf("%s → %s", text, text2))
 				text = text2
 				corrected = true
-				action = commands.Action{Kind: "menu"}
-			} else if opened && session.RemoteActive() {
+			}
+			if err := gate(); err != nil {
+				s.trace("GSX", "Transmission blocked after text correction")
+				if opened && session.RemoteActive() {
+					_ = session.Release(ctx)
+				}
+				fail(err.Error())
+				return
+			}
+			if !corrected && opened && session.RemoteActive() {
 				_ = session.Release(ctx)
 			}
 		}
+		action := commands.Action{Kind: "menu"}
 		if !corrected {
+			action = words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 			log("CMD", input)
 		}
 		auto := config.Get[bool](prefs, "auto_select_operator")
@@ -680,6 +810,10 @@ func (s *state) submit(input string) {
 			// Each preset service gets its own deadline even if earlier ones ran long
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			defer cancel()
+			if err := gate(); err != nil {
+				log("SYS", err.Error())
+				return false
+			}
 			selected, err := session.Execute(serviceCtx, text, service, words.Keywords(service), auto)
 			if selected != "" {
 				matched := service
@@ -694,6 +828,14 @@ func (s *state) submit(input string) {
 				return false
 			}
 			if err != nil {
+				if errors.Is(err, gsx.ErrMenuChanged) {
+					page := session.ReadMenu()
+					s.async(func() {
+						if s.overlay {
+							s.menu = page
+						}
+					})
+				}
 				log("GSX", err.Error())
 				return false
 			}

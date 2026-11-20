@@ -7,12 +7,12 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/hajimehoshi/go-mp3"
@@ -192,7 +192,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 	}
 }
 
-func accentCue(dir string, enabled []string, accentName, service, option, voice string) ([]byte, int) {
+func (s *state) accentCue(dir string, enabled []string, accentName, service, option, voice string) ([]byte, int) {
 	folder, action := service, ""
 	switch service {
 	case "greeting":
@@ -220,13 +220,8 @@ func accentCue(dir string, enabled []string, accentName, service, option, voice 
 		}
 		clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
 		for _, relative := range []string{pack.name, "Extracted", ""} {
-			file, err := os.Open(filepath.Join(dir, relative, clip))
-			if err == nil {
-				pcm, rate := decodeAccentClip(file)
-				_ = file.Close()
-				if len(pcm) > 0 {
-					return pcm, rate
-				}
+			if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
+				return pcm, rate
 			}
 		}
 	}
@@ -248,13 +243,46 @@ func decodeAccentClip(source io.Reader) ([]byte, int) {
 	if err != nil || len(pcm) > 8<<20 || len(pcm)%4 != 0 {
 		return nil, 0
 	}
-	// The decoder produces stereo PCM16 and the playback path expects mono
-	for i := 0; i < len(pcm); i += 4 {
-		left := int32(int16(binary.LittleEndian.Uint16(pcm[i:])))
-		right := int32(int16(binary.LittleEndian.Uint16(pcm[i+2:])))
-		binary.LittleEndian.PutUint16(pcm[i/2:], uint16((left+right)/2))
+	return pcm, decoder.SampleRate()
+}
+
+type cachedClip struct {
+	path     string
+	size     int64
+	modified time.Time
+	pcm      []byte
+	rate     int
+}
+
+// Cache decoded recordings only on the playback lane
+func (s *state) loadClip(path string) ([]byte, int) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0
 	}
-	return pcm[:len(pcm)/2], decoder.SampleRate()
+	for i, clip := range s.clipCache {
+		if clip.path == path {
+			s.clipCache = slices.Delete(s.clipCache, i, i+1)
+			if clip.size == info.Size() && clip.modified.Equal(info.ModTime()) {
+				s.clipCache = append(s.clipCache, clip)
+				return clip.pcm, clip.rate
+			}
+			break
+		}
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0
+	}
+	defer file.Close()
+	pcm, rate := decodeAccentClip(file)
+	if len(pcm) > 0 {
+		if len(s.clipCache) == 32 {
+			s.clipCache = slices.Delete(s.clipCache, 0, 1)
+		}
+		s.clipCache = append(s.clipCache, cachedClip{path, info.Size(), info.ModTime(), pcm, rate})
+	}
+	return pcm, rate
 }
 
 func (s *state) regionalCue(next playback) ([]byte, int) {
@@ -283,7 +311,7 @@ func (s *state) regionalCue(next playback) ([]byte, int) {
 		if name == "" {
 			continue
 		}
-		if pcm, rate := accentCue(recordings, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
+		if pcm, rate := s.accentCue(recordings, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
 			return pcm, rate
 		}
 	}

@@ -5,6 +5,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -141,8 +143,14 @@ func (s *state) output(ctx context.Context, next playback) error {
 			static = config.Get[float64](next.prefs, "volume_static")
 		}
 	}
-	mixRadio(next.pcm, gain, static)
-	return playPCM(ctx, config.Get[string](next.prefs, "output_device_name"), next.pcm, next.rate)
+	channels := 1
+	if next.cue != "" {
+		channels = 2
+	}
+	pcm := bytes.Clone(next.pcm)
+	mixRadio(pcm, gain, static, next.rate, channels)
+	s.trace("AUDIO", fmt.Sprintf("Playing %d bytes at %d Hz with %d channel(s)", len(pcm), next.rate, channels))
+	return playPCMBuffer(ctx, config.Get[string](next.prefs, "output_device_name"), config.Get[string](next.prefs, "output_device_id"), pcm, next.rate, channels, false)
 }
 
 // Match the legacy RMS gain limits without turning silence into noise.
@@ -158,17 +166,33 @@ func normalizationGain(pcm []byte) float64 {
 	return max(0.5, min(2.5, 3000/math.Sqrt(sum/float64(len(pcm)/2))))
 }
 
-func mixRadio(pcm []byte, gain, static float64) {
-	prev := 0.0
-	for i := 0; i+1 < len(pcm); i += 2 {
-		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:])))
-		combined := sample * gain
-		if static > 0 {
-			noise := (rand.Float64()*2 - 1) * 1300
-			combined += (noise - prev) * static
-			prev = noise
+const staticRate = 44100
+
+var radioStatic = sync.OnceValue(func() []int16 {
+	samples := make([]int16, 4*staticRate)
+	for i := range samples {
+		samples[i] = int16(rand.IntN(2401) - 1200)
+	}
+	return samples
+})
+
+func mixRadio(pcm []byte, gain, static float64, rate, channels int) {
+	var noise []int16
+	if static > 0 {
+		noise = radioStatic()
+	}
+	for frame := 0; frame < len(pcm)/(2*channels); frame++ {
+		offset := frame * 2 * channels
+		add := 0.0
+		if len(noise) > 0 {
+			index := frame * staticRate / rate % len(noise)
+			add = float64(noise[index]) * static
 		}
-		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(max(-32768, min(32767, combined)))))
+		for ch := range channels {
+			sample := pcm[offset+2*ch:]
+			value := float64(int16(binary.LittleEndian.Uint16(sample)))*gain + add
+			binary.LittleEndian.PutUint16(sample, uint16(int16(max(-32768, min(32767, value)))))
+		}
 	}
 }
 

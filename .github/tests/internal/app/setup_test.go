@@ -157,9 +157,10 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	if err := installAccentPacks(t.Context(), archives, dir, enabled); err != nil {
 		t.Fatal(err)
 	}
+	s := &state{dir: dataDir, crewVoice: "male"}
 	for _, pack := range packs {
 		for _, name := range pack.accents {
-			pcm, rate := accentCue(dir, []string{pack.name}, name, "greeting", "", "female")
+			pcm, rate := s.accentCue(dir, []string{pack.name}, name, "greeting", "", "female")
 			if len(pcm) == 0 || rate <= 0 {
 				t.Errorf("could not decode greeting for %s", name)
 			}
@@ -167,9 +168,12 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	}
 	prefs := config.Defaults()
 	prefs.Put("installed_packs", []string{packs[0].name})
-	s := &state{dir: dataDir, crewVoice: "male"}
 	request := playback{prefs: prefs, location: &geo.Position{Country: "FR"}, cue: "jetway", voice: "male"}
 	american, _ := s.regionalCue(request)
+	again, rate := s.regionalCue(request)
+	if len(again) == 0 || len(again)%4 != 0 || &again[0] != &american[0] || rate == 0 {
+		t.Fatal("expected cached stereo PCM")
+	}
 	request.option = "Disconnect jetway"
 	disconnected, _ := s.regionalCue(request)
 	if len(american) == 0 || len(disconnected) == 0 || bytes.Equal(american, disconnected) {

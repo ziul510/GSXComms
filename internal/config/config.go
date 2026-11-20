@@ -209,10 +209,47 @@ func save(dir string, values Values, migrateKey func(string) error) error {
 	if err := preserveSettingsCredential(path, migrateKey); err != nil {
 		return err
 	}
+	if err := backupLegacyBinding(path); err != nil {
+		return err
+	}
 	return WriteAtomic(path, data)
 }
 
 // Read the destination before overwriting it in case it still holds an unmigrated key
+func backupLegacyBinding(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var saved Values
+	if json.Unmarshal(data, &saved) != nil {
+		return nil
+	}
+	binding := Get[Binding](saved, "ptt_bind")
+	if _, python := saved["first_launch"]; !python && binding.Type != "joy" &&
+		!(binding.Type == "joystick" && len(binding.JoyID) == 0) {
+		return nil
+	}
+	// The backup preserves the old binding while the credential stays in the vault
+	if _, exists := saved[legacySecret]; exists {
+		data, err = settingsJSON(saved)
+		if err != nil {
+			return err
+		}
+	}
+	err = writeAtomic(path+".ptt-backup", data, moveNew)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("could not back up legacy PTT settings: %w", err)
+	}
+	return nil
+}
+
 func preserveSettingsCredential(path string, migrateKey func(string) error) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

@@ -5,11 +5,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +21,7 @@ import (
 )
 
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
-	s := &state{cfg: config.Defaults(), ptt: "Idle", highlight: -1}
+	s := &state{cfg: config.Defaults(), ptt: "Idle"}
 	// Include the optional command field in the minimum-width layout check
 	s.cfg.Put("enable_keyboard_input", true)
 	w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
@@ -41,12 +43,12 @@ func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 
 func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
 	// An unbuffered queue with no receiver makes every enqueue fail immediately
-	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), highlight: -1, jobs: make(chan func(context.Context, *gsx.Session))}
+	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), jobs: make(chan func(context.Context, *gsx.Session))}
 	s.toggleConnect()
 	s.toggleMenu()
 	s.submit("one")
-	if s.busy || !s.overlay || s.highlight != -1 {
-		t.Fatalf("busy=%v overlay=%v highlight=%d", s.busy, s.overlay, s.highlight)
+	if s.busy || !s.overlay || len(s.highlights) != 0 {
+		t.Fatalf("busy=%v overlay=%v highlights=%d", s.busy, s.overlay, len(s.highlights))
 	}
 }
 
@@ -207,7 +209,10 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		{false, true, false, 0, false},
 		{false, false, true, 0, false},
 	} {
-		s.speedKnown, s.speed = test.known, test.speed
+		s.groundSpeed.Store(nil)
+		if test.known {
+			s.groundSpeed.Store(&speedReading{test.speed, time.Now()})
+		}
 		s.cfg.Put("ignore_speed_restriction", test.override)
 		s.cfg.Put("simulation_mode", test.sim)
 		if got := s.transmissionBlock() != ""; got != test.block {
@@ -263,8 +268,9 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
-	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speedKnown: true, speechReady: true,
-		overlay: true, menuWatch: true, services: make(map[string]bool), jobs: make(chan func(context.Context, *gsx.Session), 1), audioQueue: make(chan playback, 3)}
+	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speechReady: true,
+		overlay: true, menuWatch: true, services: make(map[string]bool), jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("auto_select_operator", false)
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
@@ -276,6 +282,16 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	session.ReadMenu = func() gsx.Menu { return current }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
+	// A command queued at a valid speed can still be rejected when it runs
+	s.submit("one")
+	s.groundSpeed.Store(&speedReading{0, time.Now().Add(-3 * time.Second)})
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !strings.Contains(strings.Join(s.lines, "\n"), "Taxi speed unavailable") || len(tr.selected) != 0 {
+		t.Fatal("stale speed allowed queued command")
+	}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
+
 	// The displayed slot is stale by the time the queued selection runs
 	s.submit("one")
 	(<-s.jobs)(s.ctx, session)
@@ -284,6 +300,14 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 
 	s.cfg.Put("enable_menu_matching", false)
+	s.main.FrameFn()
+	if !s.menu.Same(current) {
+		t.Fatal("stale selection did not refresh the displayed page")
+	}
+
+	if err := session.Release(s.ctx); err != nil {
+		t.Fatal(err)
+	}
 	// Text correction must fetch the current page even when broader matching is disabled
 	current = gsx.Menu{}
 	session.ReadMenu = func() gsx.Menu {
@@ -292,6 +316,20 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		}
 		return current
 	}
+	s.submit("Swissport")
+	readMenu := session.ReadMenu
+	session.ReadMenu = func() gsx.Menu {
+		if tr.open {
+			s.groundSpeed.Store(&speedReading{51, time.Now()})
+		}
+		return readMenu()
+	}
+	(<-s.jobs)(s.ctx, session)
+	if len(tr.selected) != 0 || tr.open {
+		t.Fatal("a speed change during correction allowed a choice or left the menu open")
+	}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
+	session.ReadMenu = readMenu
 	s.submit("Swissport")
 	(<-s.jobs)(s.ctx, session)
 	if !slices.Equal(tr.selected, []int{0}) {
@@ -314,8 +352,9 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 }
 
 func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
-	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speedKnown: true, speed: 80,
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(),
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.groundSpeed.Store(&speedReading{80, time.Now()})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("read_gsx_menus_aloud_after_keyword", true)
 	s.cfg.Put("gsx_menu_reader_keyword", "read menu")
@@ -335,7 +374,8 @@ func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	}
 	page := gsx.ParseMenu("Ramp\nJetway")
 	s := &state{dir: dir, cfg: config.Defaults(), ctx: t.Context(), menu: page, overlay: true, menuWatch: true,
-		speedKnown: true, speechReady: true, jobs: make(chan func(context.Context, *gsx.Session), 1)}
+		speechReady: true, jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	transport := &menuChoices{}
 	session := gsx.New(transport, t.TempDir())
@@ -381,10 +421,11 @@ func TestLaterSuccessfulSaveAppliesBinding(t *testing.T) {
 
 func TestHIDReleaseKeepsOriginalOwnerAfterHotplug(t *testing.T) {
 	index := 1
-	first := &hidDevice{path: "first", name: "Flight Stick"}
-	second := &hidDevice{path: "second", name: first.name}
+	first := &hidDevice{path: `\\?\hid#vid_1234&pid_5678#first`, name: "Flight Stick"}
+	second := &hidDevice{path: `\\?\hid#vid_1234&pid_5678#second`, name: first.name}
 	s := &state{cfg: config.Defaults(), ctx: t.Context(), hidPaths: map[string][]string{"flight stick": {first.path}}}
-	s.cfg.Put("ptt_bind", config.Binding{Type: "joystick", JoyName: first.name, JoyButton: &index})
+	path, _ := json.Marshal(first.path)
+	s.cfg.Put("ptt_bind", config.Binding{Type: "joystick", JoyID: path, JoyName: first.name, JoyButton: &index})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.hidButton(first, index, true)
 	s.main.FrameFn()
@@ -426,5 +467,126 @@ func TestCapturedBindingSavesImmediately(t *testing.T) {
 	}
 	if !dialog.CloseRequested() || captureKey.Load() != 'N' || s.binding != nil {
 		t.Fatal("saved binding did not take effect and close the dialog")
+	}
+}
+
+type telemetrySim struct {
+	menuChoices
+	offline atomic.Bool
+}
+
+func (f *telemetrySim) Get(ctx context.Context, key string) (float64, error) {
+	if f.offline.Load() {
+		return 0, gsx.ErrDisconnected
+	}
+	return f.menuChoices.Get(ctx, key)
+}
+
+func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	s := &state{ctx: ctx, cfg: config.Defaults(), done: make(chan struct{}), jobs: make(chan func(context.Context, *gsx.Session), 2)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.overlay, s.connected = true, true
+	s.menu = gsx.ParseMenu("Ramp\nJetway")
+	s.highlights = []menuHighlight{{page: s.menu, index: 0, until: time.Now().Add(time.Second)}}
+	go s.simulator()
+	t.Cleanup(func() {
+		cancel()
+		<-s.done
+	})
+
+	tr := &telemetrySim{}
+	s.jobs <- func(_ context.Context, session *gsx.Session) { session.Sim = tr }
+	started := make(chan struct{})
+	s.jobs <- func(ctx context.Context, _ *gsx.Session) {
+		close(started)
+		<-ctx.Done()
+	}
+	<-started
+	deadline := time.Now().Add(3 * time.Second)
+	var first *speedReading
+	for time.Now().Before(deadline) {
+		if reading := s.groundSpeed.Load(); reading != nil {
+			if first != nil && first != reading {
+				tr.offline.Store(true)
+				break
+			}
+			first = reading
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !tr.offline.Load() {
+		t.Fatal("command lane blocked telemetry")
+	}
+	for time.Now().Before(deadline) {
+		s.main.FrameFn()
+		if !s.connected {
+			if s.overlay || len(s.menu.Options) != 0 || len(s.highlights) != 0 || s.groundSpeed.Load() != nil {
+				t.Fatal("disconnect kept stale menu or telemetry")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("command lane blocked disconnect status")
+}
+
+func TestDebugDiagnosticsExcludeCredentialsAndTranscripts(t *testing.T) {
+	const key = "fixture-credential"
+	s := &state{cfg: config.Defaults(), debug: make(chan debugEvent, 16)}
+	s.setLogSecret(strings.ToUpper(key))
+	s.cfg.Put("speech_provider", key)
+	s.setDebug(true)
+	s.log("CMD", "transcript "+key)
+	s.log("ERR", "error response "+key)
+	s.traceFailure("GSX", "Simulator stopped")
+	if strings.Contains(strings.Join(s.lines, "\n"), key) {
+		t.Fatal("conversation exposed the saved credential")
+	}
+	for len(s.debug) > 0 {
+		event := <-s.debug
+		if strings.Contains(event.line, key) || strings.Contains(event.line, "transcript") || strings.Contains(event.line, "error response") {
+			t.Fatal("debug writer received user or credential text")
+		}
+	}
+}
+
+func TestLegacyHIDNameRequiresRebindingAndNativePathCanMove(t *testing.T) {
+	const original = "\\\\?\\hid#vid_1234&pid_1234#first"
+	const current = "\\\\?\\hid#vid_1234&pid_1234#second"
+	index := 5
+	s := &state{hidPaths: map[string][]string{"stick": {current}}}
+	binding := config.Binding{Type: "joystick", JoyName: "Stick", JoyButton: &index, Description: "Stick button 6"}
+	if description := s.bindingDescription(binding); !strings.Contains(description, "Unverified") || s.boundHIDPath(binding) != "" {
+		t.Fatalf("legacy name activated a binding: %q", description)
+	}
+	binding.JoyID, _ = json.Marshal(original)
+	if got := s.boundHIDPath(binding); got != current {
+		t.Fatalf("unique VID/PID matched %q", got)
+	}
+	s.hidPaths["stick"] = append(s.hidPaths["stick"], current+"-duplicate")
+	if got := s.boundHIDPath(binding); got != "" {
+		t.Fatalf("ambiguous VID/PID matched %q", got)
+	}
+}
+
+func TestPresetSummaryExpandsIntoExistingEditor(t *testing.T) {
+	s := &state{host: gui.NewApp(), cfg: config.Defaults()}
+	s.cfg.Put("presets", []config.Preset{{Name: "Arrival", Codeword: "arrival", Services: []string{"GPU", "JETWAY"}}})
+	parent := gui.NewTestWindow(t, gui.WindowCfg{})
+	s.openPresets(parent, func() {})
+	window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	layout := window.TestRender(nil)
+	if _, visible := layout.FindByID("presets-scroll:edit-preset-0"); visible {
+		t.Fatal("collapsed summary exposed Edit")
+	}
+	if err := window.TestClick("presets-scroll:preset-0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := window.TestClick("presets-scroll:edit-preset-0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, visible := window.TestRender(nil).FindByID("presets-scroll:preset-name"); !visible {
+		t.Fatal("expanded summary did not open the existing editor")
 	}
 }

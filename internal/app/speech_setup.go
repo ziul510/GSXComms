@@ -311,6 +311,7 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 						setup.keyMessage = err.Error()
 					} else {
 						setup.hasKey = true
+						s.setLogSecret(token)
 						if setup.step > 0 {
 							useMistral()
 						}

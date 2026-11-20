@@ -94,9 +94,9 @@ func mainView(w *gui.Window) gui.View {
 	}
 	// Show a placeholder until a valid speed is available Warn visually above the PTT limit
 	speed, speedColor := "-- kts", muted
-	if s.connected && s.speedKnown {
-		speed, speedColor = fmt.Sprintf("%d kts", int(s.speed)), accent
-		if s.speed > 50 {
+	if reading := s.groundSpeed.Load(); s.connected && reading.fresh() {
+		speed, speedColor = fmt.Sprintf("%d kts", int(reading.knots)), accent
+		if reading.knots > 50 {
 			speedColor = orange
 		}
 	}
@@ -119,17 +119,24 @@ func mainView(w *gui.Window) gui.View {
 	}
 	bar = append(bar, bold(speed, 12, speedColor))
 	ptt, pttColor := s.ptt, ink
-	if s.speechStatus != "" && s.ptt == "Idle" {
-		ptt = s.speechStatus
-	}
-	if ptt != "Idle" {
-		pttColor = orange
-	}
 	binding := s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind"))
+	bindingColor := muted
+	switch {
+	case ptt == "LISTENING":
+		pttColor = accent
+	case ptt == "PROCESSING":
+		pttColor = orange
+	case s.speechStatus == "Speech unavailable":
+		ptt, pttColor = "Error", red
+		binding, bindingColor = "Speech recognition unavailable", red
+	case s.speechStatus != "":
+		ptt, pttColor = "Loading", orange
+		binding, bindingColor = s.speechStatus, orange
+	}
 	body := []gui.View{gui.Row(gui.ContainerCfg{
 		Sizing: gui.FillFixed, Height: 48, Color: card, ColorBorder: elevated, Radius: gui.RadiusPx(6),
 		Padding: gui.PadVH(0, 11), SizeBorder: gui.BorderPx(1), VAlign: gui.VAlignMiddle, Spacing: gui.SpacingPx(6),
-		Content: []gui.View{text("PTT", 11, muted), bold(ptt, 13, pttColor), spacer(), text(binding, 11, muted)},
+		Content: []gui.View{text("PTT", 11, muted), bold(ptt, 13, pttColor), spacer(), text(binding, 11, bindingColor)},
 	})}
 	// Only show the command field when typed input is enabled
 	if config.Get[bool](s.cfg, "enable_keyboard_input") {
@@ -178,8 +185,11 @@ func mainView(w *gui.Window) gui.View {
 			// Display one-based labels but pass the original zero-based slot back to GSX
 			label := fmt.Sprintf("%d. %s", i+1, item)
 			fill, fg := card, ink
-			if i == s.highlight && s.highlightPage.Same(s.menu) {
-				fill, fg = accent, bg
+			for _, highlight := range s.highlights {
+				if highlight.index == i && highlight.page.Same(s.menu) && w.Now().Before(highlight.until) {
+					fill, fg = accent, bg
+					break
+				}
 			}
 			logArea.Content = append(logArea.Content, gui.Row(gui.ContainerCfg{
 				Sizing: gui.FillFit, Color: fill, Radius: gui.RadiusPx(4), Padding: gui.PadVH(7, 16),
@@ -246,6 +256,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 		}
 	}
 	cfg.IconPNG = s.icon
+	onInit := cfg.OnInit
 	cfg.OnInit = func(w *gui.Window) {
 		window = w
 		// The close callback can run before go-gui creates the queued window
@@ -255,6 +266,9 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 		}
 		w.TitlebarDark(true)
 		w.SetView(view)
+		if onInit != nil {
+			onInit(w)
+		}
 	}
 	cfg.OnCloseRequest = func(*gui.Window) { closeDialog() }
 	s.dialogs[id] = closeDialog
@@ -295,6 +309,15 @@ func settingsField(label string, control gui.View) gui.View {
 		Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(6), SizeBorder: gui.NoBorder,
 		Content: []gui.View{labelRow(text(label, 13, muted), 28), control},
 	})
+}
+
+type fullWidthTooltip struct{ gui.View }
+
+func (v fullWidthTooltip) GenerateLayout(w *gui.Window) gui.Layout {
+	layout := gui.GenerateViewLayout(v.View, w)
+	layout.Shape.Sizing = gui.FillFit
+	layout.Shape.Padding = gui.NoPadding
+	return layout
 }
 
 // Apply shared field styling while preserving the caller's value and callbacks
@@ -365,6 +388,7 @@ func (s *state) save(next config.Values, then func(error)) {
 
 func (s *state) openSettings() {
 	if s.settingsOpen {
+		focusWindow("Settings")
 		return
 	}
 	s.settingsOpen = true
@@ -407,7 +431,7 @@ func (s *state) openSettings() {
 			s.speechChanged = nil
 		}
 	}
-	inputs, outputs := []string{"Default"}, []string{"Default"}
+	var inputs, outputs []audioDevice
 	help := map[string]string{
 		"enable_menu_matching":             "Match unmatched phrases against the current GSX menu.",
 		"enable_gsx_menu_text_correction":  "Use GSX menu labels to correct similar speech.",
@@ -452,6 +476,56 @@ func (s *state) openSettings() {
 					ctx.Consume()
 				}})))
 		}
+		pickAudio := func(prefix, label string, devices []audioDevice) {
+			nameKey, idKey := prefix+"_device_name", prefix+"_device_id"
+			name := config.Get[string](draft, nameKey)
+			endpoint := config.Get[string](draft, idKey)
+			allowFallback := prefix != "input" || config.Get[string](draft, "speech_provider") != "mistral"
+			id := matchAudioDevice(name, endpoint, devices, allowFallback)
+			items := []string{"Default"}
+			choices := map[string]audioDevice{"Default": {name: "Default"}}
+			addChoice := func(label string, device audioDevice) string {
+				option := label
+				for suffix := 2; ; suffix++ {
+					if _, exists := choices[option]; !exists {
+						break
+					}
+					option = fmt.Sprintf("%s (%d)", label, suffix)
+				}
+				items = append(items, option)
+				choices[option] = device
+				return option
+			}
+			selected := "Default"
+			for i, device := range devices {
+				if device.name == "" {
+					continue
+				}
+				option := addChoice(device.name, device)
+				if uintptr(i) == id {
+					selected = option
+				}
+			}
+			if id == defaultWaveDevice && !defaultAudioSelection(name, endpoint) {
+				displayName := name
+				if displayName == "" {
+					displayName = label
+				}
+				selected = addChoice(displayName+" (unavailable)", audioDevice{name, endpoint})
+			}
+			body = append(body, settingsField(label, formSelect(gui.SelectCfg{
+				ID: nameKey, A11YCfg: gui.A11YCfg{A11YLabel: label}, Items: items, Selected: []string{selected},
+				OnSelect: func(values []string, ctx gui.EventCtx) {
+					if len(values) > 0 {
+						if choice, ok := choices[values[0]]; ok {
+							draft.Put(nameKey, choice.name)
+							draft.Put(idKey, choice.endpoint)
+						}
+					}
+					ctx.Consume()
+				},
+			})))
+		}
 		slider := func(key, label string, minv, maxv, step float32) {
 			control := gui.Slider(gui.SliderCfg{
 				ID: key, A11YCfg: gui.A11YCfg{A11YLabel: label}, Min: minv, Max: maxv, Step: step,
@@ -473,10 +547,13 @@ func (s *state) openSettings() {
 			if step == 1 {
 				value = fmt.Sprintf("%d s", config.Get[int](draft, key))
 			}
-			body = append(body, settingsField(label+"  "+value, gui.Row(gui.ContainerCfg{
-				Sizing: gui.FillFixed, Height: 16, Padding: gui.PadVH(0, 6), SizeBorder: gui.NoBorder,
-				Content: []gui.View{control},
-			})))
+			body = append(body, settingsField(label, fullWidthTooltip{gui.WithTooltip(w, gui.WithTooltipCfg{
+				ID: key + "-value", Text: value,
+				Content: []gui.View{gui.Row(gui.ContainerCfg{
+					Sizing: gui.FillFixed, Height: 16, Padding: gui.PadVH(0, 6), SizeBorder: gui.NoBorder,
+					Content: []gui.View{control},
+				})},
+			})}))
 		}
 		action := func(id, label string, disabled bool, onClick func()) {
 			control := buttonConfig(id, label, 0, false, disabled, onClick)
@@ -484,12 +561,12 @@ func (s *state) openSettings() {
 			body = append(body, gui.Button(control))
 		}
 		section("Audio Devices", "Choose preferred input and output paths")
-		pick("input_device_name", "Microphone", inputs)
-		pick("output_device_name", "Speaker", outputs)
+		pickAudio("input", "Microphone", inputs)
+		pickAudio("output", "Speaker", outputs)
 		section("Audio Mix", "Tune static and crew voice levels")
 		toggle("enable_static", "Enable radio static")
-		slider("volume_static", "Static volume", 0, 0.5, 0.01)
-		slider("volume_voice", "Voice volume", 0, 1, 0.01)
+		slider("volume_static", "Static volume", 0, 0.5, 0.001)
+		slider("volume_voice", "Voice volume", 0, 1, 0.001)
 		slider("max_recording_seconds", "Max recording (seconds)", 10, 120, 1)
 		section("Speech Recognition", "Choose a speech model and manage local downloads")
 		body = append(body, gui.Column(gui.ContainerCfg{
@@ -577,7 +654,12 @@ func (s *state) openSettings() {
 			toggle("start_minimized", "Start minimized")
 		}
 		toggle("show_topmost", "Show Top Most")
-		body = append(body, settingsField("Current PTT binding", bold(s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind")), 13, ink)))
+		binding := config.Get[config.Binding](s.cfg, "ptt_bind")
+		description := s.bindingDescription(binding)
+		body = append(body, settingsField("Current PTT binding", wrapped(description, 13, ink)))
+		if strings.Contains(description, "Rebind required") && binding.Description != "" {
+			body = append(body, wrapped("Needs rebinding: "+binding.Description, 12, orange))
+		}
 		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(w) })
 		section("Developer", "Debug mode opens a console and writes a debug.log file")
 		toggle("debug_mode", "Debug Mode")
@@ -628,10 +710,11 @@ func (s *state) openSettings() {
 		})
 	}
 	message = "Changes applied on save"
-	closeWindow = s.dialog(gui.WindowCfg{Title: "Settings", Width: 520, Height: 820, MinWidth: 480, MinHeight: 680}, closeSettings, view)
+	closeWindow = s.dialog(gui.WindowCfg{Title: "Settings", Width: 520, Height: 820, MinWidth: 480, MinHeight: 680,
+		OnInit: func(*gui.Window) { focusWindow("Settings") }}, closeSettings, view)
 	go func() {
 		// Enumerating audio devices can block, so open Settings with its defaults first
-		in, out := deviceNames(true), deviceNames(false)
+		in, out := audioDevices(true), audioDevices(false)
 		s.async(func() { inputs, outputs = in, out; s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() }) })
 	}()
 }

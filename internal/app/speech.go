@@ -62,18 +62,26 @@ func (s *state) record(down bool) {
 	}
 	capctx, stop := context.WithCancel(s.ctx)
 	s.recording = stop
-	s.ptt = "Recording…"
+	s.ptt = "LISTENING"
+	s.trace("AUDIO", "Push-to-talk capture started")
 	go func() {
 		defer stop()
 		if volume := config.Get[float64](prefs, "volume_static"); volume > 0 && config.Get[bool](prefs, "enable_static") {
 			go func() {
-				pcm := make([]byte, 48000)
-				mixRadio(pcm, 0, volume)
-				_ = playPCMBuffer(capctx, config.Get[string](prefs, "output_device_name"), pcm, 24000, true)
+				pcm := make([]byte, len(radioStatic())*2)
+				mixRadio(pcm, 0, volume, staticRate, 1)
+				_ = playPCMBuffer(capctx, config.Get[string](prefs, "output_device_name"), config.Get[string](prefs, "output_device_id"), pcm, staticRate, 1, true)
 			}()
 		}
 		// Voxtral uploads audio, so a missing or busy named mic must stop capture
-		pcm, captureErr := capture(capctx, config.Get[string](prefs, "input_device_name"), config.Get[int](prefs, "max_recording_seconds"), localSpeech)
+		pcm, captureErr := capture(capctx, config.Get[string](prefs, "input_device_name"), config.Get[string](prefs, "input_device_id"),
+			config.Get[int](prefs, "max_recording_seconds"), localSpeech, func() {
+				s.async(func() {
+					const message = "Selected microphone unavailable. Using the Windows default for this recording."
+					s.log("AUDIO", message)
+					s.main.Toast(gui.ToastCfg{Title: message})
+				})
+			})
 		if captureErr == nil && capctx.Err() == nil {
 			// A full recording still waits for release so held PTT cannot transmit twice.
 			s.async(func() { s.log("SYS", "Recording cap reached. Release PTT to transmit") })
@@ -90,10 +98,11 @@ func (s *state) record(down bool) {
 			s.processing = usable
 			s.ptt = "Idle"
 			if captureErr != nil {
+				s.traceFailure("AUDIO", "Windows input capture failed")
 				s.log("ERR", captureErr.Error())
 			}
 			if usable {
-				s.ptt = "Transcribing…"
+				s.ptt = "PROCESSING"
 			}
 		})
 		if !usable {
@@ -105,10 +114,8 @@ func (s *state) record(down bool) {
 		s.async(func() {
 			s.processing = false
 			s.ptt = "Idle"
-			if config.Get[bool](s.cfg, "debug_mode") {
-				s.debugLog(debugEvent{true, fmt.Sprintf("[STT] %s decoded %.2f seconds of audio in %s",
-					provider, float64(len(pcm))/32000, time.Since(start).Round(time.Millisecond))})
-			}
+			s.trace("STT", fmt.Sprintf("%s decoded %.2f seconds of audio in %s",
+				provider, float64(len(pcm))/32000, time.Since(start).Round(time.Millisecond)))
 			if err != nil {
 				s.log("ERR", err.Error())
 				return
@@ -125,10 +132,7 @@ func (s *state) record(down bool) {
 
 func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	provider := config.Get[string](prefs, "speech_provider")
-	vocab, err := commands.Load(s.dir)
-	if err != nil {
-		return "", err
-	}
+	vocab := s.loadVocabulary()
 	// Only the explicitly selected cloud provider reads the credential and sends audio
 	if provider == "mistral" {
 		key, err := config.ReadKey()
@@ -187,6 +191,7 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 	generation := s.speechGeneration
 	provider := config.Get[string](s.cfg, "speech_provider")
 	s.speechReady, s.speechStatus, s.speechLoading = false, "Loading speech", provider
+	s.publishTransmissionPolicy()
 	s.log("SYS", "Loading speech recognition")
 	model, local := models.Lookup(provider)
 	download := local && !model.Ready(s.dir) && autoDownload && !s.speechAttempted[provider]
@@ -196,7 +201,8 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 	}
 	go func() {
 		defer cancel()
-		vocab, err := commands.Load(s.dir)
+		vocab := s.loadVocabulary()
+		var err error
 		if err == nil {
 			switch {
 			case provider == "mistral":
@@ -240,6 +246,7 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 			}
 			s.speechLoading = ""
 			s.speechReady, s.speechStatus = err == nil, ""
+			s.publishTransmissionPolicy()
 			if err != nil {
 				s.speechStatus = "Speech unavailable"
 				s.log("STT", err.Error())

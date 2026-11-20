@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -79,25 +80,86 @@ func Load(dir string) (Vocabulary, error) {
 	return Parse(raw)
 }
 
-func list(raw json.RawMessage) []string {
-	// Older vocabulary entries can store a single keyword as a string
+// Loader shares the last valid vocabulary across command routing and speech
+type Loader struct {
+	mu      sync.Mutex
+	good    *Vocabulary
+	warning string
+}
+
+// Load reports a changed warning once and keeps a usable vocabulary available
+func (l *Loader) Load(dir string) (Vocabulary, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	vocab, err := Load(dir)
+	if err == nil {
+		l.good, l.warning = &vocab, ""
+		return vocab, ""
+	}
+	if l.good == nil {
+		raw, _ := assets.Files.ReadFile("words.json")
+		stock, err := Parse(raw)
+		if err != nil {
+			panic("invalid embedded vocabulary")
+		}
+		l.good = &stock
+	}
+	message := "words.json: could not read the override"
+	var parse *vocabularyError
+	if errors.As(err, &parse) {
+		message = fmt.Sprintf("words.json: %s at byte %d", parse.reason, parse.offset)
+	}
+	if message == l.warning {
+		return *l.good, ""
+	}
+	l.warning = message
+	return *l.good, message + ". Using last valid vocabulary."
+}
+
+type vocabularyError struct {
+	reason string
+	offset int64
+}
+
+func (e *vocabularyError) Error() string { return fmt.Sprintf("%s at byte %d", e.reason, e.offset) }
+
+func list(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
 	var values []string
-	if err := json.Unmarshal(raw, &values); err != nil {
+	switch raw[0] {
+	case '"':
 		var value string
 		if json.Unmarshal(raw, &value) != nil {
-			return nil
+			return nil, false
 		}
 		values = []string{value}
+	case '[':
+		var entries []*string
+		if json.Unmarshal(raw, &entries) != nil {
+			return nil, false
+		}
+		for _, entry := range entries {
+			if entry == nil {
+				return nil, false
+			}
+			values = append(values, *entry)
+		}
+	default:
+		return nil, false
 	}
-	return slices.DeleteFunc(values, func(s string) bool { return strings.TrimSpace(s) == "" })
+	return slices.DeleteFunc(values, func(s string) bool { return strings.TrimSpace(s) == "" }), true
 }
 
 func Parse(raw []byte) (Vocabulary, error) {
 	// File order lets DEBOARDING take precedence when "deboard" also matches "board"
+	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
 	d := json.NewDecoder(bytes.NewReader(raw))
+	invalid := func(reason string) error { return &vocabularyError{reason, d.InputOffset()} }
 	first, err := d.Token()
 	if err != nil || first != json.Delim('{') {
-		return Vocabulary{}, errors.New("expected vocabulary object")
+		return Vocabulary{}, invalid("expected a vocabulary object")
 	}
 	var v Vocabulary
 	// Track the first rule for each bias phrase separately from the full hotword set
@@ -108,19 +170,25 @@ func Parse(raw []byte) (Vocabulary, error) {
 	for d.More() {
 		name, err := d.Token()
 		if err != nil {
-			return v, err
+			return Vocabulary{}, invalid("invalid JSON")
 		}
 		var raw json.RawMessage
 		if err = d.Decode(&raw); err != nil {
-			return v, err
+			return Vocabulary{}, invalid("invalid JSON")
 		}
 		e := entry{Name: name.(string)}
-		var parts map[string]json.RawMessage
-		// Bias variants guide recognition while keywords drive service routing
-		if json.Unmarshal(raw, &parts) == nil {
-			e.Keywords, e.Bias = list(parts["keywords"]), list(parts["bias_variants"])
+		var ok, biasOK bool
+		if len(raw) > 0 && raw[0] == '{' {
+			var parts map[string]json.RawMessage
+			_ = json.Unmarshal(raw, &parts)
+			e.Keywords, ok = list(parts["keywords"])
+			e.Bias, biasOK = list(parts["bias_variants"])
 		} else {
-			e.Keywords = list(raw)
+			e.Keywords, ok = list(raw)
+			biasOK = true
+		}
+		if !ok || !biasOK {
+			return Vocabulary{}, invalid("expected strings or a list of strings in vocabulary entry")
 		}
 		v.entries = append(v.entries, e)
 		for _, term := range append(slices.Clone(e.Keywords), e.Bias...) {
@@ -140,16 +208,16 @@ func Parse(raw []byte) (Vocabulary, error) {
 			seen[variant] = true
 			pattern, err := regexp.Compile("(?i)" + regexp.QuoteMeta(variant))
 			if err != nil {
-				return Vocabulary{}, fmt.Errorf("invalid bias variant for %q: %w", e.Name, err)
+				return Vocabulary{}, invalid("invalid bias variant")
 			}
 			v.rules = append(v.rules, rule{pattern, canonical, utf8.RuneCountInString(variant)})
 		}
 	}
 	if _, err := d.Token(); err != nil {
-		return v, err
+		return Vocabulary{}, invalid("invalid JSON")
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return Vocabulary{}, errors.New("unexpected data after vocabulary object")
+		return Vocabulary{}, invalid("unexpected data after vocabulary object")
 	}
 	// Replace longer variants first so a shorter phrase can't consume their prefix
 	sort.SliceStable(v.rules, func(i, j int) bool { return v.rules[i].specificity > v.rules[j].specificity })

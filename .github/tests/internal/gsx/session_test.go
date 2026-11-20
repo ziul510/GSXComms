@@ -115,11 +115,25 @@ func TestScriptedSession(t *testing.T) {
 }
 
 func TestHotfixMenu(t *testing.T) {
-	s := New(&fakeSim{values: map[string]float64{}}, "")
-	// Use the navigation-only menu that GSX reports when the hotfix is needed
-	s.ReadMenu = func() Menu { return ParseMenu("GSX\nBack\nCancel") }
-	if _, err := s.Execute(context.Background(), "request boarding", "", nil, false); !errors.Is(err, ErrHotfix) {
-		t.Fatal(err)
+	for _, test := range []struct {
+		options string
+		hotfix  bool
+	}{
+		{"Back!\nClose.", true},
+		{"Back\nCancel", true},
+		{"Close\nCancel…", true},
+		{"Back\nBack!", false},
+		{"Back\nRequest boarding", false},
+	} {
+		t.Run(test.options, func(t *testing.T) {
+			s := New(&fakeSim{values: map[string]float64{}}, "")
+			s.ReadMenu = func() Menu { return ParseMenu("GSX\n" + test.options) }
+			s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+			_, err := s.Execute(t.Context(), "request boarding", "", nil, false)
+			if errors.Is(err, ErrHotfix) != test.hotfix {
+				t.Fatalf("hotfix = %t, got %v", test.hotfix, err)
+			}
+		})
 	}
 }
 
@@ -267,5 +281,66 @@ func TestStatusRejectsNonFiniteGroundSpeed(t *testing.T) {
 		if !ready || got != 0 || !errors.Is(err, ErrSpeedUnavailable) {
 			t.Errorf("speed %v: ready=%v speed=%v err=%v", speed, ready, got, err)
 		}
+	}
+}
+
+type operatorSim struct {
+	*fakeSim
+	failClose bool
+}
+
+func (f *operatorSim) Set(ctx context.Context, key string, value float64) error {
+	if key == MenuOpen && value == 0 && f.failClose {
+		return errors.New("menu could not close")
+	}
+	return f.fakeSim.Set(ctx, key, value)
+}
+
+func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
+	for _, failClose := range []bool{false, true} {
+		f := &operatorSim{fakeSim: &fakeSim{values: map[string]float64{}}, failClose: failClose}
+		menu := ParseMenu("Ramp\nRequest Jetway\nClose")
+		f.onWrite = func(key string, value float64) {
+			if key == MenuChoice {
+				menu = ParseMenu("Choose your operator\nSwissport\nMenzies")
+			}
+		}
+		session := New(f, "")
+		session.ReadMenu = func() Menu { return menu }
+		session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+		if _, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true); err != nil {
+			t.Fatal(err)
+		}
+		choices := 0
+		for _, write := range f.writes {
+			if write.key == MenuChoice && write.value == 0 {
+				choices++
+			}
+		}
+		if (choices == 2) != failClose || (f.values[MenuOpen] == 1) != failClose {
+			t.Fatalf("failedClose=%t open=%v choices=%d", failClose, f.values[MenuOpen], choices)
+		}
+	}
+}
+
+func TestIdleRefreshSnapshotsBeforeRelease(t *testing.T) {
+	f := &fakeSim{values: map[string]float64{MenuOpen: 1, Remote: 1}}
+	s := New(f, "")
+	s.remote = true
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	want := ParseMenu("Updated\nRequest stairs")
+	s.ReadMenu = func() Menu {
+		if f.values[MenuOpen] == 1 && f.values[Remote] == 1 {
+			return want
+		}
+		return Menu{}
+	}
+	page, err := s.RefreshAndRelease(t.Context())
+	if err != nil || !page.Same(want) || s.RemoteActive() || f.values[MenuOpen] != 0 {
+		t.Fatalf("snapshot=%+v remote=%t error=%v", page, s.RemoteActive(), err)
+	}
+	if len(f.writes) < 4 || f.writes[0] != (operation{MenuOpen, 0}) ||
+		f.writes[len(f.writes)-2] != (operation{MenuOpen, 0}) {
+		t.Fatalf("expected close, reopen, then close: %+v", f.writes)
 	}
 }
