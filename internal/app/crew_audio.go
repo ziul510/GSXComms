@@ -167,7 +167,7 @@ var serviceTransitions = []struct {
 	words  []string
 	target string
 }{
-	{[]string{"disconnect", "remove", "retract", "completed", "stop", "close", "release", "dismiss", "free"}, "disconnect"},
+	{[]string{"disconnect", "remove", "retract", "undock", "completed", "stop", "close", "release", "dismiss", "free"}, "disconnect"},
 	{[]string{"operate"}, "toggle"},
 	{[]string{"request", "connect", "call", "open"}, "connect"},
 }

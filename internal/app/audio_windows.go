@@ -60,10 +60,13 @@ func waveEndpointID(message *windows.LazyProc, device uintptr) string {
 	return windows.UTF16ToString(buf)
 }
 
-func matchAudioDevice(name, endpoint string, candidates []audioDevice) uintptr {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if endpoint == "" && (name == "" || name == "default") {
-		return defaultWaveDevice
+func defaultAudioSelection(name, endpoint string) bool {
+	return endpoint == "" && (name == "" || name == "Default")
+}
+
+func matchAudioDevice(name, endpoint string, candidates []audioDevice, allowFallback bool) uintptr {
+	if allowFallback {
+		name = strings.ToLower(strings.TrimSpace(name))
 	}
 	match := func(matches func(audioDevice) bool) (uintptr, bool) {
 		id := uintptr(defaultWaveDevice)
@@ -78,14 +81,15 @@ func matchAudioDevice(name, endpoint string, candidates []audioDevice) uintptr {
 		return id, id != defaultWaveDevice
 	}
 	if endpoint != "" {
-		if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.endpoint, endpoint) }); found {
+		// Cloud capture requires the saved endpoint when one was selected
+		if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.endpoint, endpoint) }); found || !allowFallback {
 			return id
 		}
 	}
-	if name == "" || name == "default" {
+	if name == "" || name == "Default" || allowFallback && name == "default" {
 		return defaultWaveDevice
 	}
-	if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.name, name) }); found {
+	if id, found := match(func(device audioDevice) bool { return strings.EqualFold(device.name, name) }); found || !allowFallback {
 		return id
 	}
 	id, _ := match(func(device audioDevice) bool {
@@ -120,9 +124,10 @@ func mmCall(proc *windows.LazyProc, args ...uintptr) error {
 	return nil
 }
 
-func openCaptureDevice(name string, id uintptr, allowFallback bool, open func(uintptr) error) error {
-	// An unmatched named microphone can look like WAVE_MAPPER after device lookup
-	if !allowFallback && id == defaultWaveDevice && name != "" && name != "Default" {
+func openCaptureDevice(name, endpoint string, candidates []audioDevice, allowFallback bool, open func(uintptr) error) error {
+	id := matchAudioDevice(name, endpoint, candidates, allowFallback)
+	// WAVE_MAPPER is safe for cloud capture only when the settings select it
+	if !allowFallback && id == defaultWaveDevice && !defaultAudioSelection(name, endpoint) {
 		return errors.New("selected microphone is unavailable")
 	}
 	err := open(id)
@@ -148,19 +153,17 @@ func capture(ctx context.Context, name, endpoint string, limit int, allowFallbac
 	}
 	defer windows.CloseHandle(event)
 	open := mm.NewProc("waveInOpen")
-	// Cloud transcription requires an exact microphone name before recording.
-	id := matchAudioDevice(name, endpoint, audioDevices(true))
-	actual := id
+	var actual uintptr
 	// CALLBACK_EVENT lets WinMM wake capture as buffers return
 	openDevice := func(id uintptr) error {
 		actual = id
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
-	err = openCaptureDevice(name, id, allowFallback, openDevice)
+	err = openCaptureDevice(name, endpoint, audioDevices(true), allowFallback, openDevice)
 	if err != nil {
 		return nil, err
 	}
-	if actual == defaultWaveDevice && name != "" && name != "Default" && fallback != nil {
+	if actual == defaultWaveDevice && !defaultAudioSelection(name, endpoint) && fallback != nil {
 		fallback()
 	}
 	defer mmCall(mm.NewProc("waveInClose"), handle)
@@ -257,7 +260,7 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 	openDevice := func(id uintptr) error {
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
-	id := matchAudioDevice(device, endpoint, audioDevices(false))
+	id := matchAudioDevice(device, endpoint, audioDevices(false), true)
 	err = openDevice(id)
 	// Playback can use the default speakers if the selected output fails
 	if err != nil && id != defaultWaveDevice {

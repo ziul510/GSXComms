@@ -480,31 +480,38 @@ func (s *state) openSettings() {
 			nameKey, idKey := prefix+"_device_name", prefix+"_device_id"
 			name := config.Get[string](draft, nameKey)
 			endpoint := config.Get[string](draft, idKey)
-			id := matchAudioDevice(name, endpoint, devices)
+			allowFallback := prefix != "input" || config.Get[string](draft, "speech_provider") != "mistral"
+			id := matchAudioDevice(name, endpoint, devices, allowFallback)
 			items := []string{"Default"}
 			choices := map[string]audioDevice{"Default": {name: "Default"}}
+			addChoice := func(label string, device audioDevice) string {
+				option := label
+				for suffix := 2; ; suffix++ {
+					if _, exists := choices[option]; !exists {
+						break
+					}
+					option = fmt.Sprintf("%s (%d)", label, suffix)
+				}
+				items = append(items, option)
+				choices[option] = device
+				return option
+			}
 			selected := "Default"
 			for i, device := range devices {
 				if device.name == "" {
 					continue
 				}
-				option := device.name
-				for suffix := 2; ; suffix++ {
-					if _, exists := choices[option]; !exists {
-						break
-					}
-					option = fmt.Sprintf("%s (%d)", device.name, suffix)
-				}
-				items = append(items, option)
-				choices[option] = device
+				option := addChoice(device.name, device)
 				if uintptr(i) == id {
 					selected = option
 				}
 			}
-			if id == defaultWaveDevice && name != "" && name != "Default" {
-				selected = name + " (unavailable)"
-				items = append(items, selected)
-				choices[selected] = audioDevice{name, endpoint}
+			if id == defaultWaveDevice && !defaultAudioSelection(name, endpoint) {
+				displayName := name
+				if displayName == "" {
+					displayName = label
+				}
+				selected = addChoice(displayName+" (unavailable)", audioDevice{name, endpoint})
 			}
 			body = append(body, settingsField(label, formSelect(gui.SelectCfg{
 				ID: nameKey, A11YCfg: gui.A11YCfg{A11YLabel: label}, Items: items, Selected: []string{selected},

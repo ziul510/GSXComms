@@ -442,7 +442,8 @@ func stuck(options []string) bool {
 		return false
 	}
 	a, b := menuLabel(options[0]), menuLabel(options[1])
-	return a == "close" && b == "back" || a == "back" && b == "close"
+	navigation := []string{"back", "cancel", "close"}
+	return a != b && slices.Contains(navigation, a) && slices.Contains(navigation, b)
 }
 
 func (s *Session) Execute(ctx context.Context, text, service string, keywords []string, autoOperator bool) (string, error) {

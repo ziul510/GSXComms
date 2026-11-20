@@ -115,11 +115,25 @@ func TestScriptedSession(t *testing.T) {
 }
 
 func TestHotfixMenu(t *testing.T) {
-	s := New(&fakeSim{values: map[string]float64{}}, "")
-	// Use the navigation-only menu that GSX reports when the hotfix is needed
-	s.ReadMenu = func() Menu { return ParseMenu("GSX\nBack!\nClose.") }
-	if _, err := s.Execute(context.Background(), "request boarding", "", nil, false); !errors.Is(err, ErrHotfix) {
-		t.Fatal(err)
+	for _, test := range []struct {
+		options string
+		hotfix  bool
+	}{
+		{"Back!\nClose.", true},
+		{"Back\nCancel", true},
+		{"Close\nCancel…", true},
+		{"Back\nBack!", false},
+		{"Back\nRequest boarding", false},
+	} {
+		t.Run(test.options, func(t *testing.T) {
+			s := New(&fakeSim{values: map[string]float64{}}, "")
+			s.ReadMenu = func() Menu { return ParseMenu("GSX\n" + test.options) }
+			s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+			_, err := s.Execute(t.Context(), "request boarding", "", nil, false)
+			if errors.Is(err, ErrHotfix) != test.hotfix {
+				t.Fatalf("hotfix = %t, got %v", test.hotfix, err)
+			}
+		})
 	}
 }
 

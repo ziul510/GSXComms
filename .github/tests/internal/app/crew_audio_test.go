@@ -20,7 +20,7 @@ func TestCrewServiceTransitions(t *testing.T) {
 		{"Request jetway", false, true, true},
 		{"Jetway unavailable", true, true, false},
 		{"Operating stairs", false, false, false},
-		{"Undock jetway", true, true, false},
+		{"Undock jetway", true, false, true},
 		{"Request to disconnect GPU", true, false, true},
 		{"Open stairs", false, true, true},
 		{"Service completed", true, false, true},
