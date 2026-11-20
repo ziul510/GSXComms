@@ -461,10 +461,14 @@ func (s *state) openSettings() {
 		slider("volume_voice", "Voice volume", 0, 1, 0.01)
 		slider("max_recording_seconds", "Max recording (seconds)", 10, 120, 1)
 		section("Speech Recognition", "Choose a speech model and manage local downloads")
-		body = append(body, setup.localCard(s, w, draft, "parakeet", "Parakeet v2 (recommended)"))
-		body = append(body, setup.localCard(s, w, draft, "orukeet", "Orukeet"))
-		body = append(body, setup.mistralCard(s, draft))
-		body = append(body, setup.localCard(s, w, draft, "kokoro", "Kokoro menu reader"))
+		body = append(body, gui.Column(gui.ContainerCfg{
+			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(6),
+			Content: []gui.View{
+				setup.localCard(s, w, draft, "parakeet", "Parakeet v2 (recommended)"),
+				setup.localCard(s, w, draft, "orukeet", "Orukeet"),
+				setup.mistralCard(s, draft),
+			},
+		}))
 		section("Accent", "Default accent and regional packs")
 		pick("default_accent", "Default accent", accents)
 		action("accent-setup", "Open Accent Setup", false, s.openAccents)
@@ -489,6 +493,7 @@ func (s *state) openSettings() {
 		if config.Get[bool](draft, "read_gsx_menus_aloud_after_keyword") {
 			body = append(body, formInput(gui.InputCfg{ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) }}))
 		}
+		body = append(body, setup.localCard(s, w, draft, "kokoro", "Kokoro menu reader"))
 		toggle("auto_connect_sim", "Auto-connect to simulator")
 		toggle("auto_select_operator", "Auto-select operator")
 		toggle("mute_gsx_audio_during_crew_voice", "Mute Couatl/GSX during speech")

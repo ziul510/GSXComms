@@ -39,12 +39,9 @@ type speechSetup struct {
 func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values, id, label string) gui.View {
 	m, _ := models.Lookup(id)
 	status := setup.local[id]
-	note := status.message
-	if note == "" {
-		note = "Available for download"
-		if status.ready {
-			note = "Downloaded"
-		}
+	note := "Not downloaded"
+	if status.ready {
+		note = "Downloaded"
 	}
 	current := config.Get[string](draft, "speech_provider") == id
 	busy := setup.running != ""
@@ -91,21 +88,30 @@ func (setup *speechSetup) localCard(s *state, w *gui.Window, draft config.Values
 			})
 		}()
 	}
+	action := func(id, label string, primary, disabled bool, click func()) gui.View {
+		control := buttonConfig(id, label, 0, primary, disabled, click)
+		control.Height = 30
+		return gui.Button(control)
+	}
 	actions := []gui.View{
-		button("download-"+id, "Download", 0, !status.ready, busy || status.ready, func() { run("Downloading") }),
-		button("reload-"+id, "Reload", 0, false, busy || !status.ready, func() { run("Reloading") }),
-		button("delete-"+id, "Delete", 0, false, busy || !status.cached, func() { run("Deleting") }),
+		action("download-"+id, "Download", !status.ready, busy || status.ready, func() { run("Downloading") }),
+		action("reload-"+id, "Reload", false, busy || !status.ready, func() { run("Reloading") }),
+		action("delete-"+id, "Delete", false, busy || !status.cached, func() { run("Deleting") }),
 	}
 	if setup.running == id && strings.HasPrefix(status.message, "Downloading") {
-		actions = append(actions, button("stop-download", "Cancel", 0, false, false, setup.cancel))
+		actions = append(actions, action("stop-download", "Cancel", false, false, setup.cancel))
 	}
-	heading := []gui.View{bold(label, 15, ink), spacer()}
+	heading := []gui.View{bold(label, 15, ink), spacer(), text(note, 13, muted)}
 	if current {
 		heading = append(heading, text("Active", 13, accent))
 	} else if id != "kokoro" {
-		heading = append(heading, button("provider-"+id, "Use", 56, true, false, func() { draft.Put("speech_provider", id) }))
+		heading = append(heading, action("provider-"+id, "Use", true, false, func() { draft.Put("speech_provider", id) }))
 	}
-	return gui.Column(outlinedCard(card, gui.PadAll(12), 8, speechRow(heading...), wrapped(note, 13, muted), speechRow(actions...)))
+	content := []gui.View{speechRow(heading...), speechRow(actions...)}
+	if status.message != "" && status.message != note {
+		content = append(content, wrapped(status.message, 13, muted))
+	}
+	return gui.Column(outlinedCard(card, gui.PadVH(8, 10), 4, content...))
 }
 
 func speechRow(content ...gui.View) gui.View {
@@ -128,10 +134,11 @@ type tutorialImage struct {
 }
 
 func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
-	heading := []gui.View{bold("Mistral · Voxtral Small", 15, ink), spacer()}
+	heading := []gui.View{bold("Mistral · Voxtral Small", 15, ink)}
 	if config.Get[string](draft, "speech_provider") == "mistral" {
 		heading = append(heading, text("Active", 13, accent))
 	}
+	heading = append(heading, spacer(), bold("Set up", 14, accent))
 	open := func() {
 		setup.step = 1
 		s.settingUpMistral = true
@@ -154,7 +161,7 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 	}
 	control := buttonConfig("provider-mistral", "Set up Mistral", 0, false, false, open)
 	control.Sizing, control.Height = gui.FillFit, 0
-	control.Padding, control.SizeBorder = gui.PadAll(12), gui.BorderPx(1)
+	control.Padding, control.SizeBorder = gui.PadVH(8, 10), gui.BorderPx(1)
 	control.Colors.Border, control.Colors.BorderFocus = elevated, accent
 	control.A11YCfg.A11YLabel = "Set up Mistral"
 	status := "Cloud transcription · Requires an API key"
@@ -162,8 +169,8 @@ func (setup *speechSetup) mistralCard(s *state, draft config.Values) gui.View {
 		status = "API key saved in Windows Credential Manager"
 	}
 	control.Content = []gui.View{gui.Column(gui.ContainerCfg{
-		Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8),
-		Content: []gui.View{speechRow(heading...), wrapped(status, 13, muted), bold("Set up Mistral", 14, accent)},
+		Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(4),
+		Content: []gui.View{speechRow(heading...), wrapped(status, 13, muted)},
 	})}
 	return gui.Button(control)
 }
