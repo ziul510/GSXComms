@@ -19,6 +19,7 @@ with checkpoint_path.open("rb") as source:
     if hashlib.file_digest(source, "sha256").hexdigest() != ORIGINAL_SHA256:
         raise SystemExit("Unexpected OpenPhonemizer checkpoint")
 output_path.mkdir(parents=True, exist_ok=True)
+# The verified checkpoint contains Python tokenizer objects.
 with torch.serialization.safe_globals([LanguageTokenizer, Preprocessor, SequenceTokenizer]):
     model, checkpoint = load_checkpoint(checkpoint_path, device="cpu")
 prep = checkpoint["preprocessor"]
@@ -30,6 +31,7 @@ class Graph(torch.nn.Module):
 
     def forward(self, sequence):
         values = self.model({"text": sequence})
+        # The Go decoder needs token IDs and can leave the logits inside the graph.
         return values.argmax(dim=-1)
 
 if checkpoint["config"]["model"]["type"] != "transformer":
@@ -46,7 +48,9 @@ data = dict(
     text=tokenizer(prep.text_tokenizer), phones=tokenizer(prep.phoneme_tokenizer),
     dictionary=(checkpoint.get("phoneme_dict") or {}).get("en_us", {}),
 )
+# The worker needs the tokenizer rules and dictionary at runtime.
 (output_path / "phonemizer.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf8")
+# Keep the export width in sync with contextSize in the Kokoro worker.
 sequence = torch.zeros((1, 256), dtype=torch.long)
 ids = prep.text_tokenizer("jetway", "en_us")
 sequence[0, :len(ids)] = torch.tensor(ids)

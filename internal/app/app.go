@@ -117,6 +117,7 @@ func Run(dir string) {
 			go s.pollController(ctx)
 			go s.listenHID(ctx)
 			if config.Get[bool](s.cfg, "start_minimized") {
+				// Only hide the window if there is a tray icon to bring it back.
 				if s.tray != nil {
 					w.Hide()
 				} else {
@@ -133,12 +134,14 @@ func Run(dir string) {
 		OnCloseRequest: func(w *gui.Window) { s.quit() },
 	})
 	backend.RunApp(s.host, w)
+	// Give queued settings writes time to finish after the UI closes.
 	close(s.saves)
 	select {
 	case <-s.saved:
 	case <-time.After(2 * time.Second):
 	}
 	cancel()
+	// The simulator loop may still be closing a menu it owns.
 	if s.main != nil {
 		select {
 		case <-s.done:
@@ -198,6 +201,7 @@ func (s *state) log(sender, message string) {
 			}
 		}
 	}
+	// Bound the text sent to the conversation view on each redraw.
 	if len(s.lines) > 1000 {
 		s.lines = s.lines[len(s.lines)-1000:]
 	}
@@ -207,6 +211,7 @@ func (s *state) log(sender, message string) {
 }
 
 func (s *state) async(f func()) {
+	// Background work hands state changes back to the UI thread here.
 	s.main.QueueCommand(func(w *gui.Window) {
 		if s.ctx.Err() == nil {
 			f()
@@ -270,6 +275,7 @@ func (s *state) simulator() {
 				continue
 			}
 			menu := session.ReadMenu()
+			// Accent lookup can poll less often than menu status and ground speed.
 			if time.Since(timeAtLocation) > 5*time.Second {
 				timeAtLocation = time.Now()
 				geoCtx, stop := context.WithTimeout(s.ctx, 850*time.Millisecond)
@@ -291,6 +297,7 @@ func (s *state) simulator() {
 					}
 				}
 			}
+			// Give control back to GSX when the app has been idle.
 			if session.RemoteActive() && time.Since(lastRemote) >= 10*time.Second {
 				ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 				_ = session.Release(ctx)
@@ -436,10 +443,12 @@ func (s *state) submit(input string) {
 		}
 		return
 	}
+	// Typed commands pass through the same speed gate as PTT.
 	if reason := s.transmissionBlock(); reason != "" {
 		s.log("SYS", reason)
 		return
 	}
+	// A bare number is a direct selection only while the menu is visible.
 	if idx, ok := commands.Number(input); ok && s.overlay {
 		s.choose(idx)
 		return
@@ -458,6 +467,7 @@ func (s *state) submit(input string) {
 		}
 		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		if config.Get[bool](prefs, "enable_gsx_menu_text_correction") {
+			// A current menu label can take precedence over the vocabulary route.
 			if text2, _ := commands.CorrectMenu(text, session.ReadMenu().Options); text2 != "" {
 				text = text2
 				action = commands.Action{Kind: "menu"}

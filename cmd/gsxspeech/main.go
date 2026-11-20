@@ -10,6 +10,7 @@ package main
 #include <windows.h>
 #include "c-api.h"
 
+// Take function signatures from the header even though symbol lookup happens at runtime.
 #define FN(name) static __typeof__(&name) p_##name;
 FN(SherpaOnnxCreateOfflineRecognizer)
 FN(SherpaOnnxDestroyOfflineRecognizer)
@@ -22,6 +23,7 @@ FN(SherpaOnnxDestroyOfflineRecognizerResult)
 #undef FN
 
 static int load_library(const wchar_t *dir, const wchar_t *path) {
+  // Keep DLL dependencies in the worker directory or System32.
   if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)) return 0;
   if (!AddDllDirectory(dir)) return 0;
   HMODULE dll=LoadLibraryExW(path,NULL,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32|LOAD_LIBRARY_SEARCH_USER_DIRS);
@@ -53,6 +55,7 @@ static const SherpaOnnxOfflineRecognizer *recognizer(
   cfg.model_config.num_threads=threads;
   cfg.decoding_method="modified_beam_search";
   cfg.max_active_paths=4;
+  // BPE phrase bias needs both the hotwords and the recognizer's token vocabulary.
   if (words[0] && vocab[0]) {
     cfg.hotwords_file=words;
     cfg.hotwords_score=2.0;
@@ -189,6 +192,7 @@ func load(f speech.Frame) (*C.SherpaOnnxOfflineRecognizer, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Reuse the recognizer's token spellings when building the bias vocabulary.
 		for _, line := range strings.Split(string(tokens), "\n") {
 			line = strings.TrimSuffix(line, "\r")
 			token := line
@@ -206,6 +210,7 @@ func load(f speech.Frame) (*C.SherpaOnnxOfflineRecognizer, error) {
 	argv = append(argv, C.CString(words), C.CString(vocab))
 	threads := C.int(max(1, min(4, runtime.NumCPU()-2)))
 	r := C.recognizer(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], threads)
+	// Recognition can still run if Sherpa rejects the optional bias setup.
 	if r == nil && words != "" {
 		empty := C.CString("")
 		defer C.free(unsafe.Pointer(empty))
@@ -239,5 +244,6 @@ func recognize(r *C.SherpaOnnxOfflineRecognizer, f speech.Frame) (string, error)
 		return "", errors.New("recognizer returned no result")
 	}
 	defer C.destroy_result(res)
+	// Copy the native text before destroying the result.
 	return strings.TrimSpace(C.GoString(res.text)), nil
 }

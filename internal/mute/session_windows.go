@@ -40,6 +40,7 @@ func (p *com) invoke(index int, args ...uintptr) error {
 	if p == nil {
 		return errors.New("audio COM object unavailable")
 	}
+	// COM vtable calls take the interface pointer before the method arguments.
 	values := append([]uintptr{uintptr(unsafe.Pointer(p))}, args...)
 	hr, _, _ := syscall.SyscallN(p.vtable[index], values...)
 	if int32(hr) < 0 {
@@ -96,8 +97,10 @@ func process(pid uint32) (start uint64, name string, err error) {
 func (windowsAudio) Alive(id identity) bool {
 	start, _, err := process(id.PID)
 	if err != nil {
+		// An access error alone can't prove the original process exited.
 		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 	}
+	// Windows can reuse the PID while a restore is still pending.
 	return start == id.ProcessStarted
 }
 
@@ -215,10 +218,12 @@ func Run(dir string, hold func() error) error {
 	defer windows.CloseHandle(mutex)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// Windows mutex ownership stays with the thread that acquires it.
 	rc, err := windows.WaitForSingleObject(mutex, 5000)
 	if err != nil {
 		return err
 	}
+	// An abandoned mutex still gives this thread ownership so it can recover the journal.
 	if rc != 0 && rc != 0x80 {
 		return errors.New("another GSX mute request is still active")
 	}

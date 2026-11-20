@@ -15,6 +15,7 @@ import (
 
 func readTest(t *testing.T, path string, out any) {
 	t.Helper()
+	// The overlay runs this test from internal/commands, with fixtures kept under .github.
 	data, err := os.ReadFile("../../.github/tests/testdata/" + path)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestReferenceCorpus(t *testing.T) {
 		}
 	}
 	readTest(t, "corpus.json", &input)
+	// The expected output was captured from the legacy Python command path.
 	readTest(t, "reference.json", &expected)
 	vocab, err := Load(t.TempDir())
 	if err != nil {

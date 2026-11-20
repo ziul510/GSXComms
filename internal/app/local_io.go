@@ -26,6 +26,7 @@ type debugEvent struct {
 
 func (s *state) settingsWriter() {
 	defer close(s.saved)
+	// Write snapshots in order so a slower write can't replace a newer one.
 	for req := range s.saves {
 		err := config.Save(s.dir, req.values)
 		s.async(func() { s.finishSave(req, err) })
@@ -33,6 +34,7 @@ func (s *state) settingsWriter() {
 }
 
 func (s *state) finishSave(req *saveRequest, err error) {
+	// An older completion must leave the newest queued draft available.
 	if s.pendingSave == req {
 		s.pendingSave = nil
 	}
@@ -42,6 +44,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		previous := s.cfg
 		s.cfg = req.values
 		if !bytes.Equal(previous["ptt_bind"], s.cfg["ptt_bind"]) {
+			// Stop recording before changing which key release the hook listens for.
 			s.record(false)
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
 		}
@@ -110,6 +113,7 @@ func (s *state) debugWriter() {
 					output, _ = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
 				}
 			}
+			// An enabled event with no text opens the debug output without writing a line.
 			if event.line == "" {
 				continue
 			}
@@ -134,6 +138,7 @@ func (s *state) debugWriter() {
 
 func rotate(dir string) error {
 	path := filepath.Join(dir, "debug.log")
+	// Rotate oldest first so the next move can't overwrite an unshifted backup.
 	for n := 2; n >= 0; n-- {
 		source := path
 		if n > 0 {
@@ -149,6 +154,7 @@ func rotate(dir string) error {
 
 func (s *state) debugLog(event debugEvent) {
 	select {
+	// The UI must keep running even when the debug writer can't keep up.
 	case s.debug <- event:
 	default:
 	}

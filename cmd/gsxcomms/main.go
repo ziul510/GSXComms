@@ -22,11 +22,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "GSXComms data directory is unavailable")
 		os.Exit(1)
 	}
+	// The speech and mute workers require absolute paths.
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Invalid GSXComms data directory:", err)
 		os.Exit(1)
 	}
+	// Finish migration before the UI loads its settings.
 	if *importDir != "" {
 		if _, err := config.Import(dir, *importDir); err != nil {
 			fmt.Fprintln(os.Stderr, "Import failed:", err)

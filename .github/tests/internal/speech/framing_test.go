@@ -23,6 +23,7 @@ func TestProtocol(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(f, got) {
 		t.Fatalf("frame = %+v, %v", got, err)
 	}
+	// Feed only the invalid size to verify rejection before the payload is read.
 	_ = binary.Write(&stream, binary.LittleEndian, uint32(MaxFrame+1))
 	if _, err := Read(&stream); err == nil {
 		t.Fatal("oversized frame accepted")
@@ -34,6 +35,7 @@ func TestSilenceGate(t *testing.T) {
 	if Usable(audio) {
 		t.Fatal("silent audio passed")
 	}
+	// The most negative PCM16 value still has to pass the loudness gate.
 	audio[1] = 128
 	if !Usable(audio) {
 		t.Fatal("full-scale negative audio discarded")
@@ -52,6 +54,7 @@ func TestWorkerRequiresExplicitRetryAfterRepeatedFailures(t *testing.T) {
 	if err := w.Load(t.Context(), "model", nil, nil); err == nil || w.failures != 2 {
 		t.Fatalf("second launch: failures=%d err=%v", w.failures, err)
 	}
+	// Elapsed time alone can't clear the explicit reload requirement.
 	w.failed = time.Now().Add(-2 * time.Minute)
 	if err := w.start(t.Context()); err == nil || w.failures != 2 {
 		t.Fatalf("unexpected automatic retry: failures=%d err=%v", w.failures, err)

@@ -44,6 +44,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 	msg := func(p map[string]any) { _ = send.Encode(p) }
 	// Send ready so clients can ping even while SimConnect is offline.
 	msg(map[string]any{"status": "ok", "ready": true, "connected": s.Connected()})
+	// Read stdin separately so idle clients can't block simulator polling.
 	lines := make(chan string)
 	go func() {
 		defer close(lines)
@@ -65,6 +66,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Release GSX if the IPC client stops sending requests.
 			if s.RemoteActive() && time.Since(last) >= 10*time.Second {
 				_ = s.Release(ctx)
 			}
@@ -155,6 +157,7 @@ func console(ctx context.Context, s *gsx.Session) {
 				_ = s.Toggle(ctx)
 			case k == '0':
 				_ = s.Release(ctx)
+			// Console keys are one-based. GSX takes zero-based choices.
 			case k >= '1' && k <= '9':
 				_ = s.Choose(ctx, int(k-'1'))
 			}
@@ -171,6 +174,7 @@ func console(ctx context.Context, s *gsx.Session) {
 			}
 			next = b.String()
 		}
+		// Avoid clearing the console and repainting an identical menu every tick.
 		if next != frame {
 			fmt.Print("\x1b[2J\x1b[H", next)
 			frame = next

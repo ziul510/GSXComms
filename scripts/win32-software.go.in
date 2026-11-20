@@ -43,6 +43,7 @@ func (b *Backend) win32Renderer(w *gui.Window) error {
 			if err==nil{return nil}
 			b.destroyGLResources()
 		}
+		// Detach the failed GL context before switching the window to GDI.
 		wglMakeCurrent(0,0)
 		wglDeleteContext(context)
 		b.plat.hglrc=0
@@ -65,6 +66,7 @@ func(b *Backend) win32Software(w *gui.Window)error{
 			img,err:=soft.RenderDisplay(w,b.dpiScale)
 			if err!=nil {log.Printf("go-gui: software render: %v",err);return}
 			last.width=int32(img.Rect.Dx())
+			// A negative DIB height keeps the top row first.
 			last.height=-int32(img.Rect.Dy())
 			if cap(pixels)<len(img.Pix){pixels=make([]byte,len(img.Pix))}else{pixels=pixels[:len(img.Pix)]}
 			for i:=0;i+3<len(pixels);i+=4{

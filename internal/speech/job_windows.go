@@ -15,6 +15,7 @@ func createJob() (windows.Handle, error) {
 		return 0, err
 	}
 	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	// Windows can clean up assigned workers if the app exits before Reset.
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
 	if err != nil {
@@ -25,6 +26,7 @@ func createJob() (windows.Handle, error) {
 }
 
 func assignJob(job windows.Handle, pid uint32) error {
+	// Job assignment needs quota and terminate rights on the worker process.
 	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, pid)
 	if err != nil {
 		return err

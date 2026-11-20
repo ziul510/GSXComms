@@ -24,6 +24,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 	if err != nil {
 		return false
 	}
+	// A slow GPU probe would delay the worker handshake.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, filepath.Join(dir, "nvidia-smi.exe"), "--query-gpu=index,memory.free,utilization.gpu", "--format=csv,noheader,nounits")
@@ -44,6 +45,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 		id, a := strconv.Atoi(strings.TrimSpace(row[0]))
 		memory, b := strconv.Atoi(strings.TrimSpace(row[1]))
 		util, c := strconv.Atoi(strings.TrimSpace(row[2]))
+		// Require 1 GiB free and skip busy cards because speech may share a GPU with MSFS.
 		if a != nil || b != nil || c != nil || id < 0 || memory < 1024 || util > 80 {
 			continue
 		}

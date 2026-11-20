@@ -41,6 +41,7 @@ func Read(r io.Reader) (Frame, error) {
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return f, err
 	}
+	// Reject corrupt lengths before allocating space for the pipe payload.
 	if size == 0 || size > MaxFrame {
 		return f, errors.New("invalid worker frame size")
 	}
@@ -99,6 +100,7 @@ func (w *Worker) Load(ctx context.Context, signature string, paths map[string]st
 			return err
 		}
 	}
+	// Keep the native model loaded across transmissions with the same inputs.
 	if w.loaded == signature {
 		return nil
 	}
@@ -130,6 +132,7 @@ func (w *Worker) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 }
 
 func (w *Worker) start(ctx context.Context) error {
+	// Require an explicit reload after repeated failures to avoid a crash loop.
 	if w.failures >= 2 {
 		return errors.New("speech worker stopped after repeated failures; reload the model to retry")
 	}
@@ -163,6 +166,7 @@ func (w *Worker) launch() error {
 	if err != nil {
 		return err
 	}
+	// Each provider has its own executable directory and native libraries.
 	base := filepath.Join(filepath.Dir(exe), "workers", w.kind)
 	cmd := exec.Command(filepath.Join(base, "gsxspeech.exe"))
 	cmd.Dir = base
@@ -218,12 +222,14 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 	}()
 	select {
 	case r := <-resultCh:
+		// A reply has to belong to the request currently using the pipe.
 		if r.err == nil && r.reply.ID == req.ID && r.reply.Op == req.Op {
 			return r.reply, nil
 		}
 		w.fail()
 		return Frame{}, errors.New("speech worker exited or returned an invalid response")
 	case <-ctx.Done():
+		// Give in-flight inference a short chance to finish before stopping the process.
 		if req.Op != "shutdown" {
 			t := time.NewTimer(2 * time.Second)
 			select {
@@ -242,6 +248,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 }
 
 func (w *Worker) fail() {
+	// Only failures within a minute of each other share the retry budget.
 	if time.Since(w.failed) >= time.Minute {
 		w.failures = 0
 	}

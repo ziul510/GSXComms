@@ -6,6 +6,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
 $version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
 if ($version -ne 'v0.96.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.96.0' }
+# Patch a local copy so other builds can keep using the upstream module cache.
 $destination = Join-Path $PWD 'build/go-gui-win32'
 $copy = Join-Path $destination 'module'
 New-Item -ItemType Directory -Force $copy | Out-Null
@@ -21,6 +22,7 @@ function Source([string]$relative) {
     return [IO.File]::ReadAllText((Join-Path $module $relative)).Replace(([string][char]13+[char]10),[string][char]10)
 }
 function Change([string]$source,[string]$before,[string]$after) {
+    # A source mismatch means the patch needs checking against upstream before building.
     if (!$source.Contains($before)) { throw ('Unexpected upstream source around ' + $before) }
     return $source.Replace($before,$after)
 }
@@ -45,6 +47,7 @@ Publish-Patch $file $src
 $file = 'gui/backend/gl/platform_win32.go'
 $src = Source $file
 $src = Change $src ('gogl "github.com/go-gui-org/go-gui/gui/backend/internal/glbind"') ''
+# Keep the native window setup and replace only the renderer initialization.
 $start = $src.IndexOf('hglrc, err := createContextFunc(hdc)')
 $end = $src.IndexOf('loadCursors(&b.plat)', $start)
 if ($start -lt 0 -or $end -lt 0) { throw 'Unexpected Win32 renderer initialization' }
@@ -112,6 +115,7 @@ $src=Change $src $repeated ([string][char]9+'cmds := w.Renderers()')
 Publish-Patch $file $src
 
 Publish-Patch 'gui/backend/gl/gsxcomms_software_windows.go' ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'win32-software.go.in')))
+# The alternate modfile keeps the local replacement out of go.mod.
 $modfile = Join-Path $destination 'gsxcomms.mod'
 Copy-Item -LiteralPath 'go.mod' -Destination $modfile -Force
 Copy-Item -LiteralPath 'go.sum' -Destination (Join-Path $destination 'gsxcomms.sum') -Force

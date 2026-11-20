@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          # Secret scanning covers the commit history.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -37,8 +38,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The installer builds the main app without CGO and builds speech workers separately.
           $env:CGO_ENABLED = '0'
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Compile the patched renderer used by the installer too.
           $modfile = & scripts/go-gui-overlay.ps1
           go build -modfile $modfile ./...

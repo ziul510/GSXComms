@@ -17,6 +17,7 @@ func (f mistralTestTransport) RoundTrip(r *http.Request) (*http.Response, error)
 
 func TestVoxtralTranscriptionResponse(t *testing.T) {
 	pcm := make([]byte, 8000)
+	// Pass the loudness gate so the test reaches response parsing.
 	binary.LittleEndian.PutUint16(pcm, 500)
 	for _, tc := range []struct {
 		name, message, transcript string
@@ -31,6 +32,7 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			original := http.DefaultTransport
 			t.Cleanup(func() { http.DefaultTransport = original })
+			// Exercise the real request path without sending recordings or using a real key.
 			http.DefaultTransport = mistralTestTransport(func(*http.Request) (*http.Response, error) {
 				body := `{"choices":[{"message":` + tc.message + `}]}`
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil

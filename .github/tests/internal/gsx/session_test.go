@@ -53,6 +53,7 @@ func TestScriptedSession(t *testing.T) {
 	s := New(f, "")
 	var clock time.Duration
 	s.Sleep = func(ctx context.Context, d time.Duration) error { clock += d; return ctx.Err() }
+	// Mix the panel's HTML and plain-text formats while walking the service and operator menus.
 	menus := []Menu{
 		ParseMenu("<b>Ramp Services</b><br>[1] Additional Services<br>2. Close"),
 		ParseMenu("Additional Services\r\n# ignored\r\n1: Request potable water\r\n2) Back"),
@@ -136,6 +137,7 @@ func TestRemoteOpenSettlesBeforeSelection(t *testing.T) {
 	if clock != 500*time.Millisecond || !s.RemoteActive() {
 		t.Fatalf("open clock=%s remote=%v", clock, s.RemoteActive())
 	}
+	// Check the whole flag sequence because each write depends on the previous one.
 	want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}}
 	if !reflect.DeepEqual(f.writes, want) {
 		t.Fatalf("open writes=%v", f.writes)
@@ -146,6 +148,7 @@ func TestInterruptedOpenCanRelease(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{}}
 	s := New(f, "")
 	ctx, cancel := context.WithCancel(t.Context())
+	// Cancel in the settle delay after remote control has already been requested.
 	s.Sleep = func(ctx context.Context, _ time.Duration) error { cancel(); return ctx.Err() }
 	if err := s.Open(ctx); !errors.Is(err, context.Canceled) || !s.RemoteActive() || f.values[Remote] != 1 {
 		t.Fatalf("interrupted open: error %v, remote %v, variables %v", err, s.RemoteActive(), f.values)
@@ -186,6 +189,7 @@ func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 		if !opened {
 			return parent
 		}
+		// The first read after selection still sees the old panel file.
 		if stale {
 			stale = false
 			return parent

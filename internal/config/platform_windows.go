@@ -21,6 +21,7 @@ func Replace(source, destination string) error {
 	if err != nil {
 		return err
 	}
+	// Replace the existing path in one operation and ask Windows to flush the move.
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }
 
@@ -63,6 +64,7 @@ func migrateLegacyKey(token string) error {
 func migrateKeyIfMissing(token string, read func() (string, error), write func(string) error) error {
 	credentialWrites.Lock()
 	defer credentialWrites.Unlock()
+	// Implicit migration must preserve credentials the user already saved in the vault.
 	stored, err := read()
 	if err != nil || stored != "" {
 		return err
@@ -104,5 +106,6 @@ func ReadKey() (string, error) {
 		return "", err
 	}
 	defer credFree.Call(uintptr(unsafe.Pointer(entry)))
+	// Copy the credential out of Windows-owned memory before CredFree runs.
 	return string(unsafe.Slice(entry.Blob, int(entry.Size))), nil
 }

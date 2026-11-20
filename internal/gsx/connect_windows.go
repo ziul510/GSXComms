@@ -55,6 +55,7 @@ type connection struct {
 }
 
 func Connect(ctx context.Context) (Transport, error) {
+	// Try the user's DLL first, then installed copies that can satisfy the handshake.
 	paths := []string{os.Getenv("GSX_SIMCONNECT_DLL")}
 	for _, root := range []string{os.Getenv("MSFS2024_SDK"), os.Getenv("MSFS_SDK"),
 		filepath.Join(os.Getenv("SystemDrive")+string(os.PathSeparator), "MSFS 2024 SDK"),
@@ -89,6 +90,7 @@ func Connect(ctx context.Context) (Transport, error) {
 }
 
 func connectPath(ctx context.Context, path string) (_ *connection, err error) {
+	// Search beside this DLL and in System32 for its native dependencies.
 	lib, err := windows.LoadLibraryEx(path, 0, windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if err != nil {
 		return nil, err
@@ -112,6 +114,7 @@ func connectPath(ctx context.Context, path string) (_ *connection, err error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	// A successful Open call still needs the server's OPEN packet before use.
 	if _, err = c.receive(ctx, 2, 0); err != nil {
 		return nil, err
 	}
@@ -124,6 +127,7 @@ func hresult(operation string, result uintptr) error {
 }
 
 func (c *connection) definition(name string) (uintptr, error) {
+	// SimConnect data definitions belong to the connection and can be reused across requests.
 	if id := c.definitions[name]; id != 0 {
 		return id, nil
 	}
@@ -197,6 +201,7 @@ func (c *connection) receive(ctx context.Context, kind uint32, request uintptr) 
 				// A response from a timed-out request can arrive during the next Get.
 				id := *(*uint32)(unsafe.Add(unsafe.Pointer(ptr), 12))
 				if id == uint32(request) {
+					// The packet carries one FLOAT64 datum at dwData after the fixed header.
 					bits := *(*uint64)(unsafe.Add(unsafe.Pointer(ptr), 40))
 					return math.Float64frombits(bits), nil
 				}

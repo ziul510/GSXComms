@@ -59,6 +59,7 @@ func write(path string, records []record) error {
 
 func match(label string) bool {
 	label = strings.ToLower(label)
+	// The GSX substring would also match the player itself.
 	if strings.Contains(label, "gsxcomms") {
 		return false
 	}
@@ -75,6 +76,7 @@ func acquire(path string, api backend) error {
 	if err != nil {
 		return err
 	}
+	// Restore interrupted mutes first and carry forward any sessions still missing.
 	if len(old) > 0 {
 		if err := restore(path, api); err != nil {
 			return err
@@ -88,6 +90,7 @@ func acquire(path string, api backend) error {
 		if !match(s.Label) || s.Muted || s.ID.PID == 0 || s.ID.Session == "" || s.ID.Endpoint == "" || s.ID.ProcessStarted == 0 {
 			return nil
 		}
+		// Keep the first recorded state for sessions already waiting on recovery.
 		for _, entry := range old {
 			if entry.ID == s.ID {
 				return nil
@@ -115,6 +118,7 @@ func restore(path string, api backend) error {
 	err = api.Visit(func(s audioSession) error {
 		for _, entry := range records {
 			if entry.ID == s.ID {
+				// One failed restore should leave the other sessions eligible for recovery.
 				if err := s.Set(entry.WasMuted); err != nil {
 					failures = errors.Join(failures, err)
 				} else {

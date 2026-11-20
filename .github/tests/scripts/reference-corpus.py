@@ -22,6 +22,7 @@ words = json.loads((reference / "words.json").read_text(encoding="utf8"))
 normalized = stt_engine.BiasNormalizer(words)
 cfg = {"presets": data["presets"], "enable_menu_matching": True}
 manager = preset_manager.PresetManager(cfg)
+# Extract routing from the legacy class without launching its GUI.
 source = ast.parse((reference / "main.py").read_text(encoding="utf8"))
 command = next(
     method for cls in source.body if isinstance(cls, ast.ClassDef)
@@ -38,6 +39,7 @@ def route(text, raw):
     def log(sender, message):
         if message == "Multiple cmds detected":
             select("ambiguous")
+    # Stub out simulator and audio actions so the fixture captures routing decisions.
     state = SimpleNamespace(
         resource_error=None, resources_ready=True, _is_sim_ready=lambda: True, too_fast=False,
         cfg=cfg, _gsx_overlay_visible=False, preset_manager=manager, words=words,

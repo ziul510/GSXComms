@@ -93,6 +93,7 @@ func (s *state) listenHID(ctx context.Context) {
 		return
 	}
 	defer user.NewProc("DestroyWindow").Call(hwnd)
+	// INPUTSINK gets controls in the background. DEVNOTIFY reports unplug events.
 	devices := [3]rawDevice{{1, 4, 0x2100, hwnd}, {1, 5, 0x2100, hwnd}, {1, 8, 0x2100, hwnd}}
 	ok, _, _ := user.NewProc("RegisterRawInputDevices").Call(uintptr(unsafe.Pointer(&devices[0])), uintptr(len(devices)), unsafe.Sizeof(devices[0]))
 	if ok == 0 {
@@ -140,6 +141,7 @@ func (s *state) listenHID(ctx context.Context) {
 				break
 			}
 			d, seen := known[h.device]
+			// Cache rejected devices too so every report doesn't reopen the same device.
 			if !seen {
 				d = readHIDDevice(h.device)
 				known[h.device] = d
@@ -152,6 +154,7 @@ func (s *state) listenHID(ctx context.Context) {
 			if length == 0 || uint64(length)*uint64(count) > uint64(len(data)-int(head)-8) {
 				break
 			}
+			// One WM_INPUT message can batch several reports.
 			for i := uint32(0); i < count; i++ {
 				offset := head + 8 + uintptr(i*length)
 				s.hidReport(d, data[offset:offset+uintptr(length)])
@@ -169,6 +172,7 @@ func (s *state) hidReport(d *hidDevice, report []byte) {
 		return
 	}
 	next := usages[:size]
+	// HID reports list held buttons, so compare with the prior report for releases.
 	for _, value := range d.buttons {
 		if value > 0 && !slices.Contains(next, value) {
 			s.hidButton(d, int(value)-1, false)
@@ -202,6 +206,7 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 			}
 			return
 		}
+		// Older bindings can identify the device by product name.
 		if b.JoyName != "" && strings.EqualFold(b.JoyName, name) {
 			s.record(down)
 		}

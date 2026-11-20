@@ -36,6 +36,7 @@ func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 }
 
 func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
+	// An unbuffered queue with no receiver makes every enqueue fail immediately.
 	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), highlight: -1, jobs: make(chan func(context.Context, *gsx.Session))}
 	s.toggleConnect()
 	s.toggleMenu()
@@ -67,12 +68,14 @@ func TestSettingsOwnsPresetManager(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.openSettings()
 	cfg := <-s.host.PendingOpen()
+	// Make the full Settings panel visible for direct widget clicks.
 	cfg.Height = 3200
 	settings := gui.NewTestWindow(t, cfg)
 	settings.TestRender(nil)
 	if err := settings.TestClick("settings-scroll:presets"); err != nil {
 		t.Fatal(err)
 	}
+	// Consume the first pending dialog so any later request would be a duplicate.
 	manager := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	if err := settings.TestClick("settings-scroll:presets"); !errors.Is(err, gui.ErrTestDisabled) {
 		t.Fatalf("preset manager button: %v", err)
@@ -187,6 +190,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	session.ReadMenu = func() gsx.Menu { return current }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
+	// The displayed slot is stale by the time the queued selection runs.
 	s.choose(0)
 	(<-s.jobs)(s.ctx, session)
 	if len(tr.selected) != 0 {
@@ -205,6 +209,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "turnaround", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()
+	// Cancel the outer job on the first choice to check that later services get their own deadline.
 	tr.afterChoice = cancel
 	s.submit("turnaround")
 	(<-s.jobs)(outer, session)
@@ -232,6 +237,7 @@ func TestLaterSuccessfulSaveAppliesBinding(t *testing.T) {
 	later := s.settingsDraft()
 	later.Put("gsx_hotfix_completed", true)
 	s.save(later, nil)
+	// A failed earlier write leaves the old PTT key active until the later save succeeds.
 	s.finishSave(<-s.saves, errors.New("settings file busy"))
 	if captureKey.Load() != 'M' || !s.pttHeld {
 		t.Fatal("failed save changed the active binding")

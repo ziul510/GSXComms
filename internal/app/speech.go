@@ -24,6 +24,7 @@ func (s *state) record(down bool) {
 		}
 		return
 	}
+	// Ignore repeated key-down events while PTT is held.
 	if s.pttHeld {
 		return
 	}
@@ -37,6 +38,7 @@ func (s *state) record(down bool) {
 	if s.transmissionBlock() != "" {
 		return
 	}
+	// Keep the microphone and provider fixed for the life of this recording.
 	prefs := s.cfg.Copy()
 	provider := config.Get[string](prefs, "speech_provider")
 	localSpeech := provider != "mistral"
@@ -72,6 +74,7 @@ func (s *state) record(down bool) {
 		if !usable {
 			return
 		}
+		// PTT release stops capture. Transcription still uses the app context.
 		transcript, err := s.transcribe(prefs, pcm)
 		s.async(func() {
 			s.processing = false
@@ -179,6 +182,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 						})
 					}()
 				}),
+				// The worker can hold model files open, so stop it before removing them.
 				button("delete-"+id, "Delete", 72, false, unavailable || !m.Cached(s.dir), func() {
 					busy = true
 					message = "Deleting…"
@@ -211,6 +215,7 @@ func (s *state) openSpeech(parent *gui.Window) {
 			button("save-key", "Validate and save key", 0, false, s.savingKey, func() {
 				s.savingKey = true
 				token := strings.TrimSpace(key)
+				// Clear the submitted key from the form while validation runs.
 				key = ""
 				message = "Validating key…"
 				go func() {

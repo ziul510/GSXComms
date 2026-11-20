@@ -64,6 +64,7 @@ func ParseMenu(raw string) Menu {
 			menu.Title, menu.Active = line, true
 			continue
 		}
+		// Use panel order for selection indices since labels can already carry numbers.
 		item := strings.TrimSpace(numbering.ReplaceAllString(line, ""))
 		if item != "" && !strings.EqualFold(item, menu.Title) {
 			menu.Options = append(menu.Options, item)
@@ -148,6 +149,7 @@ func (s *Session) Status(ctx context.Context) (ready bool, speed float64, err er
 		return false, 0, err
 	}
 	speed, err = s.get(ctx, Speed)
+	// A failed speed read blocks transmission but can still report GSX readiness.
 	if err != nil {
 		return v >= 0.5, 0, errors.Join(ErrSpeedUnavailable, err)
 	}
@@ -173,6 +175,7 @@ func (s *Session) Open(ctx context.Context) error {
 		if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
 			return err
 		}
+		// The closed menu needs the remote flag set before the open request.
 		if err := s.set(ctx, MenuOpen, 1); err != nil {
 			return errors.Join(err, s.Release(ctx))
 		}
@@ -225,6 +228,7 @@ func (s *Session) Close() error {
 	if !s.remote {
 		return s.Sim.Close()
 	}
+	// Shutdown can cancel the caller before the menu has been released.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err := s.Release(ctx)
@@ -300,6 +304,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	find := func(options []string) int {
 		if service != "" {
+			// Give user vocabulary precedence over the built-in service aliases.
 			if index := optionContaining(options, keywords); index >= 0 {
 				return index
 			}
@@ -349,6 +354,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	if err := s.Choose(ctx, index); err != nil {
 		return "", err
 	}
+	// The operator prompt can show up after the service selection returns.
 	if autoOperator {
 		for i := 0; i < 6; i++ {
 			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {

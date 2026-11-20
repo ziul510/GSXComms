@@ -20,6 +20,7 @@ foreach ($entry in $inventory.components) {
 }
 $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
+# Include dependencies linked by the native speech workers in the inventory.
 $env:CGO_ENABLED = '1'
 $modules = go list -deps -f '{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}' ./cmd/... |
     Where-Object { $_ -and $_ -notmatch '^github.com/ziul510/GSXCommsGo\|' } | Sort-Object -Unique
@@ -27,6 +28,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Failed to inventory linked modules' }
 foreach ($line in $modules) {
     $path,$version,$dir = $line -split '\|'
     $approved = $inventory.modules[$path]
+    # A version change requires a fresh license review before packaging.
     if (!$approved -or $approved.version -ne $version) { throw "Unreviewed linked module $path $version" }
     Add-Notice "========== $path $version ($($approved.license)) =========="
     foreach ($license in $approved.files) {
@@ -35,6 +37,7 @@ foreach ($line in $modules) {
 }
 Add-Notice '========== Go standard library and runtime =========='
 Add-Notice (Get-Content -LiteralPath (Join-Path (go env GOROOT) 'LICENSE') -Raw)
+# The Sherpa DLL is loaded at runtime and won't show up in linked Go modules.
 $sherpa = go mod download -json 'github.com/k2-fsa/sherpa-onnx-go-windows/v2@v2.0.1' | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or !$sherpa.Dir) { throw 'Could not find sherpa-onnx license' }
 Add-Notice '========== sherpa-onnx Windows =========='

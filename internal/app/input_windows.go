@@ -34,6 +34,7 @@ type keyboardMsg struct {
 }
 
 func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
+	// The message pump has to run on the thread that owns the keyboard hook.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	set := user.NewProc("SetWindowsHookExW")
@@ -91,6 +92,7 @@ func bindingKey(b config.Binding) uint32 {
 	if json.Unmarshal(b.Value, &code) == nil {
 		return code
 	}
+	// Legacy settings store keys by name. New bindings store virtual key codes.
 	var name string
 	_ = json.Unmarshal(b.Value, &name)
 	name = strings.ToUpper(strings.TrimSpace(name))
@@ -133,6 +135,7 @@ func bindingForKey(key uint32) config.Binding {
 func (s *state) keyboardEvent(key uint32, down bool) {
 	s.async(func() {
 		if s.binding != nil {
+			// A release from the old binding still needs to stop any active recording.
 			if !down && key == captureKey.Load() {
 				s.record(false)
 			}
@@ -201,6 +204,7 @@ func (s *state) pollController(ctx context.Context) {
 		case <-t.C:
 		}
 		for i, prev := range last {
+			// A disconnected XInput slot starts with no buttons held.
 			var current xinputState
 			_, _, _ = proc.Call(uintptr(i), uintptr(unsafe.Pointer(&current)))
 			last[i] = current.buttons
@@ -246,6 +250,7 @@ func windowByTitle(title string) uintptr {
 		}
 		var owner uint32
 		_, _, _ = getPID.Call(hwnd, uintptr(unsafe.Pointer(&owner)))
+		// Another process can have a window with the same caption.
 		if owner == pid {
 			return hwnd
 		}
@@ -254,6 +259,7 @@ func windowByTitle(title string) uintptr {
 
 func (s *state) setTopmost() {
 	if hwnd := windowByTitle("GSXComms"); hwnd != 0 {
+		// Win32 uses negative pseudo-handles for HWND_NOTOPMOST and HWND_TOPMOST.
 		placement := ^uintptr(1)
 		if config.Get[bool](s.cfg, "topmost_active") {
 			placement = ^uintptr(0)

@@ -35,6 +35,7 @@ func formatReadout(options []string) string {
 		if words == "" {
 			continue
 		}
+		// Keep the actual menu number even if an earlier label had nothing to pronounce.
 		prefix := fmt.Sprint(i + 1)
 		if i < len(numbers) {
 			prefix = numbers[i]
@@ -55,6 +56,7 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	if keyword == "" {
 		return false
 	}
+	// Quote the user phrase and match it at word boundaries.
 	pattern := regexp.MustCompile(`(?:^|[^\pL\pN_])` + regexp.QuoteMeta(keyword) + `(?:$|[^\pL\pN_])`)
 	for _, v := range values {
 		if pattern.MatchString(strings.ToLower(v)) {
@@ -76,6 +78,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		return
 	}
 	select {
+	// Reserve the reader through synthesis so repeated requests don't pile up.
 	case s.speaking <- struct{}{}:
 	default:
 		log("SYS", "GSX menu readout is already in progress")
@@ -89,6 +92,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 			return
 		}
 		menu, err := session.WaitMenu(ctx)
+		// Release the menu opened for readout before starting the slower speech work.
 		_ = session.Release(ctx)
 		if err != nil {
 			<-s.speaking
@@ -124,6 +128,7 @@ func (s *state) output(prefs config.Values, pcm []byte, rate int) error {
 	for i := 0; i+1 < len(pcm); i += 2 {
 		noise := (rand.Float64()*2 - 1) * 1300
 		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i:])))
+		// Use the change in noise samples to give the static a sharper sound.
 		combined := sample*change + (noise-prev)*static
 		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(max(-32768, min(32767, combined)))))
 		prev = noise
@@ -200,6 +205,7 @@ func restoreMute(ctx context.Context, dir string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
+		// Retry recovery because an audio device may have been absent on startup.
 		if _, err := os.Stat(filepath.Join(dir, "gsx-mute.json")); err == nil {
 			if cmd, err := watchdog(dir, true); err == nil {
 				_ = cmd.Run()

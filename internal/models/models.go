@@ -52,6 +52,7 @@ func (m Model) Directory(data string) string {
 func (m Model) Paths(data string) map[string]string {
 	out := make(map[string]string, len(m.Files))
 	for _, f := range m.Files {
+		// Workers use basenames in load frames. The manifest keeps the repository layout.
 		out[filepath.Base(f.Path)] = filepath.Join(m.Directory(data), filepath.FromSlash(f.Path))
 	}
 	return out
@@ -88,6 +89,7 @@ func (m Model) lock(data string) (windows.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
+	// An exclusive handle protects the staging directory from download and delete races.
 	handle, err := windows.CreateFile(path, windows.GENERIC_WRITE|windows.DELETE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_FLAG_DELETE_ON_CLOSE, 0)
 	if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
 		return 0, errors.New("another operation is using this model")
@@ -132,6 +134,7 @@ func (m Model) Download(ctx context.Context, data string, progress func(int64, i
 	for _, file := range m.Files {
 		total += file.Bytes
 		stat, err := os.Stat(filepath.Join(staging, filepath.FromSlash(file.Path)))
+		// Count only the remaining bytes of a resumable file against free space.
 		remaining := file.Bytes
 		if err == nil && stat.Mode().IsRegular() && stat.Size() <= file.Bytes {
 			remaining -= stat.Size()
@@ -184,6 +187,7 @@ func (m Model) Download(ctx context.Context, data string, progress func(int64, i
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Put the marker in staging so verified files and their revision become visible together.
 	if err := config.WriteAtomic(filepath.Join(staging, ".verified"), []byte(m.Revision)); err != nil {
 		return err
 	}
@@ -240,6 +244,7 @@ func (m Model) fetch(ctx context.Context, f File, dest string, progress func(int
 	defer resp.Body.Close()
 	flags := os.O_CREATE | os.O_WRONLY
 	switch resp.StatusCode {
+	// A server can ignore Range and return the whole file. Restart the local copy then.
 	case http.StatusOK:
 		offset = 0
 		flags |= os.O_TRUNC
@@ -257,6 +262,7 @@ func (m Model) fetch(ctx context.Context, f File, dest string, progress func(int
 		return err
 	}
 	remaining := f.Bytes - offset
+	// Read one extra byte so an oversized response can't pass the length check.
 	written, err := copyProgress(ctx, out, io.LimitReader(resp.Body, remaining+1), func(w int64) { progress(offset + w) })
 	if err == nil && written != remaining {
 		err = io.ErrUnexpectedEOF
@@ -290,6 +296,7 @@ func copyProgress(ctx context.Context, dst io.Writer, src io.Reader, progress fu
 		if n > 0 {
 			m, werr := dst.Write(block[:n])
 			written += int64(m)
+			// Throttle progress so large downloads don't flood the UI command queue.
 			if time.Since(last) > 150*time.Millisecond {
 				progress(written)
 				last = time.Now()

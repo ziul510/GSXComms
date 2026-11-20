@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import sys
 
+# Import the legacy engine without writing bytecode into the reference tree.
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
 
@@ -28,6 +29,7 @@ contexts = [
     "at gate Zulu 8", "at parking 250",
 ]
 
+# Pair each action with every context so each pronunciation challenge repeats across commands.
 samples = [f"{action} {context}." for action in actions for context in contexts]
 assert len(samples) == 300 and len(set(samples)) == 300
 records = [{"text": text, "ipa": phonemize(text, disable_gpu=True)} for text in samples]

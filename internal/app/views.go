@@ -219,6 +219,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 	cfg.IconPNG = s.icon
 	cfg.OnInit = func(w *gui.Window) {
 		window = w
+		// The close callback can run before go-gui creates the queued window.
 		if closed {
 			w.Close()
 			return
@@ -290,6 +291,7 @@ func toggleControl(id, label string, selected bool, onClick func(gui.EventCtx)) 
 }
 
 func (s *state) settingsDraft() config.Values {
+	// Base new edits on the latest queued save while disk writes are pending.
 	if s.pendingSave != nil {
 		return s.pendingSave.values.Copy()
 	}
@@ -360,6 +362,7 @@ func (s *state) openSettings() {
 			if s.binding != nil {
 				s.binding(config.Binding{})
 			}
+			// The preset editor shares this window's draft and can't outlive it.
 			if closePresets != nil {
 				closePresets()
 			}
@@ -382,6 +385,7 @@ func (s *state) openSettings() {
 		}
 		pick := func(key, label string, items []string) {
 			value := config.Get[string](draft, key)
+			// Preserve saved choices even when the available list changes.
 			if !slices.Contains(items, value) && value != "" {
 				items = append(slices.Clone(items), value)
 			}
@@ -401,6 +405,7 @@ func (s *state) openSettings() {
 				Size: 4, ThumbSize: 16, SizeBorder: gui.NoBorder, Radius: gui.NoRadius,
 				Padding: gui.NoPadding, Color: bg, ColorLeft: accent, ColorThumb: ink,
 				OnChange: func(v float32, ctx gui.EventCtx) {
+					// The capture limit is read back from settings as an integer.
 					if step == 1 {
 						draft.Put(key, int(v))
 					} else {
@@ -528,6 +533,7 @@ func (s *state) openSettings() {
 	message = "Changes applied on save"
 	s.dialog(gui.WindowCfg{Title: "Settings", Width: 520, Height: 820, MinWidth: 480, MinHeight: 680}, closeSettings, view)
 	go func() {
+		// Enumerating audio devices can block, so open Settings with its defaults first.
 		in, out := deviceNames(true), deviceNames(false)
 		s.async(func() { inputs, outputs = in, out; s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() }) })
 	}()

@@ -33,6 +33,7 @@ type city struct {
 
 type Position struct{ Country, Region string }
 
+// Decompress the index on the first position lookup and reuse it for later polls.
 var cities = sync.OnceValues(load)
 var mapping struct {
 	Names   map[string]string            `json:"COUNTRY_NAMES"`
@@ -45,6 +46,7 @@ func xyz(lat, lon float64) (float64, float64, float64) {
 	lon *= math.Pi / 180
 	sin, cos := math.Sincos(lat)
 	sinLon, cosLon := math.Sincos(lon)
+	// Use the squared eccentricity of the WGS84 ellipsoid.
 	const eccentricity = 0.00669437999014
 	radius := 6378137 / math.Sqrt(1-eccentricity*sin*sin)
 	return radius * cos * cosLon, radius * cos * sinLon, radius * (1 - eccentricity) * sin
@@ -59,6 +61,7 @@ func load() ([]city, error) {
 	rows := bufio.NewScanner(archive)
 	result := make([]city, 0, 140000)
 	for rows.Scan() {
+		// The generator writes latitude, longitude, country code, then region name.
 		part := strings.Split(rows.Text(), "\t")
 		if len(part) != 4 {
 			return nil, errors.New("invalid city record")
@@ -142,9 +145,11 @@ func Accent(pos Position, overrides map[string]string, defaultAccent, forced str
 	if v := overrides[strings.ToLower(pos.Country)]; v != "" {
 		return v
 	}
+	// Imported overrides can use a country name in place of its code.
 	if v := overrides[strings.ToLower(mapping.Names[pos.Country])]; v != "" {
 		return v
 	}
+	// A stock regional accent can override the country default.
 	if v := mapping.Regions[pos.Country][strings.ToLower(pos.Region)]; v != "" {
 		return v
 	}

@@ -23,6 +23,7 @@ for name, expected in snapshot.items():
 admin = {}
 for line in (source / "admin1CodesASCII.txt").read_text(encoding="utf8").splitlines():
     key, label, *_ = line.split("\t")
+    # The city rows use country and admin codes. The accent rules use region names.
     admin[key] = label
 
 with zipfile.ZipFile(source / "cities1000.zip") as archive:
@@ -30,5 +31,7 @@ with zipfile.ZipFile(source / "cities1000.zip") as archive:
     for line in archive.read("cities1000.txt").decode("utf8").splitlines():
         fields = line.split("\t")
         area = admin.get(f"{fields[8]}.{fields[10]}", "")
+        # The Go loader expects latitude, longitude, country code, and region in this order.
         rows.append("\t".join((fields[4], fields[5], fields[8], area)))
+# Omit the gzip timestamp so the same snapshot produces the same index.
 out.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode(), mtime=0))

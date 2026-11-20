@@ -22,6 +22,7 @@ func TestLiveSimConnect(t *testing.T) {
 	}
 	defer sim.Close()
 	session := New(sim, Panel())
+	// The handshake can succeed before Couatl is ready in a loaded flight.
 	ready, speed, err := session.Status(ctx)
 	if err != nil {
 		t.Fatal(err)

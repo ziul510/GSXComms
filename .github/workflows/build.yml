@@ -12,6 +12,7 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 25
+    # The release job needs write access to attach assets.
     permissions:
       contents: write
     env:
@@ -48,6 +49,7 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $nsis
           "MAKENSIS=$(Join-Path $nsis 'nsis-3.12/makensis.exe')" >> $env:GITHUB_ENV
 
+          # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes.
           $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
           $packages = $export.buildDependencies
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==$($packages.torch)"
@@ -70,6 +72,7 @@ jobs:
           New-Item -ItemType Directory -Path build/release-package, dist/release | Out-Null
           Copy-Item -LiteralPath "dist/$exeName" -Destination dist/release
           Copy-Item -LiteralPath "dist/release/$exeName", 'LICENSE', 'THIRD_PARTY_NOTICES' -Destination build/release-package
+          # The archive carries its own checksums for checking the extracted files.
           $checksums = $exeName, 'LICENSE', 'THIRD_PARTY_NOTICES' | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "build/release-package/$_").Hash.ToLowerInvariant()
             "$hash  $_"
@@ -89,6 +92,7 @@ jobs:
       - name: Attach files to published release
         if: github.event_name == 'release'
         shell: pwsh
+        # The CLI needs a token because checkout leaves no credentials behind.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

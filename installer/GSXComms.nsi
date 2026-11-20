@@ -22,6 +22,7 @@ Icon "..\internal\assets\gsxcommsThanksToAviationist101.ico"
 !macro CheckAvailable file
   ${If} ${FileExists} "$INSTDIR\${file}"
     ClearErrors
+    ; Append mode probes for a write lock without truncating the binary.
     FileOpen $0 "$INSTDIR\${file}" a
     ${If} ${Errors}
       MessageBox MB_OK|MB_ICONSTOP "Setup cannot update ${file}. Close GSXComms and try again." /SD IDOK
@@ -59,6 +60,7 @@ Section "GSXComms"
   File "..\build\gsxmute.exe"
   File "..\LICENSE"
   File "..\THIRD_PARTY_NOTICES"
+  ; Both workers use the same executable name but keep separate DLL directories.
   SetOutPath "$INSTDIR\workers\sherpa"
   File "..\build\workers\sherpa\gsxspeech.exe"
   File "..\build\workers\sherpa\sherpa-onnx-c-api.dll"
@@ -88,6 +90,7 @@ Section "Uninstall"
   SetShellVarContext current
   ReadRegStr $1 HKCU "${UNINSTALL}" "InstallLocation"
   ${If} $1 == ""
+    ; Require app-specific files before trusting a path with no registry entry.
     ${If} ${FileExists} "$INSTDIR\gsxremotecontrol.exe"
     ${AndIf} ${FileExists} "$INSTDIR\workers\sherpa\sherpa-onnx-c-api.dll"
       StrCpy $1 $INSTDIR
@@ -119,6 +122,7 @@ Section "Uninstall"
     SetErrorLevel 2
     Abort
   ${EndIf}
+  ; Remove only empty directories so extra files under the install path survive.
   RMDir "$INSTDIR\workers\sherpa"
   RMDir "$INSTDIR\workers\kokoro"
   RMDir "$INSTDIR\workers"

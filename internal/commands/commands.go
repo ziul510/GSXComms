@@ -46,6 +46,7 @@ func init() {
 	for key := range language.NATO {
 		pattern = append(pattern, regexp.QuoteMeta(key))
 	}
+	// Try longer NATO phrases before shorter alternatives sharing a prefix.
 	sort.Slice(pattern, func(i, j int) bool { return len(pattern[i]) > len(pattern[j]) })
 	natoPattern = regexp.MustCompile("(?i)" + strings.Join(pattern, "|"))
 }
@@ -79,6 +80,7 @@ func Load(dir string) (Vocabulary, error) {
 }
 
 func list(raw json.RawMessage) []string {
+	// Older vocabulary entries can store a single keyword as a string.
 	var values []string
 	if err := json.Unmarshal(raw, &values); err != nil {
 		var value string
@@ -113,6 +115,7 @@ func Parse(raw []byte) (Vocabulary, error) {
 		}
 		e := entry{Name: name.(string)}
 		var parts map[string]json.RawMessage
+		// Bias variants guide recognition while keywords drive service routing.
 		if json.Unmarshal(raw, &parts) == nil {
 			e.Keywords, e.Bias = list(parts["keywords"]), list(parts["bias_variants"])
 		} else {
@@ -125,6 +128,7 @@ func Parse(raw []byte) (Vocabulary, error) {
 		if len(e.Keywords) == 0 {
 			continue
 		}
+		// Bias variants normalize to the first service keyword.
 		canonical := strings.ToLower(strings.TrimSpace(e.Keywords[0]))
 		for _, variant := range e.Bias {
 			variant = strings.ToLower(strings.TrimSpace(variant))
@@ -163,6 +167,7 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 	for _, match := range re.FindAllStringIndex(text, -1) {
 		left, _ := utf8.DecodeLastRuneInString(text[:match[0]])
 		right, _ := utf8.DecodeRuneInString(text[match[1]:])
+		// A match bordered by Unicode word characters is part of another word.
 		if word(left) || word(right) || (noHyphen && left == '-') {
 			continue
 		}
@@ -195,6 +200,7 @@ type Action struct {
 }
 
 func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatching bool) Action {
+	// Normalization may rewrite a preset codeword, so try the original words too.
 	for _, candidate := range []string{text, raw} {
 		for _, p := range presets {
 			if p.Enabled && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
@@ -257,6 +263,7 @@ func Tokens(text string) []string {
 	var tokens []string
 	for _, word := range words {
 		if n := language.Numbers[word]; n != "" {
+			// Keep the spoken word for text matching and add its digit for numbered choices.
 			tokens = append(tokens, n)
 		}
 		tokens = append(tokens, word)
@@ -375,6 +382,7 @@ func score(text, option string, index int) int {
 		return 0
 	}
 	x, y := strings.Join(a, " "), strings.Join(b, " ")
+	// Leave implicit submenu navigation to the GSX session.
 	if strings.Contains(y, "additional services") && !strings.Contains(x, "additional") {
 		return 0
 	}
@@ -395,6 +403,7 @@ func score(text, option string, index int) int {
 			}
 			negated = negated || opposed(sw, ow)
 		}
+		// Opposite actions like connect and disconnect can share a fuzzy match.
 		if negated {
 			n -= 60
 		}
@@ -439,6 +448,7 @@ func CorrectMenu(text string, options []string) (string, float64) {
 				combined = max(combined, wordRatio(x, y))
 			}
 		}
+		// Use phrase similarity to break ties from equally close words.
 		if combined >= 0.75 && (combined > bestRatio || (combined == bestRatio && chars > bestChars)) {
 			best, bestRatio, bestChars = option, combined, chars
 		}

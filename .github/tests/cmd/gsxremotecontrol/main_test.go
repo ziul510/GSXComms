@@ -35,6 +35,7 @@ func TestIPCKeepsPollingBeforeSimulatorStarts(t *testing.T) {
 			}
 		})
 	}()
+	// Leave stdin idle to verify the retry timer works without a client request.
 	for range 5 {
 		select {
 		case <-attempts:
@@ -94,6 +95,7 @@ func TestIPCReconnectsAfterEstablishedTransportFails(t *testing.T) {
 	defer cancel()
 	in, client := io.Pipe()
 	defer client.Close()
+	// Start with an established connection that fails every health poll.
 	failed := &ipcDroppedTransport{}
 	session := gsx.New(failed, t.TempDir())
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
@@ -148,6 +150,7 @@ func TestIPCReportsMenuReadiness(t *testing.T) {
 			ipc(t.Context(), session, strings.NewReader("OPEN_MENU\nSHUTDOWN\n"), &out, connect)
 
 			decoder := json.NewDecoder(&out)
+			// IPC readiness and menu readiness are separate replies.
 			var ready struct{ Ready bool }
 			var response struct {
 				MenuOpened *bool `json:"menu_opened"`

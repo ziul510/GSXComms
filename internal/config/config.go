@@ -77,6 +77,7 @@ func Get[T any](v Values, key string) T {
 	if !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && json.Unmarshal(raw, &value) == nil {
 		return value
 	}
+	// A failed decode can leave partial state in value. Start fresh for the fallback.
 	var fallback T
 	_ = json.Unmarshal(defaults[key], &fallback)
 	return fallback
@@ -104,6 +105,7 @@ func Load(dir string) (Values, error) {
 	}
 	values, _, err := decode(data)
 	if err != nil {
+		// Keep the bad file around in case its settings can be recovered.
 		backup := fmt.Sprintf("%s.corrupt.%d", path, time.Now().UnixNano())
 		if renameErr := os.Rename(path, backup); renameErr != nil {
 			return Defaults(), errors.Join(err, renameErr)
@@ -124,6 +126,7 @@ func equalValues(a, b Values) bool {
 	}
 	for key, value := range a {
 		var x, y bytes.Buffer
+		// Ignore JSON spacing so opening the app doesn't rewrite settings needlessly.
 		if json.Compact(&x, value) != nil || json.Compact(&y, b[key]) != nil || !bytes.Equal(x.Bytes(), y.Bytes()) {
 			return false
 		}
@@ -137,6 +140,7 @@ func decode(data []byte) (Values, string, error) {
 		return nil, "", errors.New("expected a JSON settings object")
 	}
 	key := Get[string](saved, legacySecret)
+	// Older settings can omit new keys and still carry user-defined values.
 	values := Defaults()
 	for name, raw := range saved {
 		if name != legacySecret {
@@ -169,6 +173,7 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	if destination != nil && !destination.IsDir() {
 		return nil, errors.New("app data path must be a directory")
 	}
+	// Different paths can point to the same directory.
 	if destination != nil && os.SameFile(original, destination) {
 		return nil, errors.New("choose a legacy directory separate from the app data directory")
 	}
@@ -212,10 +217,12 @@ func importSettings(dir, source string, storeKey, migrateKey func(string) error)
 	}
 	files = append(files, asset{SettingsFile, settings})
 	if key == "" {
+		// A keyless import can still overwrite a destination holding a legacy key.
 		if err := preserveSettingsCredential(filepath.Join(dir, SettingsFile), migrateKey); err != nil {
 			return nil, err
 		}
 	}
+	// A later file or vault failure must restore the earlier destination writes.
 	var undo []func() error
 	rollback := func(err error) (Values, error) {
 		for i := len(undo) - 1; i >= 0; i-- {
@@ -295,6 +302,7 @@ func WriteAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
+	// Stage beside the destination so replacement stays on the same volume.
 	file, err := os.CreateTemp(dir, ".gsxcomms-*.tmp")
 	if err != nil {
 		return err
@@ -352,6 +360,7 @@ func migratePresets(raw json.RawMessage) []Preset {
 	result := make([]Preset, 0, len(entries))
 	names, codewords := map[string]bool{}, map[string]bool{}
 	for _, entry := range entries {
+		// Omitted legacy enabled flags should leave those presets active.
 		p := Preset{Enabled: true}
 		if json.Unmarshal(entry, &p) != nil {
 			continue

@@ -21,6 +21,7 @@ type playback struct {
 }
 
 func (s *state) cue(prefs config.Values, name string, high bool) {
+	// The bundled fallback cues are raw 24 kHz PCM.
 	s.queueAudio(playback{prefs: prefs, cue: strings.ToLower(name), rate: 24000}, high)
 }
 
@@ -41,6 +42,7 @@ func (s *state) playbackLoop() {
 	for s.ctx.Err() == nil {
 		var next playback
 		select {
+		// Check priority first so an already waiting cue wins over normal playback.
 		case next = <-s.audioPriority:
 		default:
 			select {
@@ -57,6 +59,7 @@ func (s *state) playbackLoop() {
 			}
 			next.pcm = pcm
 			if next.cue == "error" {
+				// Keep the error cue's mute override local to that request.
 				next.prefs = next.prefs.Copy()
 				next.prefs.Put("mute_gsx_audio_during_crew_voice", false)
 			}

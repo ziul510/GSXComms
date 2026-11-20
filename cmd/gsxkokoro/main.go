@@ -84,6 +84,7 @@ func main() {
 func (s *runtimeState) initialize() error {
 	kernel := windows.NewLazySystemDLL("kernel32.dll")
 	set, add := kernel.NewProc("SetDefaultDllDirectories"), kernel.NewProc("AddDllDirectory")
+	// Resolve native dependencies from Windows and the worker's own directory.
 	const restricted = windows.LOAD_LIBRARY_SEARCH_SYSTEM32 | windows.LOAD_LIBRARY_SEARCH_USER_DIRS
 	if ok, _, err := set.Call(restricted); ok == 0 {
 		return err
@@ -166,6 +167,7 @@ func (s *runtimeState) phonemize(text string) (string, error) {
 			if err := g2p.Run([]ort.Value{input}, []ort.Value{output}); err != nil {
 				return nil, err
 			}
+			// Keep only predictions for the original tokens. The rest are padding.
 			return append([]int64(nil), output.GetData()[:len(seq)]...), nil
 		})
 		if err != nil {
@@ -218,6 +220,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 		return ort.NewDynamicAdvancedSession(paths["model.onnx"], []string{"input_ids", "style", "speed"}, []string{output[0].Name}, options)
 	}
 	var session *ort.DynamicAdvancedSession
+	// The probe can succeed even when the CUDA provider can't load this graph.
 	if s.gpu != nil {
 		session, err = open(s.gpu)
 	}
@@ -267,6 +270,7 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			if len(first) == 0 {
 				continue
 			}
+			// Leave a zero token at each edge of the Kokoro input.
 			tokens := make([]int64, len(first)+2)
 			for j, r := range first {
 				tokens[j+1] = s.vocab[string(r)]
@@ -283,6 +287,7 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			}
 		}
 		if i < len(sentences)-1 && len(output) > 0 {
+			// At 24 kHz mono PCM16, 16800 bytes gives a 350 ms pause.
 			output = append(output, make([]byte, 16800)...)
 		}
 	}

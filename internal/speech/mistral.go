@@ -25,6 +25,7 @@ const mistralAPI = "https://api.mistral.ai/v1/"
 var errInvalidTranscription = errors.New("Mistral returned an invalid transcription response")
 
 func Usable(pcm []byte) bool {
+	// At 16 kHz PCM16, 8000 bytes is a quarter second. Partial samples are invalid.
 	if len(pcm) < 8000 || len(pcm)%2 != 0 {
 		return false
 	}
@@ -70,6 +71,7 @@ func request(ctx context.Context, key, method, endpoint string, data []byte, tim
 	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Keep the token and audio on the configured endpoint by rejecting redirects.
 	client := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -101,11 +103,13 @@ func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string,
 		model = "voxtral-small-latest"
 	}
 	instruction := strings.TrimSpace(prompt)
+	// Use the same service terms the local command router can recognize.
 	if table != "" {
 		instruction += "\n\nHotwords table from words.json (use ONLY these EXACT English words for services):\n" + table
 	}
 	payload := map[string]any{"model": model, "messages": []any{map[string]any{
 		"role": "user", "content": []any{
+			// JSON encodes the WAV byte slice as the base64 audio field.
 			map[string]any{"type": "input_audio", "input_audio": map[string]any{"data": wave(pcm), "format": "wav"}},
 			map[string]any{"type": "text", "text": instruction},
 		},
@@ -131,6 +135,7 @@ func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string,
 	}
 	content := result.Choices[0].Message.Content
 	var transcript string
+	// The API can return plain text or an array of typed content parts.
 	if json.Unmarshal(content, &transcript) != nil {
 		var parts []struct{ Type, Text string }
 		if json.Unmarshal(content, &parts) != nil {

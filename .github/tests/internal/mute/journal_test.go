@@ -29,6 +29,7 @@ func (m *mock) Visit(visit func(audioSession) error) error {
 func TestJournalSurvivesPlayer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	m := &mock{id: identity{"endpoint", "instance", 35, 9}}
+	// Inspect the journal at the moment the backend is about to change mute state.
 	m.before = func(next bool) {
 		if next {
 			journal, err := read(path)
@@ -48,6 +49,7 @@ func TestJournalSurvivesPlayer(t *testing.T) {
 	}
 }
 func TestFailedWriteLeavesAudioAlone(t *testing.T) {
+	// A file in place of the parent directory forces the journal write to fail.
 	parent := filepath.Join(t.TempDir(), "blocked")
 	if err := os.WriteFile(parent, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -116,6 +118,7 @@ func TestPendingEndpointDoesNotBlockNewSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	hidden := identity{"unplugged", "old", 35, 9}
 	active := &mock{id: identity{"headphones", "new", 35, 9}}
+	// Keep the old process alive but leave its unplugged endpoint out of enumeration.
 	api := hiddenSession{active, hidden}
 	if err := write(path, []record{{ID: hidden}}); err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestLegacySettingsRoundTrip(t *testing.T) {
+	// Include an unknown setting and an old preset to exercise migration and preservation.
 	legacy := []byte(`{"speech_provider":"retired","use_gsx_choice":true,"custom":{"preserve":true},"presets":[{"name":" Ramp   In ","codeword":" Hi  Ramp ","services":["gpu","JETWAY","gpu","skip"]}]}`)
 	source, dest := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, SettingsFile), legacy, 0600); err != nil {
@@ -51,6 +52,7 @@ func TestInvalidImportPreservesDestination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Seed the destination vocabulary so the test can detect a partial import.
 	path := filepath.Join(dest, "words.json")
 	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
@@ -127,6 +129,7 @@ func TestCredentialFailureRollsBackImport(t *testing.T) {
 		}
 	}
 	unavailable := errors.New("vault unavailable")
+	// Inject a late vault failure after the destination files have been written.
 	if _, err := importSettings(dest, source, func(string) error { return unavailable }, nil); !errors.Is(err, unavailable) {
 		t.Fatalf("expected vault failure: %v", err)
 	}
@@ -156,6 +159,7 @@ func TestSettingsSavePreservesLegacyCredentialUntilMigrated(t *testing.T) {
 	if err != nil || !bytes.Equal(got, legacy) {
 		t.Fatalf("save changed the settings before migration: %v", err)
 	}
+	// Retry with a working vault to check that migration can still read the old key.
 	migrated := false
 	if err := save(dir, values, func(key string) error {
 		migrated = key == "old-fixture"
@@ -200,6 +204,7 @@ func TestImportWithoutCredentialPreservesUnmigratedDestination(t *testing.T) {
 }
 
 func TestImplicitMigrationKeepsExistingVaultCredential(t *testing.T) {
+	// Only an empty vault should accept a key from implicit migration.
 	for _, stored := range []string{"", "new-fixture"} {
 		called := false
 		err := migrateKeyIfMissing("old-fixture", func() (string, error) {

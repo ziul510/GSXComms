@@ -36,6 +36,7 @@ func audioDevices(input bool) []string {
 			out = append(out, "")
 			continue
 		}
+		// The product name starts at byte 8 in both WinMM capability structs.
 		name := unsafe.Slice((*uint16)(unsafe.Pointer(&raw[8])), 32)
 		out = append(out, windows.UTF16ToString(name))
 	}
@@ -111,6 +112,7 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	defer windows.CloseHandle(event)
 	open := mm.NewProc("waveInOpen")
 	id := deviceID(true, name)
+	// CALLBACK_EVENT lets WinMM wake capture as buffers return.
 	openDevice := func(id uintptr) error {
 		return mmCall(open, uintptr(unsafe.Pointer(&handle)), id, uintptr(unsafe.Pointer(&format)), uintptr(event), 0, 0x50000)
 	}
@@ -123,6 +125,7 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	prep := mm.NewProc("waveInPrepareHeader")
 	unprep := mm.NewProc("waveInUnprepareHeader")
 	add := mm.NewProc("waveInAddBuffer")
+	// Two buffers let capture continue while Go drains a finished buffer.
 	var buffers [2][3200]byte
 	var headers [2]waveHeader
 	hs := unsafe.Sizeof(headers[0])
@@ -158,6 +161,7 @@ func capture(ctx context.Context, name string, limit int, allowFallback bool) ([
 	active := true
 	next := 0
 	for active {
+		// Reset returns the partial buffer so releasing PTT keeps the tail of the recording.
 		if ctx.Err() != nil || time.Now().After(t) {
 			_ = mmCall(reset, handle)
 			active = false
@@ -228,6 +232,7 @@ func playPCM(ctx context.Context, device string, pcm []byte, rate int) error {
 		return err
 	}
 	for h.flags&1 == 0 {
+		// Return the queued buffer before the deferred unprepare and unpin.
 		if ctx.Err() != nil {
 			_ = mmCall(mm.NewProc("waveOutReset"), handle)
 			return ctx.Err()

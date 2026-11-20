@@ -23,6 +23,7 @@ func main() {
 	var hold func() error
 	if !*recovery {
 		hold = func() error {
+			// Signal the player only once mute setup has succeeded.
 			if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
 				return err
 			}
@@ -30,6 +31,7 @@ func main() {
 			return err
 		}
 	}
+	// A nil hold lets the recovery process replay the journal without taking a new mute.
 	if err := mute.Run(*dir, hold); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

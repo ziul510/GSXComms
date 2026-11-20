@@ -33,6 +33,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 		} else {
 			entries = append(entries, value)
 		}
+		// Save the edit to the Settings draft so the parent dialog controls persistence.
 		draft.Put("presets", entries)
 		form = config.Preset{Enabled: true}
 		selected = -1
@@ -46,6 +47,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 		for i, p := range entries {
 			entry := buttonConfig("preset-"+strconv.Itoa(i), p.Name, 0, false, false, func() {
 				selected, form, message, editing = i, p, "", true
+				// Editing the service order must leave the saved entry intact until Save preset.
 				form.Services = slices.Clone(p.Services)
 			})
 			entry.Sizing, entry.Height, entry.HAlign = gui.FillFit, 0, gui.Some(gui.HAlignLeft)
@@ -113,6 +115,7 @@ func (s *state) openPresets(draft config.Values, parent *gui.Window, onClose fun
 			editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, Content: actions}))
 			editorCard := outlinedCard(card, gui.PadAll(12), 10, editor...)
 			editorCard.ColorBorder = accent
+			// Insert below the selected row, or at the top when creating a preset.
 			body = slices.Insert(body, selected+1, gui.Column(editorCard))
 		}
 		newPreset := buttonConfig("new", "+ New", 96, true, false, func() {

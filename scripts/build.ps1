@@ -12,6 +12,7 @@ $PhonemizerDir = (Resolve-Path -LiteralPath $PhonemizerDir).Path
 $tts = Join-Path $repo 'build/workers/kokoro'
 New-Item -ItemType Directory -Path $tts -Force | Out-Null
 $export = Get-Content -LiteralPath 'docs/phonemizer-export.json' -Raw | ConvertFrom-Json -AsHashtable
+# The worker expects the tokenizer and graph exported from the same pinned checkpoint.
 foreach ($file in $export.files.Keys) {
     if ((Get-FileHash -LiteralPath (Join-Path $PhonemizerDir $file)).Hash -ne $export.files[$file]) {
         throw "Unexpected phonemizer export for $file"
@@ -28,6 +29,7 @@ $runtimeHashes = @{}
 foreach ($entry in $inventory.components) {
     if ($entry.runtimeFile) { $runtimeHashes[$entry.runtimeFile] = $entry.sha256 }
 }
+# Verify the DLLs that will ship against the recorded redistribution inventory.
 foreach ($file in $runtimeHashes.Keys) {
     $source = Join-Path $modules $file
     if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $runtimeHashes[$file]) {
@@ -41,8 +43,10 @@ $env:CGO_ENABLED = '1'
 go build -trimpath -o (Join-Path $worker 'gsxspeech.exe') ./cmd/gsxspeech
 if ($LASTEXITCODE -ne 0) { throw 'Speech worker build failed' }
 Copy-Item -LiteralPath (Join-Path $worker 'onnxruntime.dll') -Destination $tts -Force
+# Worker launch always looks for gsxspeech.exe under the selected provider directory.
 go build -trimpath -o (Join-Path $tts 'gsxspeech.exe') ./cmd/gsxkokoro
 if ($LASTEXITCODE -ne 0) { throw 'Kokoro worker build failed' }
+# Native model libraries run in the workers, so the main executable can build without CGO.
 $env:CGO_ENABLED = '0'
 $modfile = & "$PSScriptRoot/go-gui-overlay.ps1"
 go build -modfile $modfile -trimpath -ldflags '-H windowsgui' -o 'build/GSXComms.exe' ./cmd/gsxcomms
@@ -52,6 +56,7 @@ if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
 go build -trimpath -o 'build/gsxmute.exe' ./cmd/gsxmute
 if ($LASTEXITCODE -ne 0) { throw 'GSX mute watchdog build failed' }
 & "$PSScriptRoot/notices.ps1" -Output 'THIRD_PARTY_NOTICES' -NSISRoot (Split-Path -Parent $MakeNSIS)
+# NSIS uses a single file for the license page.
 Set-Content -LiteralPath 'build/setup-notices.txt' -Encoding utf8 -Value @(
     (Get-Content -LiteralPath 'LICENSE' -Raw),
     (Get-Content -LiteralPath 'THIRD_PARTY_NOTICES' -Raw)

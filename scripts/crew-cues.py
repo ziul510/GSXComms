@@ -37,6 +37,7 @@ def call(op, **data):
     global index
     index += 1
     payload = json.dumps(dict(version=1, id=index, op=op, **data)).encode()
+    # Match the worker's little-endian frame length before each JSON message.
     p.stdin.write(struct.pack("<I", len(payload)) + payload)
     p.stdin.flush()
     size = struct.unpack("<I", p.stdout.read(4))[0]
@@ -49,6 +50,7 @@ def call(op, **data):
 try:
     call("hello")
     paths = dict()
+    # The worker indexes model files by basename even when the cache uses subdirectories.
     for relative in ("onnx/model.onnx","voices/am_adam.bin","tokenizer.json"):
         path = model_root / relative
         paths[path.name] = str(path)
@@ -57,11 +59,13 @@ try:
         reply = call("synthesize", text=text)
         pcm = base64.b64decode(reply["pcm"])
         assert reply["sample_rate"] == 24000 and len(pcm) >= 12000
+        # Keep gzip timestamps fixed so identical PCM produces identical assets.
         (output / f"{name}.pcm.gz").write_bytes(gzip.compress(pcm, mtime=0))
         print(f"Generated {name}", flush=True)
     call("shutdown")
     p.wait(timeout=3)
 finally:
+    # A failed generation can leave the worker waiting for another request.
     if p.poll() is None:
         p.kill()
         p.wait()

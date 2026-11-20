@@ -44,6 +44,7 @@ func TestResumeAndPublishModel(t *testing.T) {
 		resp.Header.Set("Content-Range", fmt.Sprintf("bytes 7-%d/%d", len(content)-1, len(content)))
 		return resp, nil
 	})}
+	// A staged model must stay unavailable for inference until publishing succeeds.
 	if m.Ready(dir) {
 		t.Fatal("staging data became usable before verification")
 	}
@@ -78,6 +79,7 @@ func TestActiveDownloadOwnsItsStagingDirectory(t *testing.T) {
 	case err := <-finished:
 		t.Fatalf("download stopped before requesting the file: %v", err)
 	}
+	// Pause the download so deletion hits the lock while staging is active.
 	cacheVisible := m.Cached(dir) && !m.Ready(dir)
 	deleteErr := m.Delete(dir)
 	close(release)
@@ -123,6 +125,7 @@ func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
 	requests := 0
 	client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 		requests++
+		// Simulate an early EOF and leave three bytes for the later resume request.
 		if requests == 1 {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body[:3]))}, nil
 		}
@@ -193,6 +196,7 @@ func TestCacheImportPreservesResumableModel(t *testing.T) {
 			if err := m.Download(t.Context(), dir, func(int64, int64) {}); err != nil || !f.matches(m.Paths(dir)[f.Path]) {
 				t.Fatalf("publishing model: %v", err)
 			}
+			// A valid cache can skip HTTP. A corrupt cache must use the existing partial download.
 			wantRequests := 0
 			if name == "corrupt" {
 				wantRequests = 1
