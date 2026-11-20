@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 
 func TestAccentSetupSavesPackSelection(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
-	s := &state{ctx: t.Context(), dir: t.TempDir(), settingsDir: t.TempDir(), accentsDir: "Accents",
+	s := &state{ctx: t.Context(), dir: t.TempDir(), accentsDir: "Accents",
 		cfg: config.Defaults(), host: gui.NewApp(), saves: make(chan *saveRequest, 1), saved: make(chan struct{})}
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	go s.settingsWriter()
@@ -42,7 +43,7 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 			w.FrameFn()
 			s.main.FrameFn()
 			if w.CloseRequested() {
-				saved, err := config.Load(s.settingsDir)
+				saved, err := config.Load(s.dir)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -65,8 +66,8 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 			t.Errorf("extracted packs do not match settings for %s", pack.name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("settings writer used the runtime data directory: %v", err)
+	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); err != nil {
+		t.Fatal(err)
 	}
 	s.openAccents()
 	w = gui.NewTestWindow(t, <-s.host.PendingOpen())
@@ -82,19 +83,42 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 
 func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	dir := t.TempDir()
-	// Exercise the save gate independently of extracting hundreds of MP3s.
-	if err := os.MkdirAll(filepath.Join(dir, "Accents", packs[0].name), 0700); err != nil {
+	accentsDir := filepath.Join(dir, "Accents")
+	if err := os.MkdirAll(accentsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Portable installs extract recordings beside the source archive.
+	pack := packs[0]
+	file, err := os.Create(filepath.Join(accentsDir, pack.name+".zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	for _, accent := range pack.accents {
+		for _, voice := range []string{"female", "male"} {
+			entry, err := archive.Create(strings.ToLower(accent) + "/goahead/" + voice + "11.ai.mp3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := entry.Write([]byte("fixture")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := errors.Join(archive.Close(), file.Close()); err != nil {
 		t.Fatal(err)
 	}
 	complete := false
-	settingsDir := t.TempDir()
-	cfg := firstAccentWindow(t.Context(), dir, settingsDir, t.TempDir(), config.Defaults(), func(prefs config.Values) {
+	cfg := firstAccentWindow(t.Context(), dir, accentsDir, config.Defaults(), func(prefs config.Values) {
 		complete = config.Get[bool](prefs, "accent_setup_complete")
 	})
 	w := gui.NewTestWindow(t, cfg)
 	w.TestRender(nil)
 	if complete || w.CloseRequested() {
 		t.Fatal("setup completed before the user saved")
+	}
+	if err := w.TestClick("accent-packs:pack-" + pack.name); err != nil {
+		t.Fatal(err)
 	}
 	if err := w.TestClick("save-accents"); err != nil {
 		t.Fatal(err)
@@ -103,12 +127,15 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 		w.FrameFn()
 		time.Sleep(10 * time.Millisecond)
 	}
-	data, err := os.ReadFile(filepath.Join(settingsDir, config.SettingsFile))
+	data, err := os.ReadFile(filepath.Join(dir, config.SettingsFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !complete || !w.CloseRequested() || !bytes.Contains(data, []byte(`"accent_setup_complete": true`)) {
 		t.Fatal("setup did not finish after writing the completed setting")
+	}
+	if !accentPackInstalled(accentsDir, pack.name) {
+		t.Fatal("no recordings alongside the archive")
 	}
 }
 

@@ -177,7 +177,7 @@
       "version": "reference snapshot",
       "license": "Apache-2.0 (project owner's authorization)",
       "source": "GSXComms reference snapshot",
-      "mode": "bundled; user-authored vocabulary and mappings may also be imported"
+      "mode": "bundled with optional local vocabulary and mapping overrides"
     },
     {
       "name": "flybywireless-simconnect",

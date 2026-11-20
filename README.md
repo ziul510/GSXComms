@@ -2,19 +2,11 @@
 
 ## Install and start
 
-Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. GSXComms creates `user_settings.json` with defaults beside the executable when the file is missing. Downloaded models, voice packs, and runtime overrides use `%LOCALAPPDATA%\GSXCommsGo`. `--data-dir` overrides both locations.
+Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. The folder holds `user_settings.json`, downloaded models under `models`, and extracted voice packs under `Accents`. Optional `words.json` and `accent_mappings.json` files in this folder override the bundled defaults. Use `--data-dir` to specify a different folder for settings and runtime files.
 
 The selected local speech model downloads and loads in the background at startup. **Settings** can retry a missing download or switch to an installed model. Enable the menu reader to download Kokoro. Choose **Set up Mistral** for the illustrated API key tutorial. Validating your key selects Mistral and stores the key in Windows Credential Manager. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
 
 On first launch, **Accent Setup** opens before the main window. Select at least one regional pack and a default accent, then save. Closing the wizard defers setup. You can reopen it from Settings. Deselected packs stay on disk for reuse. The recordings were generated with ElevenLabs. Crew voices use aircraft location and fall back to your default or another installed accent. **Force accent** applies to the next crew interaction.
-
-## Import legacy settings
-
-Close the Go app before importing. Pass `--import` with the path to the old `GSXCommsFiles` directory. This replaces the Go app's settings with migrated values, copies vocabulary and accent mapping overrides, and detects extracted legacy accent packs in their original locations. A controller that cannot be matched uniquely shows **Rebind required**. Local downloads reuse verified cached model files when available.
-
-```powershell
-& ".\GSXComms.exe" --import "C:\path\to\GSXCommsFiles"
-```
 
 ## Build
 

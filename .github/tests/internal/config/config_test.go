@@ -11,39 +11,23 @@ import (
 	"testing"
 )
 
-func TestLegacySettingsRoundTrip(t *testing.T) {
+func TestPortableSettingsNormalizeSavedValues(t *testing.T) {
 	// Include an unknown setting and an old preset to exercise migration and preservation
-	legacy := []byte(`{"speech_provider":"retired","use_gsx_choice":true,"custom":{"preserve":true},"presets":[{"name":" Ramp   In ","codeword":" Hi  Ramp ","services":["gpu","JETWAY","gpu","skip"]}]}`)
-	source, dest, settings := t.TempDir(), t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(source, SettingsFile), legacy, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "accent_mappings.json"), []byte("[{\"country\":\"Canada\",\"accent_used\":\"American\"}]"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Import(settings, dest, source); err != nil {
+	legacy := []byte(`{"speech_provider":"retired","use_gsx_choice":true,"legacy_accent_dir":"previous-install","custom":{"preserve":true},"presets":[{"name":" Ramp   In ","codeword":" Hi  Ramp ","services":["gpu","JETWAY","gpu","skip"]}]}`)
+	settings := t.TempDir()
+	if err := os.WriteFile(filepath.Join(settings, SettingsFile), legacy, 0600); err != nil {
 		t.Fatal(err)
 	}
 	v, err := Load(settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if Get[string](v, "speech_provider") != "parakeet" || v["use_gsx_choice"] != nil || !Get[map[string]bool](v, "custom")["preserve"] {
+	if Get[string](v, "speech_provider") != "parakeet" || v["use_gsx_choice"] != nil || v["legacy_accent_dir"] != nil || !Get[map[string]bool](v, "custom")["preserve"] {
 		t.Fatalf("incorrect migrated values")
-	}
-	if _, err := os.Stat(filepath.Join(dest, "accent_mappings.json")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, SettingsFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("import also placed settings with the runtime data: %v", err)
 	}
 	p := Get[[]Preset](v, "presets")
 	if len(p) != 1 || p[0].Name != "Ramp In" || p[0].Codeword != "hi ramp" || !p[0].Enabled || len(p[0].Services) != 2 || p[0].Services[0] != "GPU" || p[0].Services[1] != "JETWAY" {
 		t.Fatalf("presets = %+v", p)
-	}
-	before, err := os.ReadFile(filepath.Join(source, SettingsFile))
-	if err != nil || !bytes.Equal(before, legacy) {
-		t.Fatal("source changed")
 	}
 }
 
@@ -68,18 +52,6 @@ func TestPortableSettingsKeepExistingFile(t *testing.T) {
 }
 
 func TestPortableSettingsStartWithDefaults(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	runtimeDir, err := DataDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	// A previous build's settings must not bypass Accent Setup.
-	if err := os.WriteFile(filepath.Join(runtimeDir, SettingsFile), []byte(`{"accent_setup_complete":true}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	dir := t.TempDir()
 	if err := InitializeSettings(dir); err != nil {
 		t.Fatal(err)
@@ -94,7 +66,7 @@ func TestPortableSettingsStartWithDefaults(t *testing.T) {
 }
 
 func TestLegacyControllerBindingDropsSDLIndex(t *testing.T) {
-	v, _, err := decode([]byte(`{"ptt_bind":{"type":"joy","joy_id":0,"joy_name":"Flight Stick","button":3,"desc":"Flight Stick Btn 3"}}`))
+	v, err := decode([]byte(`{"ptt_bind":{"type":"joy","joy_id":0,"joy_name":"Flight Stick","button":3,"desc":"Flight Stick Btn 3"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,67 +76,14 @@ func TestLegacyControllerBindingDropsSDLIndex(t *testing.T) {
 	}
 }
 
-func TestInvalidImportPreservesDestination(t *testing.T) {
-	source, dest := t.TempDir(), t.TempDir()
-	for name, value := range map[string]string{
-		SettingsFile:           "{}",
-		"words.json":           "{}",
-		"accent_mappings.json": "{",
-	} {
-		if err := os.WriteFile(filepath.Join(source, name), []byte(value), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Seed the destination vocabulary so the test can detect a partial import
-	path := filepath.Join(dest, "words.json")
-	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Import(dest, dest, source); err == nil {
-		t.Fatal("invalid accent mappings accepted")
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "original" {
-		t.Fatalf("destination was changed: %q, %v", data, err)
-	}
-	if _, err := Import(source, source, filepath.Join(source, ".")); err == nil {
-		t.Fatal("import accepted its own source as destination")
-	}
-}
-
-func TestImportRejectsMalformedAccentEntries(t *testing.T) {
-	source, dest := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(source, SettingsFile), []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	const filename = "accent_mappings.json"
-	prior := []byte(`[{"country":"Canada","accent_used":"American"}]`)
-	path := filepath.Join(dest, filename)
-	if err := os.WriteFile(path, prior, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// Try both the wrong entry shape and the wrong field type
-	for _, raw := range []string{`[42]`, `[{"country":"Canada","accent_used":42}]`} {
-		if err := os.WriteFile(filepath.Join(source, filename), []byte(raw), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Import(dest, dest, source); err == nil {
-			t.Errorf("accepted malformed accent entries: %s", raw)
-		}
-		got, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(got, prior) {
-			t.Fatalf("existing overrides changed: %v", err)
-		}
-	}
-}
-
 func TestMigrateDownloadFlags(t *testing.T) {
 	// Retired download flags should be removed while the installed accent selection survives
-	values, _, err := decode([]byte(`{"first_launch":true,"model_downloaded_parakeet":true,"installed_packs":["custom"]}`))
+	values, err := decode([]byte(`{"first_launch":true,"model_downloaded_parakeet":true,"installed_packs":["custom"]}`))
 	if err != nil || values["first_launch"] != nil || values["model_downloaded_parakeet"] != nil {
 		t.Fatalf("obsolete settings survived migration: %v", err)
 	}
 	if packs := Get[[]string](values, "installed_packs"); len(packs) != 1 || packs[0] != "custom" {
-		t.Fatal("imported accent pack selection was lost")
+		t.Fatal("saved accent pack selection was lost")
 	}
 }
 
@@ -179,32 +98,6 @@ func TestInvalidBindingUsesCleanDefaults(t *testing.T) {
 	values.Put("auto_connect_sim", nil)
 	if !Get[bool](values, "auto_connect_sim") {
 		t.Fatal("null did not fall back to the default")
-	}
-}
-
-func TestCredentialFailureRollsBackImport(t *testing.T) {
-	source, dest := t.TempDir(), t.TempDir()
-	before := []byte(`{"auto_connect_sim":false}`)
-	for path, data := range map[string][]byte{
-		filepath.Join(source, SettingsFile): []byte(`{"mistral_api_key":"test"}`),
-		filepath.Join(source, "words.json"): []byte("{}"),
-		filepath.Join(dest, SettingsFile):   before,
-	} {
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	unavailable := errors.New("vault unavailable")
-	// Inject a late vault failure after the destination files have been written
-	if _, err := importSettings(dest, dest, source, func(string) error { return unavailable }, nil); !errors.Is(err, unavailable) {
-		t.Fatalf("expected vault failure: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dest, SettingsFile))
-	if err != nil || !bytes.Equal(got, before) {
-		t.Fatalf("original settings were not restored: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "words.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("new vocabulary survived failed import: %v", err)
 	}
 }
 
@@ -241,55 +134,6 @@ func TestSettingsSavePreservesLegacyCredentialUntilMigrated(t *testing.T) {
 	got, err = os.ReadFile(path)
 	if err != nil || bytes.Contains(got, []byte(legacySecret)) {
 		t.Fatalf("legacy credential remained in the settings file: %v", err)
-	}
-}
-
-func TestImportWithoutCredentialPreservesUnmigratedDestination(t *testing.T) {
-	source, dest, settings := t.TempDir(), t.TempDir(), t.TempDir()
-	path := filepath.Join(settings, SettingsFile)
-	// The existing portable file contains the only copy of the key.
-	legacy := []byte(`{"mistral_api_key":"old-fixture"}`)
-	for name, data := range map[string][]byte{
-		path:                                legacy,
-		filepath.Join(source, SettingsFile): []byte(`{"auto_connect_sim":false}`),
-		filepath.Join(source, "words.json"): []byte("{}"),
-	} {
-		if err := os.WriteFile(name, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	unavailable := errors.New("vault unavailable")
-	if _, err := importSettings(settings, dest, source, nil, func(string) error { return unavailable }); !errors.Is(err, unavailable) {
-		t.Errorf("expected vault failure, got %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(got, legacy) {
-		t.Fatalf("import changed the settings before migration: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "words.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("import copied vocabulary before migration: %v", err)
-	}
-}
-
-func TestImportIgnoresSettingsInRuntimeDirectory(t *testing.T) {
-	source, data, settings := t.TempDir(), t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(source, SettingsFile), []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(data, SettingsFile)
-	legacy := []byte(`{"mistral_api_key":"old-fixture"}`)
-	if err := os.WriteFile(path, legacy, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := importSettings(settings, data, source, nil, func(string) error {
-		t.Fatal("import tried to migrate a key from the runtime directory")
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(got, legacy) {
-		t.Fatalf("import changed the runtime directory settings file: %v", err)
 	}
 }
 

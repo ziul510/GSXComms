@@ -68,7 +68,7 @@ type Vocabulary struct {
 }
 
 func Load(dir string) (Vocabulary, error) {
-	// Use the imported vocabulary if present Surface read errors so a broken override is visible
+	// Surface read errors so a broken local vocabulary override is visible.
 	raw, err := os.ReadFile(filepath.Join(dir, "words.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		raw, err = assets.Files.ReadFile("words.json")

@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/ziul510/GSXCommsGo/internal/assets"
 )
 
 //go:embed defaults.json
@@ -46,15 +44,6 @@ type Binding struct {
 }
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
-
-// DataDir holds shared runtime data, including downloaded models and voice packs.
-func DataDir() (string, error) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "GSXCommsGo"), nil
-}
 
 // InitializeSettings creates the portable file from defaults before Accent Setup opens.
 func InitializeSettings(dir string) error {
@@ -86,7 +75,7 @@ var defaults = func() Values {
 	return values
 }()
 
-// The shared defaults need to stay pristine across windows and imports
+// Give each window its own copy of the defaults.
 func Defaults() Values { return defaults.Copy() }
 
 // Clone the raw JSON bytes too so a background job gets an independent snapshot
@@ -132,7 +121,7 @@ func Load(dir string) (Values, error) {
 	if err != nil {
 		return Defaults(), err
 	}
-	values, _, err := decode(data)
+	values, err := decode(data)
 	if err != nil {
 		// Keep the bad file around in case its settings can be recovered
 		backup := fmt.Sprintf("%s.corrupt.%d", path, time.Now().UnixNano())
@@ -164,13 +153,11 @@ func equalValues(a, b Values) bool {
 	return true
 }
 
-func decode(data []byte) (Values, string, error) {
+func decode(data []byte) (Values, error) {
 	var saved Values
 	if err := json.Unmarshal(data, &saved); err != nil || saved == nil {
-		return nil, "", errors.New("expected a JSON settings object")
+		return nil, errors.New("expected a JSON settings object")
 	}
-	// Return an old key separately so callers can migrate it to Credential Manager
-	key := Get[string](saved, legacySecret)
 	// Older settings can omit new keys and still carry user-defined values
 	values := Defaults()
 	for name, raw := range saved {
@@ -179,7 +166,10 @@ func decode(data []byte) (Values, string, error) {
 		}
 	}
 	// Retired options and download flags have no meaning in the current app
-	for _, name := range []string{"use_gsx_choice", "menu_delay", "key_delay", "auto_choice_delay", "menu_hotkey", "require_sim_ptt", "first_launch", "model_downloaded_parakeet", "model_downloaded_orukeet", "model_downloaded_kokoro-82m-am-adam"} {
+	for _, name := range []string{
+		"use_gsx_choice", "menu_delay", "key_delay", "auto_choice_delay", "menu_hotkey", "require_sim_ptt",
+		"first_launch", "model_downloaded_parakeet", "model_downloaded_orukeet", "model_downloaded_kokoro-82m-am-adam", "legacy_accent_dir",
+	} {
 		delete(values, name)
 	}
 	// A retired provider falls back to the bundled default selection
@@ -192,119 +182,6 @@ func decode(data []byte) (Values, string, error) {
 		// SDL indexes identify a device only within the legacy process.
 		binding.JoyID = nil
 		values.Put("ptt_bind", binding)
-	}
-	return values, key, nil
-}
-
-// Import keeps the settings file portable while placing vocabulary overrides in the data directory.
-func Import(settingsDir, dataDir, source string) (Values, error) {
-	return importSettings(settingsDir, dataDir, source, SaveKey, migrateLegacyKey)
-}
-
-func importSettings(settingsDir, dataDir, source string, storeKey, migrateKey func(string) error) (Values, error) {
-	original, err := os.Stat(source)
-	if err != nil {
-		return nil, err
-	}
-	destination, err := os.Stat(settingsDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if destination != nil && !destination.IsDir() {
-		return nil, errors.New("settings path must be a directory")
-	}
-	// Different paths can point to the same directory
-	if destination != nil && os.SameFile(original, destination) {
-		return nil, errors.New("choose a legacy directory separate from the settings directory")
-	}
-	data, err := os.ReadFile(filepath.Join(source, SettingsFile))
-	if err != nil {
-		return nil, err
-	}
-	values, key, err := decode(data)
-	if err != nil {
-		return nil, err
-	}
-	legacyAccents, err := filepath.Abs(filepath.Join(source, "Accents"))
-	if err == nil {
-		if info, statErr := os.Stat(legacyAccents); statErr == nil && info.IsDir() {
-			values.Put("legacy_accent_dir", legacyAccents)
-		}
-	}
-	type asset struct {
-		path string
-		data []byte
-	}
-	// Validate optional overrides before starting any destination writes
-	var files []asset
-	dataInfo, statErr := os.Stat(dataDir)
-	// The requested source may already be the runtime directory.
-	copyOverrides := statErr != nil || !os.SameFile(original, dataInfo)
-	for _, file := range []string{"words.json", assets.AccentMappingsFile} {
-		data, err := os.ReadFile(filepath.Join(source, file))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		var valid bool
-		if file == assets.AccentMappingsFile {
-			entries, err := assets.DecodeAccentMappings(data)
-			valid = err == nil && entries != nil
-		} else {
-			var words map[string]any
-			valid = json.Unmarshal(data, &words) == nil && words != nil
-		}
-		if !valid {
-			return nil, fmt.Errorf("invalid %s", file)
-		}
-		if copyOverrides {
-			files = append(files, asset{filepath.Join(dataDir, file), data})
-		}
-	}
-	settings, err := settingsJSON(values)
-	if err != nil {
-		return nil, err
-	}
-	settingsPath := filepath.Join(settingsDir, SettingsFile)
-	files = append(files, asset{settingsPath, settings})
-	if key == "" {
-		// Preserve a legacy key before replacing the portable settings file.
-		if err := preserveSettingsCredential(settingsPath, migrateKey); err != nil {
-			return nil, err
-		}
-	}
-	// A later file or vault failure must restore the earlier destination writes
-	var undo []func() error
-	rollback := func(err error) (Values, error) {
-		for i := len(undo) - 1; i >= 0; i-- {
-			err = errors.Join(err, undo[i]())
-		}
-		return nil, err
-	}
-	for _, file := range files {
-		path := file.path
-		prior, readErr := os.ReadFile(path)
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return rollback(readErr)
-		}
-		if err := WriteAtomic(path, file.data); err != nil {
-			return rollback(err)
-		}
-		// Restore the old bytes or remove a file that didn't exist before the import
-		undo = append(undo, func() error {
-			if readErr != nil {
-				return os.Remove(path)
-			}
-			return WriteAtomic(path, prior)
-		})
-	}
-	// Commit the imported credential last so a vault failure can still roll back the files
-	if key != "" {
-		if err := storeKey(key); err != nil {
-			return rollback(err)
-		}
 	}
 	return values, nil
 }
@@ -433,7 +310,7 @@ func migratePresets(raw json.RawMessage) []Preset {
 		}
 		p = CleanPreset(p)
 		name := strings.ToLower(p.Name)
-		// Keep the first valid entry for each name and trigger in imported presets
+		// Keep the first valid entry for each name and trigger in saved presets.
 		if name == "" || p.Codeword == "" || names[name] || codewords[p.Codeword] {
 			continue
 		}

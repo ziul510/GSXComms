@@ -80,11 +80,10 @@ func accentPreferences(prefs config.Values, enabled []string, fallback string) c
 
 func accentSetupView(ctx context.Context, archives, recordings string, prefs config.Values, save func([]string, string, func(error)), complete func(*gui.Window)) gui.ViewFunc {
 	enabled := config.Get[[]string](prefs, "installed_packs")
-	legacy := config.Get[string](prefs, "legacy_accent_dir")
 	fallback := config.Get[string](prefs, "default_accent")
 	available, selected := map[string]bool{}, map[string]bool{}
 	for _, pack := range packs {
-		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(pack.name, pack.accents, recordings, archives, legacy)
+		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(pack.name, pack.accents, recordings, archives)
 		if extracted {
 			available[pack.name] = true
 		} else if archive, err := zip.OpenReader(filepath.Join(archives, pack.name+".zip")); err == nil {
@@ -167,7 +166,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 					}
 				}
 				go func() {
-					err := installAccentPacks(ctx, archives, recordings, enabled, legacy)
+					err := installAccentPacks(ctx, archives, recordings, enabled)
 					w.QueueCommand(func(w *gui.Window) {
 						if w.CloseRequested() || ctx.Err() != nil {
 							return
@@ -283,7 +282,7 @@ func (s *state) regionalCue(next playback) ([]byte, int) {
 		if name == "" {
 			continue
 		}
-		for _, dir := range []string{filepath.Join(s.dir, "Accents"), s.accentsDir, config.Get[string](next.prefs, "legacy_accent_dir")} {
+		for _, dir := range []string{filepath.Join(s.dir, "Accents"), s.accentsDir} {
 			if dir == "" {
 				continue
 			}

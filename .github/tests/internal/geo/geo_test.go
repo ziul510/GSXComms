@@ -24,7 +24,7 @@ func TestAirportLocations(t *testing.T) {
 	}
 }
 
-func TestImportedCountryNameAndCode(t *testing.T) {
+func TestLocalOverrideByCountryNameAndCode(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "accent_mappings.json"), []byte(`[{"country":"Germany","accent_used":"French"},{"country":"CA","accent_used":"British"},{"country":"United Kingdom","accent_used":"Irish"}]`), 0600); err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestImportedCountryNameAndCode(t *testing.T) {
 	}{
 		{Position{Country: "DE"}, "French"},
 		{Position{Country: "CA"}, "British"},
-		// An imported country override takes precedence over the stock regional accent
+		// A local country override takes precedence over the stock regional accent.
 		{Position{Country: "GB", Region: "Scotland"}, "Irish"},
 	} {
 		if got := Accent(sample.pos, overrides, "American", ""); got != sample.want {

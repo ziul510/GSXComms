@@ -4,7 +4,6 @@
 package mute
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -232,8 +231,8 @@ func visitSession(control *com, endpoint string, fn func(audioSession) error) er
 
 func Run(dir string, hold func() error) error {
 	path := filepath.Join(dir, "gsx-mute.json")
-	// Use one mutex per journal path to serialize playback and recovery processes
-	name := fmt.Sprintf("Local\\GSXCommsGo.Mute.%x", sha256.Sum256([]byte(path)))
+	// Portable copies still mute the same audio sessions, so share one mutex.
+	const name = `Local\GSXCommsGo.Mute`
 	mutex, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(name))
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		return err

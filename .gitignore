@@ -4,6 +4,7 @@
 /.evidence/
 /.local/
 /user_settings.json
+/gsx-mute.json
 *.corrupt.*
 *.partial
 *.log

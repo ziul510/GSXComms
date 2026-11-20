@@ -9,17 +9,18 @@ import (
 	"testing"
 )
 
-func TestSettingsDirectoryIgnoresWorkingDirectory(t *testing.T) {
+func TestDataDirectoryUsesExecutableLocation(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(t.TempDir())
-	_, settingsDir, err := appDirectories("")
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	dir, err := appDirectory("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settingsDir != filepath.Dir(exe) {
-		t.Fatalf("settings directory is %q for executable %q", settingsDir, exe)
+	if dir != filepath.Dir(exe) {
+		t.Fatalf("data directory is %q for executable %q", dir, exe)
 	}
 }

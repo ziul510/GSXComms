@@ -36,7 +36,7 @@ func (s *state) settingsWriter() {
 	defer close(s.saved)
 	// Write snapshots in order so a slower write can't replace a newer one
 	for req := range s.saves {
-		err := config.Save(s.settingsDir, req.values)
+		err := config.Save(s.dir, req.values)
 		// Apply settings on the window thread only after the writer returns
 		s.async(func() { s.finishSave(req, err) })
 	}

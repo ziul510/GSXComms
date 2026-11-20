@@ -164,7 +164,7 @@ func Accent(pos Position, overrides map[string]string, defaultAccent, forced str
 	if v := overrides[strings.ToLower(pos.Country)]; v != "" {
 		return v
 	}
-	// Imported overrides can use a country name in place of its code
+	// Local overrides can use a country name in place of its code.
 	if v := overrides[strings.ToLower(mapping.Names[pos.Country])]; v != "" {
 		return v
 	}

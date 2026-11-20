@@ -69,7 +69,6 @@ type state struct {
 	speechAttempted                                  map[string]bool
 	speechChanged                                    func(string)
 	dir                                              string
-	settingsDir                                      string
 	cfg                                              config.Values
 	host                                             *gui.App
 	main                                             *gui.Window
@@ -99,9 +98,9 @@ type state struct {
 	hidPaths                                         map[string][]string
 }
 
-func Run(dir, settingsDir string) {
-	initErr := config.InitializeSettings(settingsDir)
-	settings, err := config.Load(settingsDir)
+func Run(dir string) {
+	initErr := config.InitializeSettings(dir)
+	settings, err := config.Load(dir)
 	icon, _ := assets.Files.ReadFile("app.png")
 	archives := assetDir("Accents")
 	theme := gui.ThemeDark
@@ -110,12 +109,11 @@ func Run(dir, settingsDir string) {
 	theme.ColorAccent = accent
 	gui.SetTheme(theme)
 	if !config.Get[bool](settings, "accent_setup_complete") {
-		settings = runFirstAccentSetup(dir, settingsDir, archives, settings, icon)
+		settings = runFirstAccentSetup(dir, archives, settings, icon)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &state{dir: dir, cfg: settings, icon: icon, host: gui.NewApp(), ctx: ctx, cancel: cancel, jobs: make(chan func(context.Context, *gsx.Session), 16), done: make(chan struct{}), ptt: "Idle", highlight: -1}
-	s.settingsDir = settingsDir
 	s.accentsDir = archives
 	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
 	s.services = make(map[string]bool)
@@ -146,8 +144,7 @@ func Run(dir, settingsDir string) {
 		s.log("SYS", err.Error())
 	}
 	// Check that recordings for the configured packs are available on startup.
-	if err := installAccentPacks(ctx, archives, filepath.Join(dir, "Accents"), config.Get[[]string](settings, "installed_packs"),
-		config.Get[string](settings, "legacy_accent_dir")); err != nil {
+	if err := installAccentPacks(ctx, archives, filepath.Join(dir, "Accents"), config.Get[[]string](settings, "installed_packs")); err != nil {
 		s.log("ERR", err.Error())
 	}
 	w := gui.NewWindow(gui.WindowCfg{
@@ -198,10 +195,10 @@ func Run(dir, settingsDir string) {
 	}
 }
 
-func runFirstAccentSetup(dir, settingsDir, archives string, prefs config.Values, icon []byte) config.Values {
+func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte) config.Values {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := firstAccentWindow(ctx, dir, settingsDir, archives, prefs, func(saved config.Values) {
+	cfg := firstAccentWindow(ctx, dir, archives, prefs, func(saved config.Values) {
 		prefs = saved
 	})
 	cfg.IconPNG = icon
@@ -209,12 +206,12 @@ func runFirstAccentSetup(dir, settingsDir, archives string, prefs config.Values,
 	return prefs
 }
 
-func firstAccentWindow(ctx context.Context, dir, settingsDir, archives string, prefs config.Values, onSaved func(config.Values)) gui.WindowCfg {
+func firstAccentWindow(ctx context.Context, dir, archives string, prefs config.Values, onSaved func(config.Values)) gui.WindowCfg {
 	recordings := filepath.Join(dir, "Accents")
 	var saved config.Values
 	view := accentSetupView(ctx, archives, recordings, prefs, func(enabled []string, fallback string, then func(error)) {
 		saved = accentPreferences(prefs.Copy(), enabled, fallback)
-		go func() { then(config.Save(settingsDir, saved)) }()
+		go func() { then(config.Save(dir, saved)) }()
 	}, func(w *gui.Window) {
 		onSaved(saved)
 		w.Close()

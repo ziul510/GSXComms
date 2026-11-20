@@ -50,10 +50,10 @@ func legacyAccentPack(name string, accents []string, roots ...string) bool {
 	return false
 }
 
-func installAccentPacks(ctx context.Context, archives, recordings string, enabled []string, legacy ...string) error {
+func installAccentPacks(ctx context.Context, archives, recordings string, enabled []string) error {
 	for _, pack := range packs {
 		if !slices.Contains(enabled, pack.name) || accentPackInstalled(recordings, pack.name) ||
-			legacyAccentPack(pack.name, pack.accents, append([]string{recordings, archives}, legacy...)...) {
+			legacyAccentPack(pack.name, pack.accents, recordings, archives) {
 			continue
 		}
 		if err := installAccentPack(ctx, archives, recordings, pack.name, pack.accents); err != nil {
