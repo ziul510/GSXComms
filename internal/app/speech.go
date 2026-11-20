@@ -152,7 +152,8 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	if err := s.loadRecognizer(s.ctx, m, vocab); err != nil {
 		return "", err
 	}
-	return s.recognizer.Transcribe(s.ctx, pcm)
+	text, err := s.recognizer.Transcribe(s.ctx, pcm)
+	return commands.CorrectLocalTranscript(text), err
 }
 
 func (s *state) loadRecognizer(ctx context.Context, model models.Model, vocab commands.Vocabulary) error {
@@ -223,6 +224,17 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 							}
 						})
 					})
+					if err == nil {
+						s.async(func() {
+							if generation == s.speechGeneration {
+								s.speechStatus = "Loading speech"
+								if s.speechChanged != nil {
+									s.speechChanged(provider)
+								}
+								s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+							}
+						})
+					}
 				}
 				if err == nil && !model.Ready(s.dir) {
 					err = errors.New("Open Settings to download the selected speech model")

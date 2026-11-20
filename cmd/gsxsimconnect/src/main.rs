@@ -3,12 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 use simconnect::{
-    SimConnect,
+    OpenError, SimConnect,
     proto::{
         codec::PacketReader,
         enums::{DataRequestFlags, DataSetFlags, DataType, Period, RecvId},
         recv::{parse_exception, parse_sim_object_data},
     },
+    transport::{self, DEFAULT_PIPE_NAME, PREPAR3D_PIPE_NAMES, Transport},
 };
 use std::{
     collections::HashMap,
@@ -246,11 +247,47 @@ async fn request(
     }
 }
 
+async fn open_simconnect() -> Result<SimConnect, String> {
+    const APP_NAME: &str = "GSXComms";
+    match SimConnect::open_local(APP_NAME).await {
+        Ok(sim) => return Ok(sim),
+        Err(OpenError::Io(err)) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    // An MSFS installation can expose a different pipe through SimConnect.xml
+    let mut failure =
+        "No local SimConnect pipe is available. Start Microsoft Flight Simulator and try again."
+            .to_owned();
+    for pipe in transport::scan_for_pipe_names("SimConnect") {
+        if pipe.eq_ignore_ascii_case(DEFAULT_PIPE_NAME)
+            || PREPAR3D_PIPE_NAMES
+                .iter()
+                .any(|name| pipe.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let open = SimConnect::open_with(APP_NAME, || async {
+            transport::connect_pipe(&pipe)
+                .await
+                .map(|client| Box::new(client) as Box<dyn Transport>)
+        });
+        // A stale endpoint must leave time to try the next one
+        match timeout(Duration::from_secs(1), open).await {
+            Ok(Ok(sim)) => return Ok(sim),
+            Ok(Err(OpenError::Io(err))) if err.kind() == io::ErrorKind::NotFound => {}
+            Ok(Err(err)) => failure = format!("Could not open a local SimConnect pipe: {err}"),
+            Err(_) => failure = "Local SimConnect handshake timed out.".to_owned(),
+        }
+    }
+    Err(failure)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
-    let sim = match SimConnect::open_local("GSXComms").await {
+    let sim = match open_simconnect().await {
         Ok(sim) => Arc::new(sim),
-        Err(reason) => return send_reply(error(reason.to_string(), true)),
+        Err(reason) => return send_reply(error(reason, true)),
     };
     send_reply(Reply::default())?;
     // Read the parent's pipe off the async runtime so a quiet pipe cannot block SimConnect.

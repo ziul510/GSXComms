@@ -117,7 +117,11 @@ func Run(dir string) {
 	theme.ColorAccent = accent
 	gui.SetTheme(theme)
 	if !config.Get[bool](settings, "accent_setup_complete") {
-		settings = runFirstAccentSetup(dir, archives, settings, icon)
+		if restoreAccentSetup(filepath.Join(dir, "Accents"), settings) {
+			err = errors.Join(err, config.Save(dir, settings))
+		} else {
+			settings = runFirstAccentSetup(dir, archives, settings, icon)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -773,8 +777,10 @@ func (s *state) submit(input string) {
 		}
 		s.menuActivity = time.Now()
 		log := func(sender, msg string) { s.async(func() { s.log(sender, msg) }) }
+		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		corrected := false
-		if session.Connected() && config.Get[bool](prefs, "enable_gsx_menu_text_correction") {
+		// Apply menu correction only after routing known commands
+		if action.Kind == "menu" && session.Connected() {
 			page := session.ReadMenu()
 			opened := len(page.Options) == 0
 			if opened {
@@ -797,9 +803,7 @@ func (s *state) submit(input string) {
 				_ = session.Release(ctx)
 			}
 		}
-		action := commands.Action{Kind: "menu"}
 		if !corrected {
-			action = words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 			log("CMD", input)
 		}
 		auto := config.Get[bool](prefs, "auto_select_operator")

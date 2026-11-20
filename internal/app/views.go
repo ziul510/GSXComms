@@ -15,7 +15,10 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/models"
 )
 
-const controlTextSize = 14
+const (
+	controlTextSize  = 14
+	settingsTextSize = 12
+)
 
 // Use the Windows UI font for app labels and controls
 func labelStyle(size float32, color gui.Color) gui.TextStyle {
@@ -38,11 +41,15 @@ func wrapped(label string, size float32, color gui.Color) gui.View {
 }
 
 func buttonConfig(id, label string, width float32, primary, disabled bool, onClick func()) gui.ButtonCfg {
-	style := labelStyle(controlTextSize, ink)
+	return sizedButtonConfig(id, label, width, controlTextSize, primary, disabled, onClick)
+}
+
+func sizedButtonConfig(id, label string, width, size float32, primary, disabled bool, onClick func()) gui.ButtonCfg {
+	style := labelStyle(size, ink)
 	colors := gui.ColorSet{Base: card, Hover: elevated}
 	// Primary controls use the accent fill and dark text for contrast
 	if primary {
-		style = labelStyle(controlTextSize, bg).Bold()
+		style = labelStyle(size, bg).Bold()
 		colors = gui.ColorSet{Base: accent, Hover: accentHover}
 	}
 	sizing := gui.FitFixed
@@ -307,7 +314,7 @@ func labelRow(label gui.View, height float32) gui.View {
 func settingsField(label string, control gui.View) gui.View {
 	return gui.Column(gui.ContainerCfg{
 		Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(6), SizeBorder: gui.NoBorder,
-		Content: []gui.View{labelRow(text(label, 13, muted), 28), control},
+		Content: []gui.View{labelRow(text(label, settingsTextSize, muted), 28), control},
 	})
 }
 
@@ -322,7 +329,10 @@ func (v fullWidthTooltip) GenerateLayout(w *gui.Window) gui.Layout {
 
 // Apply shared field styling while preserving the caller's value and callbacks
 func formInput(cfg gui.InputCfg) gui.View {
-	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(controlTextSize, ink)
+	if cfg.TextStyle == (gui.TextStyle{}) {
+		cfg.TextStyle = labelStyle(controlTextSize, ink)
+	}
+	cfg.Sizing = gui.FillFit
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(6, 7), gui.RadiusPx(5), gui.BorderPx(1)
 	cfg.Colors = gui.ColorSet{Base: elevated, Border: bg, BorderFocus: accent}
 	return gui.Input(cfg)
@@ -330,20 +340,23 @@ func formInput(cfg gui.InputCfg) gui.View {
 
 // Keep dropdown styling consistent even when dialogs supply different choices
 func formSelect(cfg gui.SelectCfg) gui.View {
-	cfg.Sizing, cfg.TextStyle = gui.FillFit, labelStyle(controlTextSize, ink)
+	if cfg.TextStyle == (gui.TextStyle{}) {
+		cfg.TextStyle = labelStyle(controlTextSize, ink)
+	}
+	cfg.Sizing = gui.FillFit
 	cfg.Padding, cfg.Radius, cfg.SizeBorder = gui.PadVH(7, 7), gui.RadiusPx(5), gui.NoBorder
 	cfg.Colors = gui.ColorSet{Base: card, Hover: elevated, BorderFocus: accent}
 	return gui.Select(cfg)
 }
 
-func toggleControl(id, label string, selected bool, onClick func(gui.EventCtx)) gui.View {
+func toggleControl(id, label string, size float32, selected bool, onClick func(gui.EventCtx)) gui.View {
 	// Use the passed-in value so toggles can show draft edits before Save
 	track := disabledInk
 	if selected {
 		track = accent
 	}
 	return gui.Switch(gui.SwitchCfg{
-		ID: id, Label: label, Selected: selected, TextStyleLabel: labelStyle(controlTextSize, ink),
+		ID: id, Label: label, Selected: selected, TextStyleLabel: labelStyle(size, ink),
 		Width: gui.SomeF(34), Height: gui.SomeF(18), SizeBorder: gui.BorderPx(1), Padding: gui.NoPadding,
 		ColorSelect: ink, ColorUnselect: ink, Colors: gui.ColorSet{Base: track, Border: track, BorderFocus: ink},
 		OnClick: onClick,
@@ -433,8 +446,7 @@ func (s *state) openSettings() {
 	}
 	var inputs, outputs []audioDevice
 	help := map[string]string{
-		"enable_menu_matching":             "Match unmatched phrases against the current GSX menu.",
-		"enable_gsx_menu_text_correction":  "Use GSX menu labels to correct similar speech.",
+		"enable_menu_matching":             "Use GSX menu labels to correct and match unrecognized commands.",
 		"mute_gsx_audio_during_crew_voice": "Mute Couatl while GSXComms speaks or sends a service command.",
 		"simulation_mode":                  "Allow speech testing while Microsoft Flight Simulator is disconnected.",
 		"ignore_speed_restriction":         "Allow transmissions above 50 knots.",
@@ -447,17 +459,17 @@ func (s *state) openSettings() {
 		// Give each group a consistent heading and short explanation in the scrolling body
 		section := func(name, description string) {
 			body = append(body, gui.Column(outlinedCard(card, gui.PadVH(12, 11), 4,
-				labelRow(bold(name, 13, ink), 26), labelRow(wrapped(description, 11, muted), 26))))
+				labelRow(bold(name, 17, ink), 26), labelRow(wrapped(description, 11, muted), 26))))
 		}
 		// Control changes update the draft immediately Disk writes wait for Save
 		toggle := func(key, label string) {
-			control := toggleControl(key, label, config.Get[bool](draft, key), func(ctx gui.EventCtx) {
+			control := toggleControl(key, label, settingsTextSize, config.Get[bool](draft, key), func(ctx gui.EventCtx) {
 				draft.Put(key, !config.Get[bool](draft, key))
 				ctx.Consume()
 				ctx.Window.InvalidateLayout()
 			})
 			if hint := help[key]; hint != "" {
-				control = gui.WithTooltip(w, gui.WithTooltipCfg{ID: key + "-help", Text: hint, Content: []gui.View{control}})
+				control = fullWidthTooltip{gui.WithTooltip(w, gui.WithTooltipCfg{ID: key + "-help", Text: hint, Content: []gui.View{control}})}
 			}
 			body = append(body, labelRow(control, 24))
 		}
@@ -469,6 +481,7 @@ func (s *state) openSettings() {
 			}
 			body = append(body, settingsField(label, formSelect(gui.SelectCfg{
 				ID: key, A11YCfg: gui.A11YCfg{A11YLabel: label}, Items: items, Selected: []string{value},
+				TextStyle: labelStyle(settingsTextSize, ink),
 				OnSelect: func(values []string, ctx gui.EventCtx) {
 					if len(values) > 0 {
 						draft.Put(key, values[0])
@@ -515,6 +528,7 @@ func (s *state) openSettings() {
 			}
 			body = append(body, settingsField(label, formSelect(gui.SelectCfg{
 				ID: nameKey, A11YCfg: gui.A11YCfg{A11YLabel: label}, Items: items, Selected: []string{selected},
+				TextStyle: labelStyle(settingsTextSize, ink),
 				OnSelect: func(values []string, ctx gui.EventCtx) {
 					if len(values) > 0 {
 						if choice, ok := choices[values[0]]; ok {
@@ -556,7 +570,7 @@ func (s *state) openSettings() {
 			})}))
 		}
 		action := func(id, label string, disabled bool, onClick func()) {
-			control := buttonConfig(id, label, 0, false, disabled, onClick)
+			control := sizedButtonConfig(id, label, 0, settingsTextSize, false, disabled, onClick)
 			control.Sizing = gui.FillFixed
 			body = append(body, gui.Button(control))
 		}
@@ -568,13 +582,13 @@ func (s *state) openSettings() {
 		slider("volume_static", "Static volume", 0, 0.5, 0.001)
 		slider("volume_voice", "Voice volume", 0, 1, 0.001)
 		slider("max_recording_seconds", "Max recording (seconds)", 10, 120, 1)
-		section("Speech Recognition", "Choose a speech model and manage local downloads")
+		section("Speech Recognition", "Pick a local model or the cloud Voxtral Small model")
 		body = append(body, gui.Column(gui.ContainerCfg{
-			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(6),
+			Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(10),
 			Content: []gui.View{
-				setup.localCard(s, w, "parakeet", "Parakeet v2 (recommended)"),
-				setup.localCard(s, w, "orukeet", "Orukeet"),
-				setup.mistralCard(s),
+				setup.localCard(s, w, "parakeet", "Standard, Recommended (Parakeet v2 0.6b)"),
+				setup.localCard(s, w, "orukeet", "Enhanced (Orukeet)"),
+				setup.mistralCard(s, w),
 			},
 		}))
 		if setup.providerError != "" {
@@ -604,11 +618,11 @@ func (s *state) openSettings() {
 			closePresets = s.openPresets(w, func() { closePresets = nil; w.InvalidateLayout() })
 		})
 		section("Behavior", "The behavior of the app")
-		toggle("enable_menu_matching", "Broader mode")
-		toggle("enable_gsx_menu_text_correction", "Match STT to GSX menu options")
+		toggle("enable_menu_matching", "Broader Mode")
 		const readKey = "read_gsx_menus_aloud_after_keyword"
 		readerEnabled := config.Get[bool](s.cfg, readKey)
-		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", readerEnabled, func(ctx gui.EventCtx) {
+		readerDownloading := setup.running == "kokoro"
+		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", settingsTextSize, readerEnabled || readerDownloading, func(ctx gui.EventCtx) {
 			ctx.Consume()
 			if readerSaving {
 				return
@@ -625,10 +639,16 @@ func (s *state) openSettings() {
 					}
 				})
 			}
-			if readerEnabled {
+			if readerDownloading {
+				setup.cancel()
+			} else if readerEnabled {
 				setEnabled(false)
 			} else if setup.local["kokoro"].ready {
 				setEnabled(true)
+			} else if setup.running != "" {
+				status := setup.local["kokoro"]
+				status.message = "Wait for the speech model operation to finish, then try again"
+				setup.local["kokoro"] = status
 			} else {
 				// Failed or canceled downloads leave readout off.
 				setup.runLocal(s, w, "kokoro", "Downloading", func(err error) {
@@ -641,9 +661,13 @@ func (s *state) openSettings() {
 		}), 24))
 		// Show the keyword field only when menu readout is enabled
 		if readerEnabled {
-			body = append(body, formInput(gui.InputCfg{ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) }}))
+			body = append(body, formInput(gui.InputCfg{
+				ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", TextStyle: labelStyle(settingsTextSize, ink),
+				Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) },
+			}))
+		} else if note := setup.local["kokoro"].message; note != "" {
+			body = append(body, wrapped(note, 11, muted))
 		}
-		body = append(body, setup.localCard(s, w, "kokoro", "Kokoro menu reader"))
 		toggle("auto_connect_sim", "Auto-connect to simulator")
 		toggle("auto_select_operator", "Auto-select operator")
 		toggle("mute_gsx_audio_during_crew_voice", "Mute Couatl/GSX during speech")
@@ -656,19 +680,19 @@ func (s *state) openSettings() {
 		toggle("show_topmost", "Show Top Most")
 		binding := config.Get[config.Binding](s.cfg, "ptt_bind")
 		description := s.bindingDescription(binding)
-		body = append(body, settingsField("Current PTT binding", wrapped(description, 13, ink)))
+		body = append(body, settingsField("Current PTT binding", wrapped(description, settingsTextSize, ink)))
 		if strings.Contains(description, "Rebind required") && binding.Description != "" {
 			body = append(body, wrapped("Needs rebinding: "+binding.Description, 12, orange))
 		}
 		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(w) })
-		section("Developer", "Debug mode opens a console and writes a debug.log file")
+		section("Developer", "Debug mode opens your default terminal and writes debug.log")
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
 		action("randomize-gender", "Randomize gender", false, s.randomizeVoice)
 		// Disabled leaves accent selection to the user's defaults and the aircraft location
 		pick("force_accent", "Force accent", append([]string{"Disabled"}, accents...))
-		save := buttonConfig("save", "Save Changes", 130, true, saving || closePresets != nil || s.binding != nil || setup.running == "kokoro", func() {
+		save := sizedButtonConfig("save", "Save Changes", 130, settingsTextSize, true, saving || closePresets != nil || s.binding != nil || readerDownloading, func() {
 			message = "Saving…"
 			saving = true
 			// Merge only edits made in this window onto the latest queued settings
@@ -704,7 +728,7 @@ func (s *state) openSettings() {
 				gui.Row(gui.ContainerCfg{
 					Sizing: gui.FillFixed, Height: 32, Padding: gui.NoPadding, SizeBorder: gui.NoBorder,
 					HAlign: gui.HAlignCenter, VAlign: gui.VAlignMiddle,
-					Content: []gui.View{text("Built with ♥ by ziul510", 13, muted)},
+					Content: []gui.View{text("Built with ♥ by ziul510", settingsTextSize, muted)},
 				}),
 			},
 		})

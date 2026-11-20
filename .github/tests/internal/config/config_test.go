@@ -87,6 +87,23 @@ func TestMigrateDownloadFlags(t *testing.T) {
 	}
 }
 
+func TestBroaderModeMigratesEitherLegacyOption(t *testing.T) {
+	for _, tc := range []struct {
+		settings string
+		enabled  bool
+	}{
+		{`{"enable_menu_matching":true,"enable_gsx_menu_text_correction":false}`, true},
+		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":true}`, true},
+		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":false}`, false},
+		{`{"enable_menu_matching":false}`, false},
+	} {
+		v, err := decode([]byte(tc.settings))
+		if err != nil || v["enable_gsx_menu_text_correction"] != nil || Get[bool](v, "enable_menu_matching") != tc.enabled {
+			t.Errorf("migrating %s: expected Broader Mode enabled=%t, got %v (%v)", tc.settings, tc.enabled, v, err)
+		}
+	}
+}
+
 func TestInvalidBindingUsesCleanDefaults(t *testing.T) {
 	values := Defaults()
 	// Use a partially decodable binding to catch stale fields leaking into the fallback

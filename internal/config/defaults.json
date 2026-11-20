@@ -23,7 +23,6 @@
     "mistral_model": "voxtral-small-latest",
     "presets": [],
     "enable_menu_matching": true,
-    "enable_gsx_menu_text_correction": false,
     "read_gsx_menus_aloud_after_keyword": false,
     "gsx_menu_reader_keyword": "",
     "minimize_to_tray": false,

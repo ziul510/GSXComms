@@ -80,6 +80,11 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 	cfg.Height = 3200
 	settings := gui.NewTestWindow(t, cfg)
 	settings.TestRender(nil)
+	for _, cmd := range settings.Renderers() {
+		if cmd.Kind == gui.RenderText && cmd.Text == "Kokoro menu reader" {
+			t.Fatal("Kokoro still has a separate settings card")
+		}
+	}
 	if err := settings.TestType("settings-scroll:menu-reader-keyword", "draft keyword"); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +148,27 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 		if !ok || node.Shape.Width < 400 || node.Shape.X+node.Shape.Width > 480 {
 			t.Fatalf("%s does not fill the settings column", key)
 		}
+	}
+}
+
+func TestSettingsTogglesAlignWithAndWithoutTooltips(t *testing.T) {
+	s := &state{cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context()}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.openSettings()
+	settings := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	layout := settings.TestRender(nil)
+	left, previousY := float32(0), float32(0)
+	for i, key := range []string{"debug_mode", "simulation_mode", "ignore_speed_restriction"} {
+		node, ok := layout.FindByID("settings-scroll:" + key)
+		if !ok {
+			t.Fatalf("missing switch %s", key)
+		}
+		if i == 0 {
+			left = node.Shape.X
+		} else if node.Shape.X != left || node.Shape.Y-previousY != 40 {
+			t.Fatalf("switch %s is misaligned at (%v, %v)", key, node.Shape.X, node.Shape.Y)
+		}
+		previousY = node.Shape.Y
 	}
 }
 
@@ -274,7 +300,6 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("auto_select_operator", false)
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
-	s.cfg.Put("enable_gsx_menu_text_correction", true)
 	s.menu = gsx.ParseMenu("Ramp\nJetway")
 	current := gsx.ParseMenu("Ramp\nRefuel\nJetway")
 	tr := &menuChoices{}
@@ -299,7 +324,6 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		t.Fatal("selected a different item after the menu changed")
 	}
 
-	s.cfg.Put("enable_menu_matching", false)
 	s.main.FrameFn()
 	if !s.menu.Same(current) {
 		t.Fatal("stale selection did not refresh the displayed page")
@@ -308,7 +332,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	if err := session.Release(s.ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Text correction must fetch the current page even when broader matching is disabled
+	// Only Broader Mode should look up the current page for an unrecognized command
 	current = gsx.Menu{}
 	session.ReadMenu = func() gsx.Menu {
 		if tr.open {
@@ -316,7 +340,14 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		}
 		return current
 	}
-	s.submit("Swissport")
+	s.cfg.Put("enable_menu_matching", false)
+	s.submit("swisport")
+	(<-s.jobs)(s.ctx, session)
+	if len(tr.selected) != 0 || tr.open {
+		t.Fatal("an unrecognized command opened or selected from the menu with Broader Mode off")
+	}
+	s.cfg.Put("enable_menu_matching", true)
+	s.submit("swisport")
 	readMenu := session.ReadMenu
 	session.ReadMenu = func() gsx.Menu {
 		if tr.open {
@@ -330,21 +361,22 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 	s.groundSpeed.Store(&speedReading{0, time.Now()})
 	session.ReadMenu = readMenu
-	s.submit("Swissport")
+	s.submit("swisport")
 	(<-s.jobs)(s.ctx, session)
-	if !slices.Equal(tr.selected, []int{0}) {
+	s.main.FrameFn()
+	if !slices.Equal(tr.selected, []int{0}) || !strings.Contains(strings.Join(s.lines, "\n"), "swisport → Swissport") {
 		t.Fatalf("command did not use the updated menu: %v", tr.selected)
 	}
 	tr.selected = nil
 	current = gsx.ParseMenu("Ramp\nRefuel\nJetway")
 	session.ReadMenu = func() gsx.Menu { return current }
-	s.cfg.Put("enable_gsx_menu_text_correction", false)
-	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "turnaround", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
+	// A preset can share its codeword with a visible menu option
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 	// Cancel the outer job on the first choice to check that later services get their own deadline
 	tr.afterChoice = cancel
-	s.submit("turnaround")
+	s.submit("jetway")
 	(<-s.jobs)(outer, session)
 	if !slices.Equal(tr.selected, []int{1, 0}) {
 		t.Fatalf("preset choices=%v", tr.selected)

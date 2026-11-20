@@ -259,6 +259,35 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 
 var aground = regexp.MustCompile("(?i)aground")
 
+// Match whole phrases to keep ordinary words and identifiers intact
+var localCorrections = []struct {
+	pattern   *regexp.Regexp
+	canonical string
+}{
+	{regexp.MustCompile(`(?i)(?:(?:cock\s+pitch|cock\s*pit|clock\s+pit)\s+(?:to|two|too|a)\s+(?:the\s+)?|clock\s+picture\s+)ground`), "cockpit to ground"},
+	{regexp.MustCompile(`(?i)ground\s+powder`), "ground power"},
+	{regexp.MustCompile(`(?i)(?:g[.\s-]+p[.\s-]+u|gee\s+pee\s+you)`), "GPU"},
+	{regexp.MustCompile(`(?i)jet[\s-]+way`), "jetway"},
+	{regexp.MustCompile(`(?i)jet\s+breach`), "jet bridge"},
+	{regexp.MustCompile(`(?i)air\s+(?:stares|stainers)`), "air stairs"},
+	{regexp.MustCompile(`(?i)(?:fuel\s+track|fool\s+truck)`), "fuel truck"},
+	{regexp.MustCompile(`(?i)de[\s-]+sing`), "deicing"},
+	{regexp.MustCompile(`(?i)de[\s-]+boarding`), "deboarding"},
+	{regexp.MustCompile(`(?i)laboratory\s+truck`), "lavatory truck"},
+	{regexp.MustCompile(`(?i)laboratory\s+service`), "lavatory service"},
+}
+
+var localRequest = regexp.MustCompile(`(?i)^(\s*(?:(?:cockpit to ground|ground)[\s,.:;!?]+)?(?:please[\s,]+)?)(?:x(?:-|\s+)?ray|re[\s-]+quest)($|[^\p{L}\p{N}_])`)
+
+// CorrectLocalTranscript repairs known Parakeet and Orukeet mishearings
+func CorrectLocalTranscript(text string) string {
+	for _, correction := range localCorrections {
+		text = replaceWhole(text, correction.pattern, false, func(string) string { return correction.canonical })
+	}
+	// Limit request corrections to the opening so gate names can still use NATO X-ray
+	return localRequest.ReplaceAllString(text, "${1}request${2}")
+}
+
 // Fix common transcript errors and NATO words before applying service bias rules
 func (v Vocabulary) Normalize(text string) string {
 	text = replaceWhole(text, aground, false, func(string) string { return language.Corrections["aground"] })

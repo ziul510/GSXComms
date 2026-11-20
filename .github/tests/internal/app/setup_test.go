@@ -17,6 +17,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"github.com/ziul510/GSXCommsGo/internal/geo"
+	"github.com/ziul510/GSXCommsGo/internal/models"
 )
 
 func TestAccentSetupSavesPackSelection(t *testing.T) {
@@ -38,6 +39,8 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 	save := func() config.Values {
 		t.Helper()
 		click("save-accents")
+		waitForAccentContinue(t, w)
+		click("continue-accents")
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			w.FrameFn()
@@ -81,6 +84,20 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 	}
 }
 
+func waitForAccentContinue(t *testing.T, w *gui.Window) *gui.Layout {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		w.FrameFn()
+		layout := w.TestRender(nil)
+		if _, ok := layout.FindByID("continue-accents"); ok {
+			return layout
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("accent installation never enabled Continue")
+	return nil
+}
+
 func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	dir := t.TempDir()
 	accentsDir := filepath.Join(dir, "Accents")
@@ -112,6 +129,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	cfg := firstAccentWindow(t.Context(), dir, accentsDir, config.Defaults(), func(prefs config.Values) {
 		complete = config.Get[bool](prefs, "accent_setup_complete")
 	})
+	cfg.Width, cfg.Height = cfg.MinWidth, cfg.MinHeight
 	w := gui.NewTestWindow(t, cfg)
 	w.TestRender(nil)
 	if complete || w.CloseRequested() {
@@ -120,7 +138,50 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if err := w.TestClick("accent-packs:pack-" + pack.name); err != nil {
 		t.Fatal(err)
 	}
+	const pickerID = "wizard-default-accent"
+	if _, ok := w.TestRender(nil).FindByID(pickerID); ok {
+		t.Fatal("default accent was visible before installation")
+	}
 	if err := w.TestClick("save-accents"); err != nil {
+		t.Fatal(err)
+	}
+	layout := waitForAccentContinue(t, w)
+	if complete || w.CloseRequested() || !accentPackInstalled(accentsDir, pack.name) {
+		t.Fatal("Save should install the pack and keep the wizard open")
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.SettingsFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("settings file changed before Continue: %v", err)
+	}
+	picker, ok := layout.FindByID(pickerID)
+	button, _ := layout.FindByID("continue-accents")
+	if !ok || picker.Parent != button.Parent || picker.Shape.X+picker.Shape.Width >= button.Shape.X || button.Shape.Color != green {
+		t.Fatal("the footer needs a default accent picker to the left of a green Continue button")
+	}
+	if err := w.TestClick(pickerID); err != nil {
+		t.Fatal(err)
+	}
+	dropdown, ok := w.TestRender(nil).FindByID(pickerID + ":dropdown")
+	if !ok || dropdown.Shape.Y >= picker.Shape.Y {
+		t.Fatal("footer dropdown must open upward")
+	}
+	var choices []string
+	for _, cmd := range w.Renderers() {
+		box := dropdown.Shape
+		if cmd.Kind == gui.RenderText && cmd.Text != "✓" && cmd.X >= box.X && cmd.X < box.X+box.Width && cmd.Y >= box.Y && cmd.Y < box.Y+box.Height {
+			choices = append(choices, cmd.Text)
+		}
+	}
+	want := slices.Clone(pack.accents)
+	slices.Sort(want)
+	if !slices.Equal(choices, want) {
+		t.Fatalf("default accent choices = %v, want %v", choices, want)
+	}
+	for _, key := range []gui.KeyCode{gui.KeyDown, gui.KeyEnter} {
+		if err := w.TestKey(pickerID, key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.TestClick("continue-accents"); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); !complete && time.Now().Before(deadline); {
@@ -134,6 +195,9 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if !complete || !w.CloseRequested() || !bytes.Contains(data, []byte(`"accent_setup_complete": true`)) {
 		t.Fatal("setup did not finish after writing the completed setting")
 	}
+	if !bytes.Contains(data, []byte(`"default_accent": "Australian"`)) {
+		t.Fatal("Continue did not save the selected default accent")
+	}
 	if !accentPackInstalled(accentsDir, pack.name) {
 		t.Fatal("no recordings alongside the archive")
 	}
@@ -144,6 +208,61 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if !accentPackInstalled(otherDir, pack.name) {
 		t.Fatal("a separate data directory skipped extraction")
 	}
+}
+
+func TestRestoreAccentSetupFromExtractedPacks(t *testing.T) {
+	recordings := t.TempDir()
+	pack := packs[5]
+	greeting := filepath.Join(recordings, "Extracted", "nigerian", "goahead")
+	if err := os.MkdirAll(greeting, 0700); err != nil {
+		t.Fatal(err)
+	}
+	prefs := config.Defaults()
+	if restoreAccentSetup(recordings, prefs) {
+		t.Fatal("empty accent folder skipped setup")
+	}
+	for _, voice := range []string{"female", "male"} {
+		if err := os.WriteFile(filepath.Join(greeting, voice+"11.ai.mp3"), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !restoreAccentSetup(recordings, prefs) || !config.Get[bool](prefs, "accent_setup_complete") {
+		t.Fatal("complete extracted pack did not restore setup")
+	}
+	if got := config.Get[[]string](prefs, "installed_packs"); !slices.Equal(got, []string{pack.name}) {
+		t.Fatalf("restored packs = %v, want %s", got, pack.name)
+	}
+	if got := config.Get[string](prefs, "default_accent"); got != "Nigerian" {
+		t.Fatalf("restored default accent = %q, want Nigerian", got)
+	}
+	prefs = config.Defaults()
+	prefs.Put("installed_packs", []string{packs[0].name})
+	if restoreAccentSetup(recordings, prefs) {
+		t.Fatal("an unselected pack replaced the saved selection")
+	}
+}
+
+func TestAccentSetupCheckmarkWhileSaving(t *testing.T) {
+	pack := packs[0]
+	recordings := t.TempDir()
+	if err := os.Mkdir(filepath.Join(recordings, pack.name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	view := accentSetupView(t.Context(), t.TempDir(), recordings, config.Defaults(), func([]string, string, func(error)) {}, nil)
+	w := gui.NewTestWindow(t, gui.WindowCfg{Width: 720, Height: 600})
+	w.TestRender(view)
+	if err := w.TestClick("save-accents"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.TestClick("accent-packs:pack-" + pack.name); !errors.Is(err, gui.ErrTestDisabled) {
+		t.Fatalf("pack can be changed while saving: %v", err)
+	}
+	for _, cmd := range w.Renderers() {
+		if cmd.Kind == gui.RenderText && cmd.Text == "✓" && cmd.Color == ink {
+			return
+		}
+	}
+	t.Fatal("disabled checkmark did not render in the high-contrast color")
 }
 
 func TestRegionalCueUsesEnabledPacks(t *testing.T) {
@@ -223,6 +342,7 @@ func TestFailedAccentExtractionLeavesNoInstalledPack(t *testing.T) {
 func TestMistralTutorialStaysInSettings(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
 	s := &state{cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), dir: t.TempDir()}
+	s.cfg.Put("speech_provider", "mistral")
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.openSettings()
 	cfg := <-s.host.PendingOpen()
@@ -253,8 +373,8 @@ func TestMistralTutorialStaysInSettings(t *testing.T) {
 	if err := w.TestClick("mistral-back"); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.host.PendingOpen()) != 0 || config.Get[string](s.cfg, "speech_provider") == "mistral" {
-		t.Fatal("tutorial opened another window or activated the cloud provider")
+	if len(s.host.PendingOpen()) != 0 || config.Get[string](s.cfg, "speech_provider") != "mistral" {
+		t.Fatal("tutorial opened another window or changed the provider")
 	}
 	if s.settingUpMistral {
 		t.Fatal("leaving setup kept push-to-talk disabled")
@@ -262,17 +382,91 @@ func TestMistralTutorialStaysInSettings(t *testing.T) {
 }
 
 func TestSpeechCardsExposeRecoveryActions(t *testing.T) {
-	s := &state{cfg: config.Defaults(), speechReady: true}
+	s := &state{cfg: config.Defaults(), speechStatus: "Speech unavailable"}
 	setup := speechSetup{local: map[string]localModelStatus{
 		"parakeet": {ready: true, cached: true},
-		"kokoro":   {cached: true},
+		"orukeet":  {cached: true},
 	}}
 	w := gui.NewTestWindow(t, gui.WindowCfg{})
-	for id, action := range map[string]string{"parakeet": "retry-parakeet", "kokoro": "delete-kokoro"} {
+	for id, action := range map[string]string{"parakeet": "retry-parakeet", "orukeet": "delete-orukeet"} {
 		layout := w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, id, id) })
 		if _, ok := layout.FindByID(action); !ok {
 			t.Errorf("missing recovery action %s", action)
 		}
+	}
+}
+
+func TestSpeechModelDownloadButtonCancels(t *testing.T) {
+	s := &state{cfg: config.Defaults(), ctx: t.Context(), dir: t.TempDir(), saves: make(chan *saveRequest, 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{})
+	model, _ := models.Lookup("orukeet")
+	// An incomplete bundle makes the downloader return without using the network
+	if err := os.MkdirAll(model.Directory(s.dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	setup := speechSetup{local: map[string]localModelStatus{"orukeet": {cached: true}}}
+	w := gui.NewTestWindow(t, gui.WindowCfg{Width: 432, Height: 180})
+	w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, "orukeet", "Enhanced (Orukeet)") })
+	hasLabel := func(label string) bool {
+		for _, cmd := range w.Renderers() {
+			if cmd.Kind == gui.RenderText && cmd.Text == label {
+				return true
+			}
+		}
+		return false
+	}
+	const buttonID = "download-orukeet"
+	if !hasLabel("Download") {
+		t.Fatal("missing model should offer Download")
+	}
+	if err := w.TestClick(buttonID); err != nil {
+		t.Fatal(err)
+	}
+	if !hasLabel("Cancel") || hasLabel("Download") {
+		t.Fatal("downloading model should replace Download with Cancel")
+	}
+	if err := w.TestClick(buttonID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for setup.running != "" && time.Now().Before(deadline) {
+		s.main.FrameFn()
+		time.Sleep(time.Millisecond)
+	}
+	w.TestRender(nil)
+	if !hasLabel("Download") || !hasLabel("Download canceled") || len(s.saves) != 0 {
+		t.Fatal("cancel should restore Download and leave the current provider selected")
+	}
+}
+
+func TestSpeechModelUseAndDeleteShareRow(t *testing.T) {
+	s := &state{cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	setup := speechSetup{local: map[string]localModelStatus{
+		"parakeet": {ready: true, cached: true},
+		"orukeet":  {ready: true, cached: true},
+	}}
+	w := gui.NewTestWindow(t, gui.WindowCfg{Width: 432, Height: 180})
+	layout := w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, "orukeet", "Enhanced (Orukeet)") })
+	use, hasUse := layout.FindByID("provider-orukeet")
+	del, hasDelete := layout.FindByID("delete-orukeet")
+	if !hasUse || !hasDelete || use.Shape.Y != del.Shape.Y || use.Shape.X >= del.Shape.X {
+		t.Fatal("installed model should show Use and Delete on one row")
+	}
+	if err := w.TestClick("provider-orukeet"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-s.saves:
+		if config.Get[string](req.values, "speech_provider") != "orukeet" {
+			t.Fatal("Use queued the wrong provider")
+		}
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("Use did not queue a provider change")
+	}
+	layout = w.TestRender(nil)
+	if _, ok := layout.FindByID("provider-orukeet"); ok {
+		t.Fatal("active model still offers Use")
 	}
 }
 
