@@ -87,6 +87,7 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		if config.Get[bool](previous, "topmost_active") != config.Get[bool](s.cfg, "topmost_active") {
 			s.setTopmost()
 		}
+		// Keep the loaded recognizer when an unrelated setting changes.
 		if config.Get[string](previous, "speech_provider") != config.Get[string](s.cfg, "speech_provider") {
 			s.prepareSpeech(true, false)
 		}
@@ -191,6 +192,7 @@ func (s *state) debugWriter(startTerminal func() (io.WriteCloser, error)) {
 				closeDebug()
 				continue
 			}
+			// Try to open the terminal once per debug session while the file logger keeps working.
 			if !terminalAttempted {
 				terminalAttempted = true
 				var err error
@@ -236,6 +238,7 @@ func rotate(dir string) error {
 func (s *state) setDebug(enabled bool) {
 	s.debugEnabled.Store(enabled)
 	if !enabled {
+		// Wake the debug writer on disable so it can close files even with no new messages.
 		s.debugLog(debugEvent{})
 		return
 	}
@@ -306,12 +309,14 @@ func debugBinding(binding string) string {
 	case "":
 		return "none"
 	default:
+		// Use a fixed label for unrecognized binding types so raw settings stay out of diagnostics.
 		return "unknown"
 	}
 }
 
 func debugProvider(provider string) string {
 	switch provider {
+	// Allow only known provider names in logs because the saved value could contain arbitrary text.
 	case "parakeet", "orukeet", "mistral":
 		return provider
 	default:
@@ -377,6 +382,7 @@ func debugReason(err error) string {
 	case errors.As(err, &mistral):
 		return mistral.Error()
 	default:
+		// Keep raw errors out of the debug log because they can contain paths or user input.
 		return "see the in-app message for details"
 	}
 }

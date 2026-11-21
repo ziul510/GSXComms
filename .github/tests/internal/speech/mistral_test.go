@@ -56,6 +56,7 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 					if err != nil || !bytes.Equal(audio, wave(pcm)) {
 						t.Fatal("unexpected WAV upload")
 					}
+				// Inspect the translation body to catch any accidental second upload of the audio.
 				case 2:
 					var payload struct {
 						Messages []struct{ Role, Content string }
@@ -70,6 +71,7 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
 			transcript, err := Voxtral(t.Context(), "dummy-test-key", "voxtral-small-latest", pcm)
+			// A second request should occur only for fixtures that require translation.
 			if (calls == 2) != (tc.translation != "") {
 				t.Fatalf("unexpected request count: %d", calls)
 			}

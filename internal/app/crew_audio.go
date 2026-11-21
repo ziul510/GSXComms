@@ -67,6 +67,7 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 		for i < len(s.audioQueue) && s.audioQueue[i].priority {
 			i++
 		}
+		// Keep interrupts in arrival order and place them ahead of preset audio.
 		s.audioQueue = slices.Insert(s.audioQueue, i, request)
 	} else if len(s.audioQueue) < 16 || request.ordered && request.readout == "" {
 		s.audioQueue = append(s.audioQueue, request)
@@ -99,6 +100,7 @@ func (s *state) playbackLoop() {
 		s.audioQueue[0] = playback{}
 		s.audioQueue = s.audioQueue[1:]
 		ctx, cancel := context.WithCancel(s.ctx)
+		// Only expose a cancel function for playback that an interrupt may cut short.
 		if !next.protected() {
 			s.audioCancel = cancel
 		}
@@ -109,6 +111,7 @@ func (s *state) playbackLoop() {
 		}
 		if ctx.Err() == nil {
 			if next.cue != "" && len(next.pcm) == 0 {
+				// Suppress repeated warnings for the same missing cue.
 				if missing != next.cue {
 					message := "No installed crew recording for " + next.cue
 					s.async(func() { s.log("AUDIO", message) })
@@ -142,6 +145,7 @@ func (s *state) acknowledge(prefs config.Values, service, selected string, voice
 		defer s.servicesMu.Unlock()
 		was := s.services[service]
 		now, known := serviceConnected(was, selected)
+		// Skip the cue if the label cannot tell us that the service changed state.
 		if !known || now == was {
 			return
 		}
@@ -175,6 +179,7 @@ func serviceConnected(was bool, selected string) (connected, known bool) {
 	selected = strings.Join(strings.FieldsFunc(strings.ToLower(selected), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	}), " ")
+	// Check disconnect terms before connect terms because the labels can contain both.
 	for _, transition := range serviceTransitions {
 		for _, word := range transition.words {
 			if strings.Contains(selected, word) {
@@ -218,6 +223,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 		m.Lock()
 		defer m.Unlock()
 		m.active--
+		// Start the unmute timer only after the last command or clip releases its hold.
 		if m.active == 0 && m.release != nil {
 			var timer *time.Timer
 			timer = time.AfterFunc(3950*time.Millisecond, func() {

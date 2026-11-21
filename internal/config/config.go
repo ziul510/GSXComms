@@ -209,6 +209,7 @@ func decode(data []byte) (Values, error) {
 	if provider := Get[string](values, "speech_provider"); !slices.Contains([]string{"parakeet", "orukeet", "mistral"}, provider) {
 		values.Put("speech_provider", "parakeet")
 	}
+	// Normalize saved presets before removing readout actions that are disabled.
 	values.Put("presets", migratePresets(values["presets"]))
 	values.RemoveDisabledReadMenu()
 	if binding := Get[Binding](values, "ptt_bind"); binding.Type == "joy" {
@@ -243,6 +244,7 @@ func save(dir string, values Values, migrateKey func(string) error) error {
 	if err := preserveSettingsCredential(path, migrateKey); err != nil {
 		return err
 	}
+	// Keep the settings file in place if its legacy binding could not be backed up.
 	if err := backupLegacyBinding(path); err != nil {
 		return err
 	}
@@ -274,6 +276,7 @@ func backupLegacyBinding(path string) error {
 			return err
 		}
 	}
+	// Keep the first copy because later saves can no longer recover the original binding.
 	err = writeAtomic(path+".ptt-backup", data, moveNew)
 	if errors.Is(err, os.ErrExist) {
 		return nil
@@ -294,6 +297,7 @@ func preserveSettingsCredential(path string, migrateKey func(string) error) erro
 	}
 	var saved Values
 	if json.Unmarshal(data, &saved) == nil {
+		// Migrate the old key before saving settings that omit credentials.
 		if key := Get[string](saved, legacySecret); key != "" {
 			if err := migrateKey(key); err != nil {
 				return fmt.Errorf("could not migrate Voxtral credential: %w", err)

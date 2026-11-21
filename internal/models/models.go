@@ -161,6 +161,7 @@ func (m Model) Download(ctx context.Context, data string, progress func(int64, i
 		return errors.New("not enough free disk space for this model")
 	}
 	// Try the matching Hugging Face snapshot before downloading the same revision again
+	// Look under the pinned revision so a cache entry for another model version is ignored.
 	cache := filepath.Join(cacheRoot(), "models--"+strings.ReplaceAll(m.Repo, "/", "--"), "snapshots", m.Revision)
 	for _, file := range m.Files {
 		if err := ctx.Err(); err != nil {
@@ -194,6 +195,7 @@ func (m Model) Download(ctx context.Context, data string, progress func(int64, i
 		done += file.Bytes
 		progress(done, total)
 	}
+	// Leave the verified files in staging if the user cancels before publication.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -211,6 +213,7 @@ func (m Model) Delete(data string) error {
 		return err
 	}
 	defer windows.CloseHandle(handle)
+	// Delete staging too so a fresh download cannot reuse the old partial files.
 	return errors.Join(os.RemoveAll(m.Directory(data)), os.RemoveAll(m.Directory(data)+".partial"))
 }
 

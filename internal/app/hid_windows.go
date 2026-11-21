@@ -41,6 +41,7 @@ func (s *state) refreshHIDPaths() {
 	paths := make(map[string][]string)
 	if count > 0 {
 		devices := make([]rawDeviceEntry, int(count))
+		// Keep the previous device list if hotplug makes this scan fail.
 		result, _, _ = list.Call(uintptr(unsafe.Pointer(&devices[0])), uintptr(unsafe.Pointer(&count)), size)
 		if uint32(result) == ^uint32(0) || result > uintptr(len(devices)) {
 			return
@@ -55,6 +56,7 @@ func (s *state) refreshHIDPaths() {
 		}
 	}
 	s.async(func() {
+		// Publish the new device list on the UI thread before updating binding labels.
 		s.hidPaths = paths
 		s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
 	})
@@ -62,6 +64,7 @@ func (s *state) refreshHIDPaths() {
 
 func (s *state) legacyHIDPath(b config.Binding) string {
 	paths := s.hidPaths[strings.ToLower(strings.TrimSpace(b.JoyName))]
+	// A saved name can identify a candidate only if exactly one connected device uses it.
 	if len(paths) == 1 {
 		return paths[0]
 	}
@@ -89,6 +92,7 @@ func (s *state) boundHIDPath(b config.Binding) string {
 			}
 		}
 	}
+	// Accept a moved device path only when exactly one attached device has the same model ID.
 	if count == 1 {
 		return fallback
 	}
@@ -237,6 +241,7 @@ func (s *state) listenHID(ctx context.Context) {
 			}
 			data := make([]byte, size)
 			got, _, _ := raw.Call(msg.lParam, input, uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(&size)), head)
+			// Ignore a short packet before interpreting its header.
 			if uint32(got) != size {
 				break
 			}
@@ -291,6 +296,7 @@ func (s *state) hidReport(d *hidDevice, report []byte) {
 			s.hidButton(d, int(value)-1, true)
 		}
 	}
+	// Reuse the device's button buffer to avoid allocating a new one for each report.
 	d.buttons = append(d.buttons[:0], next...)
 }
 
@@ -305,6 +311,7 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 			return
 		}
 		if s.binding != nil {
+			// Save the device path so the binding can distinguish controllers with the same display name.
 			id, _ := json.Marshal(path)
 			s.binding(config.Binding{Type: "joystick", JoyID: id, JoyName: name, JoyButton: &index, Description: fmt.Sprintf("%s Button %d", name, index+1)})
 			return

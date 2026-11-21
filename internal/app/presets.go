@@ -56,6 +56,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		// Check duplicates against every other draft entry before inserting or replacing one
 		value := form
 		if !config.Get[bool](s.settingsDraft(), config.MenuReadoutSetting) {
+			// Copy the service list so a failed save leaves the editor's draft intact.
 			value.Services = slices.Clone(form.Services)
 			value.RemoveReadMenu()
 		}
@@ -91,6 +92,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			},
 		})
 	}
+	// Refresh this editor if another window changes whether presets can read the menu.
 	s.presetReadoutChanged = func() {
 		entries = config.Get[[]config.Preset](s.cfg, "presets")
 		if !config.Get[bool](s.cfg, config.MenuReadoutSetting) {
@@ -112,6 +114,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		var body []gui.View
 		for i, p := range entries {
 			id := strconv.Itoa(i)
+			// Reject clicks from a rendered row if a save replaced the preset at its index.
 			current := func() bool {
 				return !saving && i < len(entries) && entries[i].Name == p.Name
 			}
@@ -214,6 +217,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			editor = append(editor, button("add-service", "Add service", 0, false, false, func() {
 				service := available
 				if available == custom {
+					// Reject blank custom text because it would give GSX nothing to match.
 					text := strings.TrimSpace(customText)
 					if text == "" {
 						message = "Enter GSX menu text"

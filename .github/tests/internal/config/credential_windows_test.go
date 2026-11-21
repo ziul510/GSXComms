@@ -12,9 +12,11 @@ import (
 )
 
 func TestWindowsCredentialRoundTrip(t *testing.T) {
+	// Use a separate credential target so cleanup cannot delete the user's key.
 	name := keyTarget + "/test-" + rand.Text()
 	const fixture = "credential-manager-round-trip"
 	if err := writeKey(name, fixture); err != nil {
+		// Headless Windows sessions can lack a credential vault.
 		if errors.Is(err, windows.ERROR_NO_SUCH_LOGON_SESSION) {
 			t.Skip("Windows session has no Credential Manager vault")
 		}

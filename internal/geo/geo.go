@@ -42,6 +42,7 @@ func (p *Position) Label() string {
 	if country == "" {
 		country = p.Country
 	}
+	// Avoid showing the same name twice when the region matches the country.
 	if p.Region != "" && !strings.EqualFold(p.Region, country) {
 		return p.Region + ", " + country
 	}
@@ -142,12 +143,14 @@ func AccentCandidates(pos Position, overrides map[string]string) []string {
 	name := strings.ToLower(mapping.Names[pos.Country])
 	return []string{
 		overrides[strings.ToLower(pos.Country)], overrides[name], stockNames[name],
+		// Try the region before falling back to the broader country mapping.
 		mapping.Regions[pos.Country][strings.ToLower(pos.Region)], mapping.Country[pos.Country],
 	}
 }
 
 // Load the optional user override file
 func Overrides(dir string) map[string]string {
+	// An unreadable override leaves the bundled accent mappings available.
 	raw, err := os.ReadFile(filepath.Join(dir, assets.AccentMappingsFile))
 	if err != nil {
 		return nil

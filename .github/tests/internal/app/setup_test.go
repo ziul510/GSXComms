@@ -44,6 +44,7 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			w.FrameFn()
+			// Pump the main window too because it receives the settings writer's completion.
 			s.main.FrameFn()
 			if w.CloseRequested() {
 				saved, err := config.Load(s.dir)
@@ -86,6 +87,7 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 
 func waitForAccentContinue(t *testing.T, w *gui.Window) *gui.Layout {
 	t.Helper()
+	// Pump window callbacks while waiting for the background install to expose Continue.
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
 		w.FrameFn()
 		layout := w.TestRender(nil)
@@ -149,6 +151,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if complete || w.CloseRequested() || !completeAccentPack(filepath.Join(accentsDir, pack.name), pack.accents) {
 		t.Fatal("Save should install the pack and keep the wizard open")
 	}
+	// Installing recordings alone must leave first-run settings unwritten.
 	if _, err := os.Stat(filepath.Join(dir, config.SettingsFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("settings file changed before Continue: %v", err)
 	}
@@ -164,6 +167,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if !ok || dropdown.Shape.Y >= picker.Shape.Y {
 		t.Fatal("footer dropdown must open upward")
 	}
+	// Read the rendered dropdown labels to check what the user can actually pick.
 	var choices []string
 	for _, cmd := range w.Renderers() {
 		box := dropdown.Shape
@@ -218,6 +222,7 @@ func TestIncompleteAccentDirectoryIsPreservedAndReported(t *testing.T) {
 	if err := os.MkdirAll(target, 0700); err != nil {
 		t.Fatal(err)
 	}
+	// Leave a file in the incomplete install to detect any destructive retry.
 	path := filepath.Join(target, "keep.txt")
 	if err := os.WriteFile(path, []byte("existing recording data"), 0600); err != nil {
 		t.Fatal(err)
@@ -235,6 +240,7 @@ func TestIncompleteAccentDirectoryIsPreservedAndReported(t *testing.T) {
 func TestRestoreAccentSetupFromExtractedPacks(t *testing.T) {
 	recordings := t.TempDir()
 	pack := packs[5]
+	// Use the old flat extraction layout to exercise startup recovery.
 	greeting := filepath.Join(recordings, "Extracted", "nigerian", "goahead")
 	if err := os.MkdirAll(greeting, 0700); err != nil {
 		t.Fatal(err)
@@ -270,6 +276,7 @@ func TestAccentSetupCheckmarkWhileSaving(t *testing.T) {
 	if err := installAccentPacks(t.Context(), filepath.Join("..", "..", "Accents"), recordings, []string{pack.name}); err != nil {
 		t.Fatal(err)
 	}
+	// Reuse a complete pack so the test can inspect the locked selection without extracting again.
 	view := accentSetupView(t.Context(), t.TempDir(), recordings, config.Defaults(), func([]string, string, func(error)) {}, nil)
 	w := gui.NewTestWindow(t, gui.WindowCfg{Width: 720, Height: 600})
 	w.TestRender(view)
@@ -311,6 +318,7 @@ func TestRegionalCueUsesEnabledPacks(t *testing.T) {
 	prefs.Put("installed_packs", []string{packs[0].name})
 	request := playback{prefs: prefs, location: &geo.Position{Country: "FR"}, cue: "jetway", voice: "male"}
 	american, _, name := s.regionalCue(request)
+	// Request the same cue twice to check that the decoder cache reuses the sample buffer.
 	again, rate, cachedName := s.regionalCue(request)
 	if name != "American" || cachedName != name || len(again) == 0 || len(again)%4 != 0 || &again[0] != &american[0] || rate == 0 {
 		t.Fatal("expected cached stereo PCM")
@@ -355,6 +363,7 @@ func TestFailedAccentExtractionLeavesNoInstalledPack(t *testing.T) {
 	if err := installAccentPacks(t.Context(), archives, recordings, []string{name}); err == nil {
 		t.Fatal("incomplete pack installed")
 	}
+	// Check the whole recordings directory so abandoned staging folders fail the test.
 	entries, err := os.ReadDir(recordings)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("failed extraction left files behind: %v, %v", entries, err)
@@ -374,6 +383,7 @@ func TestMistralTutorialStaysInSettings(t *testing.T) {
 	if err := w.TestClick("settings-scroll:provider-mistral"); err != nil {
 		t.Fatal(err)
 	}
+	// Check every tutorial step because only the final page should show the key field.
 	for i := range mistralSteps {
 		layout := w.TestRender(nil)
 		if _, ok := layout.FindByID("mistral-key:voxtral-key"); ok {
@@ -410,6 +420,7 @@ func TestSpeechCardsExposeRecoveryActions(t *testing.T) {
 		"orukeet":  {cached: true},
 	}}
 	w := gui.NewTestWindow(t, gui.WindowCfg{})
+	// A failed load needs a retry while an incomplete download needs a way to clear its files.
 	for id, action := range map[string]string{"parakeet": "retry-parakeet", "orukeet": "delete-orukeet"} {
 		layout := w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, id, id) })
 		if _, ok := layout.FindByID(action); !ok {
@@ -423,6 +434,7 @@ func TestEnabledMenuReaderCanRecoverIncompleteModel(t *testing.T) {
 	s.cfg.Put(config.MenuReadoutSetting, true)
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{})
 	model, _ := models.Lookup("kokoro")
+	// Create the folder without a verified model to exercise the unfinished install state.
 	if err := os.MkdirAll(model.Directory(s.dir), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -507,6 +519,7 @@ func TestSpeechModelUseAndDeleteShareRow(t *testing.T) {
 		t.Fatal("Use did not queue a provider change")
 	}
 	layout = w.TestRender(nil)
+	// Once the selection is saved, the active model must stop offering Use.
 	if _, ok := layout.FindByID("provider-orukeet"); ok {
 		t.Fatal("active model still offers Use")
 	}
@@ -522,6 +535,7 @@ func TestMistralSaveFromClosedWindowKeepsNewTutorialActive(t *testing.T) {
 	}
 	w.Close()
 	select {
+	// Complete the queued save after the window closes to reproduce the stale callback.
 	case req := <-s.saves:
 		s.finishSave(req, nil)
 	default:

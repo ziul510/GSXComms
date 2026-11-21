@@ -26,6 +26,7 @@ func TestHelperTimesOutWithoutCallerDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Run this test binary as the helper so the timeout test needs no simulator install.
 	cmd := exec.Command(exe, "-test.run=^TestHelperTimesOutWithoutCallerDeadline$")
 	cmd.Env = append(cmd.Environ(), child+"=1")
 	transport, err := connectHelper(t.Context(), cmd)
@@ -36,6 +37,7 @@ func TestHelperTimesOutWithoutCallerDeadline(t *testing.T) {
 	// Keep the regression test bounded even if the transport deadline is removed
 	cleanup := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
 	defer cleanup.Stop()
+	// Leave the caller unbounded so only the transport's own timeout can unblock the read.
 	_, err = transport.Get(context.Background(), Started)
 	if !errors.Is(err, ErrDisconnected) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("stalled helper returned %v", err)

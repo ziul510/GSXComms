@@ -10,6 +10,7 @@ import (
 )
 
 func createJob() (windows.Handle, error) {
+	// Use a private job so closing it affects only the worker assigned to it.
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return 0, err
@@ -20,6 +21,7 @@ func createJob() (windows.Handle, error) {
 	// Configure the job to kill its children when the handle closes
 	_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
 	if err != nil {
+		// Release the handle here because a failed setup never hands ownership to the worker.
 		_ = windows.CloseHandle(job)
 		return 0, err
 	}

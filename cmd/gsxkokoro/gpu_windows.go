@@ -40,6 +40,7 @@ func addCUDA(options *ort.SessionOptions) bool {
 	}
 	device, free, load := -1, 0, 101
 	for _, row := range stats {
+		// Skip malformed rows so one bad GPU record does not discard the other cards.
 		if len(row) != 3 {
 			continue
 		}
@@ -64,5 +65,6 @@ func addCUDA(options *ort.SessionOptions) bool {
 	}
 	// SessionOptions keeps the configured provider after the temporary CUDA options are freed
 	defer cuda.Destroy()
+	// Pass the chosen card index so inference runs on the GPU that passed the load check.
 	return cuda.Update(map[string]string{"device_id": strconv.Itoa(device)}) == nil && options.AppendExecutionProviderCUDA(cuda) == nil
 }

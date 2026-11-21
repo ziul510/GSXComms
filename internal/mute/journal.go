@@ -84,6 +84,7 @@ func acquire(path string, api backend) error {
 		if err := restore(path, api); err != nil {
 			return err
 		}
+		// Reload the journal because recovery may have removed entries for sessions it restored.
 		old, err = read(path)
 		if err != nil {
 			return err
@@ -105,6 +106,7 @@ func acquire(path string, api backend) error {
 		if err := write(path, old); err != nil {
 			return err
 		}
+		// Leave the journal entry in place even if the mute call fails.
 		return s.Set(true)
 	})
 }

@@ -114,12 +114,14 @@ func (windowsAudio) Alive(id identity) bool {
 
 func (windowsAudio) Visit(fn func(audioSession) error) error {
 	runtime.LockOSThread()
+	// Keep this goroutine on the same thread until COM cleanup has run.
 	defer runtime.UnlockOSThread()
 	// Initialize COM on the thread that will own and release the audio interfaces
 	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 0)
 	if int32(hr) < 0 {
 		return fmt.Errorf("Core Audio initialization failed (0x%08x)", uint32(hr))
 	}
+	// Register COM cleanup before acquiring interfaces so their releases run first.
 	defer ole.NewProc("CoUninitialize").Call()
 	var e *com
 	hr, _, _ = ole.NewProc("CoCreateInstance").Call(uintptr(unsafe.Pointer(&clEnumerator)), 0, 23, uintptr(unsafe.Pointer(&iEnumerator)), uintptr(unsafe.Pointer(&e)))

@@ -81,6 +81,7 @@ func ParseMenu(raw string) Menu {
 		}
 		// Use panel order for selection indices since labels can already carry numbers
 		item := strings.TrimSpace(numbering.ReplaceAllString(line, "${1}"))
+		// Skip repeated titles so they do not take up selectable slots.
 		if item != "" && !strings.EqualFold(item, menu.Title) {
 			menu.Options = append(menu.Options, item)
 		}
@@ -369,9 +370,11 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 		return err
 	}
 	s.remote = true
+	// Only highlight a successful choice when the snapshot still contains that slot.
 	if s.OnChoice != nil && index < len(page.Options) {
 		s.OnChoice(page, index)
 	}
+	// Give GSX time to apply the choice before the next operation reads the panel.
 	return s.Sleep(ctx, 300*time.Millisecond)
 }
 
@@ -452,6 +455,7 @@ func stuck(options []string) bool {
 	}
 	a, b := menuLabel(options[0]), menuLabel(options[1])
 	navigation := []string{"back", "cancel", "close"}
+	// The broken page has two different navigation choices and no service choices.
 	return a != b && slices.Contains(navigation, a) && slices.Contains(navigation, b)
 }
 
@@ -488,6 +492,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	index := find(menu.Options)
 	if service == "" && index < 0 {
+		// A number refers to the displayed page, so a missing slot cannot trigger a submenu search.
 		if _, explicit := commands.ExplicitNumber(text); explicit {
 			return "", ErrNoMenuMatch
 		}
@@ -540,6 +545,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 				return selected, err
 			}
 			page := s.ReadMenu()
+			// GSX can briefly leave the old page in place or clear it while opening the next page.
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
 			}

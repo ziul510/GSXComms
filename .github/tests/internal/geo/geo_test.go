@@ -19,6 +19,7 @@ func TestAirportLocations(t *testing.T) {
 		{55.949, -3.364, "GB", "Scottish"}, {48.3538, 11.7861, "DE", "German"}, {35.5494, 139.7798, "JP", "Japanese"},
 	} {
 		p, err := Nearest(test.lat, test.lon)
+		// Check the stock accent candidates as well as the country found by the city index.
 		if err != nil || p.Country != test.cc || !slices.Contains(AccentCandidates(p, nil), test.accent) {
 			t.Errorf("lookup = %#v, %v", p, err)
 		}
@@ -41,6 +42,7 @@ func TestLocalOverrideByCountryNameAndCode(t *testing.T) {
 		{Position{Country: "GB", Region: "Scotland"}, "Irish"},
 	} {
 		candidates := AccentCandidates(sample.pos, overrides)
+		// Missing mappings leave blank entries ahead of the first usable accent.
 		first := slices.IndexFunc(candidates, func(name string) bool { return name != "" })
 		if first < 0 || candidates[first] != sample.want {
 			t.Errorf("%v: candidates %q, want %q first", sample.pos, candidates, sample.want)

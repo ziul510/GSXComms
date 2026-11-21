@@ -23,10 +23,12 @@ func TestSpeechSpans(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var spans speechSpans
+			// Use one character per frame to test span boundaries without running the model.
 			for i, frame := range tc.frames {
 				spans.observe(i*vadWindow, map[rune]float32{'S': 0.8, 'w': 0.4, '.': 0.1}[frame])
 			}
 			spans.finish(len(tc.frames) * vadWindow)
+			// Compare offsets in frames so the expected spans match the fixture strings.
 			for i := range spans.kept {
 				spans.kept[i].start /= vadWindow
 				spans.kept[i].end /= vadWindow

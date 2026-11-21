@@ -226,6 +226,7 @@ func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte)
 	cfg.IconPNG = icon
 	w := gui.NewWindow(cfg)
 	w.TitlebarDark(true)
+	// Run the first-launch wizard before the main window starts reading preferences.
 	backend.RunApp(gui.NewApp(), w)
 	return prefs
 }
@@ -235,6 +236,7 @@ func firstAccentWindow(ctx context.Context, dir, archives string, prefs config.V
 	var saved config.Values
 	view := accentSetupView(ctx, archives, recordings, prefs, func(enabled []string, fallback string, then func(error)) {
 		saved = accentPreferences(prefs.Copy(), enabled, fallback)
+		// Write the wizard's selection off the window thread so Continue stays responsive.
 		go func() { then(config.Save(dir, saved)) }()
 	}, func(w *gui.Window) {
 		onSaved(saved)
@@ -315,6 +317,7 @@ func (s *state) setLogSecret(key string) {
 	if key == "" {
 		s.logSecret = nil
 	} else {
+		// Match the key literally even if it contains regex punctuation or changes case in an error.
 		s.logSecret = regexp.MustCompile("(?i)" + regexp.QuoteMeta(key))
 	}
 }
@@ -383,6 +386,7 @@ func (s *state) simulator() {
 	var pollDone chan struct{}
 	pollCtx, stopPoll := context.WithCancel(s.ctx)
 	defer func() {
+		// Wait for telemetry to stop using the transport before closing the session.
 		stopPoll()
 		if pollDone != nil {
 			<-pollDone
@@ -396,6 +400,7 @@ func (s *state) simulator() {
 		s.trace("GSX", fmt.Sprintf("Selected slot %d of %d", index+1, len(page.Options)))
 		s.menuActivity = time.Now()
 		s.async(func() {
+			// Only add a highlight if the overlay is still open when the callback runs.
 			if !s.overlay {
 				return
 			}
@@ -436,6 +441,7 @@ func (s *state) simulator() {
 				job(ctx, session)
 			}
 			cancel()
+			// Start telemetry once per connected session after the menu loop has established it.
 			if session.Connected() && pollDone == nil {
 				pollDone = make(chan struct{})
 				go s.pollSimulator(pollCtx, session.Sim, pollDone)
@@ -454,6 +460,7 @@ func (s *state) simulator() {
 				case time.Since(s.menuActivity) >= 10*time.Second:
 					s.trace("GSX", "Releasing the idle menu")
 					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+					// Save a fresh page before releasing remote control so the overlay still has choices.
 					if s.menuWatch {
 						page, err := session.RefreshAndRelease(ctx)
 						if len(page.Options) > 0 {
@@ -514,6 +521,7 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 	var hadSpeed, speedAvailable bool
 	failed := 0
 	for ctx.Err() == nil {
+		// Let an in-progress status exchange finish during shutdown so it can release the shared transport.
 		statusCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 		ready, speed, err := session.Status(statusCtx)
 		cancel()
@@ -525,6 +533,7 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 		} else {
 			s.groundSpeed.Store(nil)
 		}
+		// A missing speed blocks transmission without counting as a lost SimConnect reply.
 		if err != nil && !errors.Is(err, gsx.ErrSpeedUnavailable) {
 			failed++
 		} else {
@@ -711,6 +720,7 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 		current, err = session.OpenMenuPage(ctx)
 	}
 	if err == nil {
+		// Select against the page the user saw because reopening can return different choices.
 		err = session.ChooseOn(ctx, page, index)
 		if err != nil {
 			current = session.ReadMenu()
@@ -744,6 +754,7 @@ type transmissionPolicy struct {
 }
 
 func (s *state) publishTransmissionPolicy() {
+	// Publish these settings together so the simulator loop reads one consistent snapshot.
 	s.policy.Store(&transmissionPolicy{
 		simulation:  config.Get[bool](s.cfg, "simulation_mode"),
 		ignoreSpeed: config.Get[bool](s.cfg, "ignore_speed_restriction"),
@@ -765,11 +776,13 @@ func (s *state) speedBlock(simulation, ignoreSpeed bool) string {
 		}
 		return ""
 	}
+	// Treat stale telemetry like a missing reading because the aircraft could have sped up.
 	return "Taxi speed unavailable for transmission"
 }
 
 func (s *state) loadVocabulary() commands.Vocabulary {
 	vocab, warning := s.vocabulary.Load(s.dir)
+	// Report a broken vocabulary override while routing continues with the last valid rules.
 	if warning != "" {
 		s.traceLevel("WARN", "CMD", "Could not load words.json. Using last valid vocabulary")
 		s.async(func() {
@@ -836,7 +849,9 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 			fail(err.Error())
 			return
 		}
+		// Recheck live speed and speech readiness before writing a menu choice.
 		session.BeforeChoice = gate
+		// Remove the command's gate before the session runs another kind of job.
 		defer func() { session.BeforeChoice = nil }()
 		if idx, ok := commands.Number(text); ok && overlay {
 			s.async(func() { s.log("CMD", input) })
@@ -998,6 +1013,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 
 func menuService(label string) string {
 	label = strings.NewReplacer("-", "", "_", "").Replace(strings.ToUpper(label))
+	// Check deboarding first because its label also contains boarding.
 	for _, service := range []string{"GPU", "JETWAY", "STAIRS", "DEBOARDING", "BOARDING", "CATERING", "CLEANING", "DEICE", "LAVATORY", "PUSHBACK", "REFUELING", "WATER"} {
 		if strings.Contains(label, service) {
 			return service

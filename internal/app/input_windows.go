@@ -158,6 +158,7 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 				if key == 0x1b {
 					s.binding(config.Binding{})
 				} else if key != 0x0d {
+					// Enter can activate the dialog's focused control, so reserve it for the dialog.
 					s.binding(bindingForKey(key))
 				}
 			}
@@ -209,6 +210,7 @@ func (s *state) rebind(parent *gui.Window) {
 			}
 			saving, message = false, "Could not save binding. Press a key or button to retry."
 			selectingKey.Store(true)
+			// Give the user a fresh input window after a failed save.
 			timeout.Reset(15 * time.Second)
 			if window != nil {
 				window.InvalidateLayout()
@@ -283,6 +285,7 @@ func (s *state) pollController(ctx context.Context) {
 				if (prev & bit) == (current.buttons & bit) {
 					continue
 				}
+				// A cleared bit on a disconnected controller can release an active recording.
 				isDown := current.buttons&bit != 0
 				s.async(func() {
 					if s.binding != nil && isDown {
@@ -340,6 +343,7 @@ func (s *state) setTopmost() {
 func focusWindow(title string) {
 	if hwnd := windowByTitle(title); hwnd != 0 {
 		if minimized, _, _ := user.NewProc("IsIconic").Call(hwnd); minimized != 0 {
+			// Restore the existing dialog before bringing it to the foreground.
 			_, _, _ = user.NewProc("ShowWindow").Call(hwnd, windows.SW_RESTORE)
 		}
 		_, _, _ = user.NewProc("SetForegroundWindow").Call(hwnd)

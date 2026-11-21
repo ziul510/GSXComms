@@ -81,6 +81,7 @@ func main() {
 		if err != nil {
 			result.Error = err.Error()
 		}
+		// Exit when the reply pipe closes because the parent can no longer receive results.
 		if err := speech.Write(os.Stdout, result); err != nil {
 			return
 		}
@@ -159,6 +160,7 @@ func (s *runtimeState) phonemize(text string) (string, error) {
 		}
 		p, err := ipa.Load(filepath.Join(s.base, "phonemizer.json"), func(seq []int64) ([]int64, error) {
 			const contextSize = 256
+			// Reject oversized words before padding so the model never sees a truncated pronunciation.
 			if len(seq) > contextSize {
 				return nil, errors.New("word exceeds the phonemizer context window")
 			}
@@ -247,6 +249,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	if err != nil {
 		return err
 	}
+	// Release the previous model only after the replacement session has opened.
 	if s.kokoro != nil {
 		_ = s.kokoro.Destroy()
 	}
@@ -306,6 +309,7 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			}
 			// Convert samples to signed PCM16 for playback
 			for _, sample := range audio {
+				// Clamp before conversion so peaks outside the PCM16 range cannot wrap.
 				normalized := max(-32768, min(32767, float64(sample)*32768))
 				output = binary.LittleEndian.AppendUint16(output, uint16(int16(normalized)))
 			}

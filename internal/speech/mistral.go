@@ -144,10 +144,12 @@ func Voxtral(ctx context.Context, key, model string, pcm []byte) (string, error)
 	if json.Unmarshal(data, &result) != nil || result.Text == nil {
 		return "", errInvalidTranscription
 	}
+	// Drop incomplete transcripts before they can be interpreted as commands.
 	if result.FinishReason != "" && result.FinishReason != "stop" {
 		return "", nil
 	}
 	transcript := strings.TrimSpace(*result.Text)
+	// Skip the extra translation request when there is no text to translate or the text is English.
 	if transcript == "" || strings.EqualFold(result.Language, "en") {
 		return strings.ToLower(transcript), nil
 	}
@@ -177,6 +179,7 @@ func translateTranscript(ctx context.Context, key, transcript string) (string, e
 			Message      struct{ Content string }
 		}
 	}
+	// Require one translation because command routing needs a single transcript.
 	if json.Unmarshal(data, &result) != nil || len(result.Choices) != 1 {
 		return "", errInvalidTranscription
 	}

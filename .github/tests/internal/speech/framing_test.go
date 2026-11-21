@@ -41,6 +41,7 @@ func TestSilenceGate(t *testing.T) {
 	if !Usable(audio) {
 		t.Fatal("full-scale negative audio discarded")
 	}
+	// Keep the loud sample while shortening the clip below the duration floor.
 	if Usable(audio[:7998]) {
 		t.Fatal("short audio passed")
 	}
@@ -59,6 +60,7 @@ func TestWorkerWaitsBeforeRetryingRepeatedFailures(t *testing.T) {
 	if err := w.start(t.Context()); err == nil || w.failures != 2 {
 		t.Fatalf("unexpected automatic retry: failures=%d err=%v", w.failures, err)
 	}
+	// Age the last failure past the retry window without waiting a minute.
 	w.failed = time.Now().Add(-2 * retryWindow)
 	if err := w.start(t.Context()); err == nil || w.failures != 1 {
 		t.Fatalf("retry window left failures=%d err=%v", w.failures, err)

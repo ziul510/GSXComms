@@ -280,6 +280,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 		}
 	}
 	cfg.OnCloseRequest = func(*gui.Window) { closeDialog() }
+	// Track the close callback before the host creates the window so the parent can still cancel it.
 	s.dialogs[id] = closeDialog
 	s.host.OpenWindow(cfg)
 	return closeDialog
@@ -324,6 +325,7 @@ type fullWidthTooltip struct{ gui.View }
 
 func (v fullWidthTooltip) GenerateLayout(w *gui.Window) gui.Layout {
 	layout := gui.GenerateViewLayout(v.View, w)
+	// Make the tooltip wrapper fill the row without inset so its control aligns with neighboring fields.
 	layout.Shape.Sizing = gui.FillFit
 	layout.Shape.Padding = gui.NoPadding
 	return layout
@@ -404,6 +406,7 @@ func (s *state) save(next config.Values, then func(error)) {
 }
 
 func (s *state) openSettings() {
+	// Focus the existing dialog so two settings drafts cannot compete.
 	if s.settingsOpen {
 		focusWindow("Settings")
 		return
@@ -418,6 +421,7 @@ func (s *state) openSettings() {
 		model, _ := models.Lookup(id)
 		setup.local[id] = localModelStatus{ready: model.Ready(s.dir), cached: model.Cached(s.dir)}
 	}
+	// Refresh a model card when background preparation changes its files.
 	s.speechChanged = func(id string) {
 		if model, ok := models.Lookup(id); ok {
 			setup.local[id] = localModelStatus{ready: model.Ready(s.dir), cached: model.Cached(s.dir)}
@@ -537,6 +541,7 @@ func (s *state) openSettings() {
 					if len(values) > 0 {
 						if choice, ok := choices[values[0]]; ok {
 							draft.Put(nameKey, choice.name)
+							// Save the endpoint ID alongside its label because multiple devices can share a name.
 							draft.Put(idKey, choice.endpoint)
 						}
 					}
@@ -687,11 +692,13 @@ func (s *state) openSettings() {
 			body = append(body, wrapped(note, 11, muted))
 		}
 		readerStatus := setup.local["kokoro"]
+		// Offer deletion for partial model files even though they cannot be used for speech.
 		if readerStatus.cached && !readerStatus.ready {
 			body = append(body, modelButton("delete-kokoro", "Delete menu reader model", 180, setup.running != "" || readerSaving, func() {
 				setup.runLocal(s, w, "kokoro", "Deleting", nil)
 			}))
 		}
+		// Offer a separate repair action if readout is enabled but its model is missing.
 		if readerEnabled && !readerStatus.ready && !readerDownloading {
 			body = append(body, modelButton("download-kokoro", "Download menu reader model", 180, setup.running != "" || readerSaving, func() {
 				setup.runLocal(s, w, "kokoro", "Downloading", nil)

@@ -119,11 +119,13 @@ func (w *Worker) Load(ctx context.Context, signature string, paths map[string]st
 	if err != nil {
 		return err
 	}
+	// A rejected model load leaves the prior signature available for reuse.
 	if r.Error != "" {
 		return errors.New(r.Error)
 	}
 	// Only cache the signature after the worker confirms it opened the model
 	w.loaded = signature
+	// Record the engine reported by the loaded model because a GPU attempt can fall back to CPU.
 	w.runtime = r.Runtime
 	return nil
 }
@@ -160,6 +162,7 @@ func (w *Worker) FilterSpeech(ctx context.Context, pcm []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// The worker can run voice detection before a recognition model has been loaded.
 	resp, err := w.exchange(ctx, 30*time.Second, Frame{Op: "filter_speech", SampleRate: 16000, PCM: pcm})
 	if err != nil {
 		return nil, err
@@ -175,6 +178,7 @@ func (w *Worker) start(ctx context.Context) error {
 		return err
 	}
 	if w.failures >= 2 && time.Since(w.failed) < retryWindow {
+		// Stop relaunching after repeated failures so each transmission does not spawn another process.
 		return errors.New("speech worker stopped after repeated failures, try again in a minute")
 	}
 	// Back off briefly after a crash before starting another child
@@ -276,6 +280,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 		}
 		w.fail()
 		return Frame{}, errors.New("speech worker exited or returned an invalid response")
+	// Canceling a request can leave native inference running inside the child.
 	case <-ctx.Done():
 		// Give active inference a short chance to finish before stopping the process
 		if req.Op != "shutdown" {

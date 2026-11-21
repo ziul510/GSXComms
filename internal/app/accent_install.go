@@ -21,6 +21,7 @@ func completeAccentPack(dir string, accents []string) bool {
 	for _, accent := range accents {
 		for _, voice := range []string{"female", "male"} {
 			info, err := os.Stat(filepath.Join(dir, strings.ToLower(accent), "goahead", voice+"11.ai.mp3"))
+			// A pack counts as installed only when both greeting voices exist for each accent.
 			if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
 				return false
 			}
@@ -41,6 +42,7 @@ func legacyAccentPack(root, name string, accents []string) bool {
 
 func installAccentPacks(ctx context.Context, archives, recordings string, enabled []string) error {
 	for _, pack := range packs {
+		// Reuse complete recordings from older installs before trying to open an archive.
 		if !slices.Contains(enabled, pack.name) || legacyAccentPack(recordings, pack.name, pack.accents) {
 			continue
 		}
@@ -72,6 +74,7 @@ func installAccentPack(ctx context.Context, archives, recordings, name string, a
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Normalize clip names before filtering so they match the names playback looks up.
 		path := strings.ToLower(entry.Name)
 		if !accentClipPath.MatchString(path) {
 			continue
@@ -87,6 +90,7 @@ func installAccentPack(ctx context.Context, archives, recordings, name string, a
 		if err != nil {
 			return err
 		}
+		// Check the actual decompressed size because the ZIP header can be wrong.
 		data, readErr := io.ReadAll(io.LimitReader(source, maxAccentClipBytes+1))
 		source.Close()
 		if readErr != nil {
@@ -116,6 +120,7 @@ func installAccentPack(ctx context.Context, archives, recordings, name string, a
 	// Only a complete pack becomes visible to playback and concurrent app instances
 	target := filepath.Join(recordings, name)
 	if err = os.Rename(stage, target); err != nil {
+		// A concurrent installer can finish first, so accept its pack if it passes the same check.
 		if completeAccentPack(target, accents) {
 			return nil
 		}

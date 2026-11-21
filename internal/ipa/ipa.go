@@ -74,6 +74,7 @@ func (p *Phonemizer) Convert(text string) (string, error) {
 		}
 		return english(n)
 	})
+	// Fail on an overflowing number before sending any part of the text to the model.
 	if numberErr != nil {
 		return "", numberErr
 	}
@@ -92,6 +93,7 @@ func (p *Phonemizer) Convert(text string) (string, error) {
 		return nil
 	}
 	for _, c := range text {
+		// Write the pending pronunciation before the separator so punctuation stays in order.
 		if strings.ContainsRune(separators, c) {
 			if err := flush(); err != nil {
 				return "", err
@@ -213,6 +215,7 @@ func english(n uint64) string {
 	switch {
 	case n < 20:
 		return low[n]
+	// Join the tens and units with a hyphen for the word splitter.
 	case n < 100:
 		value := tens[n/10]
 		if n%10 > 0 {

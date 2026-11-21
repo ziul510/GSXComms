@@ -77,6 +77,7 @@ func migrateKeyIfMissing(token string, read func() (string, error), write func(s
 	credentialWrites.Lock()
 	defer credentialWrites.Unlock()
 	// Implicit migration must preserve credentials the user already saved in the vault
+	// Read and seed under the same lock so a user save cannot slip between them.
 	stored, err := read()
 	if err != nil || stored != "" {
 		return err
@@ -99,6 +100,7 @@ func writeKey(name, token string) error {
 	// Pass the token as a byte blob and clear the temporary copy after the call
 	blob := []byte(token)
 	defer clear(blob)
+	// The credential limit applies to bytes, so multibyte keys can reach it sooner.
 	if len(blob) > 2560 {
 		return errors.New("Voxtral key exceeds the credential size limit")
 	}

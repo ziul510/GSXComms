@@ -27,6 +27,7 @@ func TestCrewServiceTransitions(t *testing.T) {
 		{"Open stairs", false, true, true},
 		{"Service completed", true, false, true},
 	} {
+		// Check whether the label was understood as well as whether the service state changed.
 		if next, known := serviceConnected(test.was, test.label); next != test.next || known != test.known {
 			t.Errorf("%q from %v = %v, %v", test.label, test.was, next, known)
 		}
@@ -38,6 +39,7 @@ func TestCrewLoudnessGain(t *testing.T) {
 		amplitude uint16
 		gain      float64
 	}{{0, 1}, {600, 2.5}, {3000, 1}, {12000, 0.5}} {
+		// Use one sample per case so the input RMS equals the fixture amplitude.
 		pcm := binary.LittleEndian.AppendUint16(nil, test.amplitude)
 		if gain := normalizationGain(pcm); gain != test.gain {
 			t.Errorf("gain for %d = %f, want %f", test.amplitude, gain, test.gain)
@@ -51,9 +53,11 @@ func TestProtectedAudioSurvivesOverflowAndInterruption(t *testing.T) {
 	if !s.queueAudio(playback{readout: "readout fixture", ordered: true}, false) {
 		t.Fatal("readout was rejected with space in the queue")
 	}
+	// Fill the remaining slots with ordinary cues that an interruption can drop.
 	for range 15 {
 		s.queueAudio(playback{cue: "normal"}, false)
 	}
+	// Readouts still respect capacity even though queued readouts survive interruptions.
 	if s.queueAudio(playback{readout: "overflow", ordered: true}, false) {
 		t.Fatal("readout exceeded queue capacity")
 	}

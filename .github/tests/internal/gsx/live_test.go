@@ -13,11 +13,13 @@ import (
 )
 
 func TestLiveSimConnect(t *testing.T) {
+	// Reserve this test for a machine with the simulator running.
 	if os.Getenv("GSXCOMMS_TEST_LIVE_MSFS") != "1" {
 		t.Skip("enable with GSXCOMMS_TEST_LIVE_MSFS=1 while MSFS is running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Use the built helper to exercise the same process boundary as the app.
 	helper, err := filepath.Abs(filepath.Join("..", "..", "build", "gsxsimconnect.exe"))
 	if err != nil {
 		t.Fatal(err)

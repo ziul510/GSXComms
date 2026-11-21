@@ -38,6 +38,7 @@ func TestDebugLocationShowsPreferredCrewAccent(t *testing.T) {
 	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=British")
 	prefs.Put("force_accent", "irish")
 	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=Irish (forced)")
+	// Force an accent outside the installed pack to exercise the fallback diagnostic.
 	prefs.Put("force_accent", "Japanese")
 	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=British (forced accent unavailable)")
 }
@@ -59,6 +60,7 @@ func TestDebugTerminalSurvivesLogFailure(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		// Unblock the pipe writer before waiting for its goroutine to finish.
 		_ = reader.Close()
 		<-done
 	})
@@ -86,6 +88,7 @@ func TestDebugTerminalSurvivesLogFailure(t *testing.T) {
 	wantLine("First event")
 	s.trace("SYS", "Second event")
 	wantLine("Second event")
+	// Remove the blocking file so the next event can reopen the log.
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}

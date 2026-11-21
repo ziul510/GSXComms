@@ -19,9 +19,11 @@ func main() {
 	flag.Parse()
 	// The player and recovery process need the same absolute journal path
 	if !filepath.IsAbs(*dir) {
+		// Keep invalid arguments distinct from a failure to mute or restore audio.
 		os.Exit(2)
 	}
 	var hold func() error
+	// Only playback mode needs a handshake and an open pipe to hold the mute.
 	if !*recovery {
 		hold = func() error {
 			// Signal the player only once mute setup has succeeded

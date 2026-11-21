@@ -36,6 +36,7 @@ func openVoiceDetector(dir string) (_ *voiceDetector, err error) {
 		return nil, err
 	}
 	v := &voiceDetector{}
+	// Clean up any tensors already created if a later initialization step fails.
 	defer func() {
 		if err != nil {
 			v.close()
@@ -72,6 +73,7 @@ func openVoiceDetector(dir string) (_ *voiceDetector, err error) {
 }
 
 func (v *voiceDetector) close() {
+	// Destroy the session before the tensors it uses for input and output.
 	if v.session != nil {
 		_ = v.session.Destroy()
 	}
@@ -104,11 +106,13 @@ func (v *voiceDetector) filter(f speech.Frame) ([]byte, error) {
 		for i := range n {
 			window[i] = float32(int16(binary.LittleEndian.Uint16(f.PCM[2*(offset+i):]))) / 32768
 		}
+		// Zero the tail of a short final window so old samples cannot affect its score.
 		clear(window[n:])
 		if err := v.session.Run(); err != nil {
 			return nil, err
 		}
 		spans.observe(offset, prob[0])
+		// Silero reads the previous window's last 64 samples with each new window.
 		copy(audio[:vadContext], audio[vadWindow:])
 		copy(state, next)
 	}

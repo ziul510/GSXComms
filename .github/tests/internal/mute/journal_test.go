@@ -57,6 +57,7 @@ func TestFailedWriteLeavesAudioAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &mock{id: identity{"endpoint", "instance", 35, 9}}
+	// A journal failure must leave the session's mute state alone.
 	if err := acquire(filepath.Join(parent, "journal.json"), m); err == nil || m.muted {
 		t.Fatal("must report failed write and leave session untouched")
 	}
@@ -140,6 +141,7 @@ func TestPendingEndpointDoesNotBlockNewSessions(t *testing.T) {
 		t.Fatalf("restore muted=%t err=%v", active.muted, err)
 	}
 	pending, err = read(path)
+	// Only the unplugged session should remain for a future recovery attempt.
 	if err != nil || len(pending) != 1 || pending[0].ID != hidden {
 		t.Fatalf("pending=%v err=%v", pending, err)
 	}

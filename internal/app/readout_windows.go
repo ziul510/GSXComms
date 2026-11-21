@@ -139,6 +139,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 
 func (s *state) menuReaderReady() bool {
 	m, _ := models.Lookup("kokoro")
+	// Require a verified Kokoro bundle before queueing a menu readout.
 	if m.Ready(s.dir) {
 		return true
 	}
@@ -153,6 +154,7 @@ func (s *state) synthesizeReadout(ctx context.Context, text string, entries int)
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
 	m, _ := models.Lookup("kokoro")
 	start := time.Now()
+	// Use the pinned revision as the worker signature so repeated readouts can reuse the model.
 	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
 		s.traceFailure("TTS", "Could not load the Kokoro worker", err)
 		log("ERR", "GSX menu readout failed: "+err.Error())
@@ -197,6 +199,7 @@ func (s *state) output(ctx context.Context, next playback) error {
 	if next.cue != "" {
 		channels = 2
 	}
+	// Mix into a copy so replaying a cached clip starts with the original samples.
 	pcm := bytes.Clone(next.pcm)
 	mixRadio(pcm, gain, static, next.rate, channels)
 	if s.debugEnabled.Load() {
@@ -220,6 +223,7 @@ func normalizationGain(pcm []byte) float64 {
 	if sum == 0 {
 		return 1
 	}
+	// Target a common RMS level with limits to keep very quiet clips from getting too loud.
 	return max(0.5, min(2.5, 3000/math.Sqrt(sum/float64(len(pcm)/2))))
 }
 
@@ -242,6 +246,7 @@ func mixRadio(pcm []byte, gain, static float64, rate, channels int) {
 		offset := frame * 2 * channels
 		add := 0.0
 		if len(noise) > 0 {
+			// Read noise at the output rate and repeat the same buffer when a clip runs longer.
 			index := frame * staticRate / rate % len(noise)
 			add = float64(noise[index]) * static
 		}

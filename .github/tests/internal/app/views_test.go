@@ -38,6 +38,7 @@ func TestMainMinimizeToTray(t *testing.T) {
 			s := &state{tray: tc.tray, dialogs: map[uint64]func(){1: func() { dialogClosed = true }}}
 			w := gui.NewTestWindow(t, gui.WindowCfg{OnEvent: s.mainWindowEvent})
 			gui.DispatchWindowOccluded(w, true)
+			// Restore before draining the window callbacks to test cancellation of a queued hide.
 			if tc.restore {
 				gui.DispatchWindowOccluded(w, false)
 			}
@@ -142,11 +143,13 @@ func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	draft.Put("input_device_name", "Cockpit")
 	next := s.settingsDraft()
 	next.Put("accent_setup_complete", true)
+	// Leave the other dialog's write pending when merging this draft.
 	s.save(next, nil)
 	merged := s.mergeSettings(base, draft)
 	if !config.Get[bool](merged, "accent_setup_complete") || config.Get[string](merged, "input_device_name") != "Cockpit" {
 		t.Fatal("saving preferences lost a change from another window")
 	}
+	// Both snapshots must remain usable by the dialogs that already hold them.
 	if config.Get[bool](base, "accent_setup_complete") || config.Get[string](next, "input_device_name") == "Cockpit" {
 		t.Fatal("the merge modified an existing snapshot")
 	}
@@ -232,6 +235,7 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 			t.Fatal("Kokoro still has a separate settings card")
 		}
 	}
+	// Leave a keyword edit unsaved to check that toggling readout saves just the switch.
 	if err := settings.TestType("settings-scroll:menu-reader-keyword", "draft keyword"); err != nil {
 		t.Fatal(err)
 	}
@@ -286,6 +290,7 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 	if err := manager.TestKey(dropdown, gui.KeyEnd, 0); err != nil {
 		t.Fatal(err)
 	}
+	// Check the open editor because disabling readout must update its available actions too.
 	if slices.ContainsFunc(manager.Renderers(), func(cmd gui.RenderCmd) bool { return strings.Contains(cmd.Text, config.ReadMenuAction) }) {
 		t.Fatal("disabled readout is still in the preset editor")
 	}
@@ -344,6 +349,7 @@ func TestSettingsTogglesAlignWithAndWithoutTooltips(t *testing.T) {
 	settings := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	layout := settings.TestRender(nil)
 	left, previousY := float32(0), float32(0)
+	// Compare neighboring switches so tooltip wrappers cannot shift their positions.
 	for i, key := range []string{"debug_mode", "simulation_mode", "ignore_speed_restriction"} {
 		node, ok := layout.FindByID("settings-scroll:" + key)
 		if !ok {
@@ -454,6 +460,7 @@ func TestPresetEditorAddsCustomMenuText(t *testing.T) {
 		t.Fatal("saving the preset did not queue a disk write")
 	}
 	presets := config.Get[[]config.Preset](s.cfg, "presets")
+	// Keep custom text in sequence so it can run after the built-in service.
 	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check"}) {
 		t.Fatalf("unexpected presets: %+v", presets)
 	}
@@ -474,6 +481,7 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		{false, false, true, 0, false},
 	} {
 		s.groundSpeed.Store(nil)
+		// Use a fresh timestamp to isolate the speed limit from the stale reading check.
 		if test.known {
 			s.groundSpeed.Store(&speedReading{test.speed, time.Now()})
 		}
@@ -489,6 +497,7 @@ func TestOfflineAutoConnectWaitsAndQueuesOneAttempt(t *testing.T) {
 	if len(s.jobs) != 0 {
 		t.Fatal("retried within the connection cooldown")
 	}
+	// Age the previous attempt so the disabled setting is the only reason to skip reconnecting.
 	s.lastConnect = time.Now().Add(-16 * time.Second)
 	s.cfg.Put("auto_connect_sim", false)
 	s.retryConnection()
@@ -635,6 +644,7 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGround Power\nJetway\nRefuel") }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
+	// This phrase matches one preset before correction and a different one afterward.
 	s.submitCommand("ground powder", true)
 	(<-s.jobs)(s.ctx, session)
 	if !slices.Equal(transport.selected, []int{1}) {
@@ -645,6 +655,7 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(),
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	// Use a speed that would block transmission to check that typed readout is independent.
 	s.groundSpeed.Store(&speedReading{80, time.Now()})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("read_gsx_menus_aloud_after_keyword", true)
@@ -669,6 +680,7 @@ func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true,
 		Services: []string{"REFUELING", config.ReadMenuAction, "CATERING"}}})
 	model, _ := models.Lookup("kokoro")
+	// Create a ready-on-disk fixture to test queue order without running Kokoro.
 	base := model.Directory(s.dir)
 	for _, entry := range model.Files {
 		path := filepath.Join(base, entry.Path)
@@ -707,6 +719,7 @@ func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 
 func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	dir := t.TempDir()
+	// Map a homophone to one so only the normalized text can select the visible slot.
 	if err := os.WriteFile(filepath.Join(dir, "words.json"), []byte(`{"CUSTOM":{"keywords":["one"],"bias_variants":["won"]}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -737,6 +750,7 @@ func TestExplicitNumberBypassesMenuCorrection(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	transport := &menuChoices{}
 	session := gsx.New(transport, t.TempDir())
+	// Put the digit in a different label to expose accidental fuzzy matching.
 	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGate 2\nAdditional Services") }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	s.submit("option 2")
@@ -791,6 +805,7 @@ func TestHIDReleaseKeepsOriginalOwnerAfterHotplug(t *testing.T) {
 		t.Fatal("the only matching device did not start PTT")
 	}
 	s.hidPaths["flight stick"] = append(s.hidPaths["flight stick"], second.path)
+	// Release the same button on the new device to check that ownership stays with the original.
 	s.hidButton(second, index, false)
 	s.main.FrameFn()
 	if !s.pttHeld {
@@ -816,6 +831,7 @@ func TestCapturedBindingSavesImmediately(t *testing.T) {
 	s.binding(bindingForKey('N'))
 	select {
 	case req := <-s.saves:
+		// Hold the save callback so the old key must remain active until persistence succeeds.
 		if dialog.CloseRequested() || captureKey.Load() != 'M' {
 			t.Fatal("binding changed before the write completed")
 		}
@@ -834,6 +850,7 @@ type telemetrySim struct {
 }
 
 func (f *telemetrySim) Get(ctx context.Context, key string) (float64, error) {
+	// Let the test drop the transport while the telemetry goroutine is reading it.
 	if f.offline.Load() {
 		return 0, gsx.ErrDisconnected
 	}
@@ -857,6 +874,7 @@ func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 
 	tr := &telemetrySim{}
 	s.jobs <- func(_ context.Context, session *gsx.Session) { session.Sim = tr }
+	// Hold a command open while watching for fresh telemetry readings.
 	started := make(chan struct{})
 	s.jobs <- func(ctx context.Context, _ *gsx.Session) {
 		close(started)
@@ -903,6 +921,7 @@ func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 func TestDebugDiagnosticsExcludeCredentialsAndTranscripts(t *testing.T) {
 	const key = "fixture-credential"
 	s := &state{cfg: config.Defaults(), debug: make(chan debugEvent, 16)}
+	// Store the uppercase credential to test case-insensitive redaction.
 	s.setLogSecret(strings.ToUpper(key))
 	s.cfg.Put("speech_provider", key)
 	s.cfg.Put("ptt_bind", config.Binding{Type: key})
@@ -944,6 +963,7 @@ func TestLegacyHIDNameRequiresRebindingAndNativePathCanMove(t *testing.T) {
 	if got := s.boundHIDPath(binding); got != current {
 		t.Fatalf("unique VID/PID matched %q", got)
 	}
+	// Add a second device with the same identifiers to make the fallback ambiguous.
 	s.hidPaths["stick"] = append(s.hidPaths["stick"], current+"-duplicate")
 	if got := s.boundHIDPath(binding); got != "" {
 		t.Fatalf("ambiguous VID/PID matched %q", got)
@@ -973,6 +993,7 @@ func TestPresetSummaryExpandsIntoExistingEditor(t *testing.T) {
 		t.Fatal(err)
 	}
 	window.TestRender(nil)
+	// Check the rendered numbers after a reorder so the editor shows the new sequence.
 	var numbered []string
 	for _, cmd := range window.Renderers() {
 		if cmd.Kind == gui.RenderText && (cmd.Text == "1. JETWAY" || cmd.Text == "2. GPU") {
@@ -1023,6 +1044,7 @@ func TestPresetCardDeleteRequiresConfirmation(t *testing.T) {
 	if platform.body != "Delete Arrival?" || len(s.saves) != 0 {
 		t.Fatalf("canceling %q queued %d writes", platform.body, len(s.saves))
 	}
+	// Repeat the delete with confirmation to check that only acceptance queues a write.
 	platform.status = gui.DialogOK
 	if err := window.TestClick(deleteID); err != nil {
 		t.Fatal(err)

@@ -13,12 +13,14 @@ var Files embed.FS
 
 const AccentMappingsFile = "accent_mappings.json"
 
+// Older override files use the accent_used field.
 type AccentMapping struct {
 	Country string
 	Accent  string `json:"accent_used"`
 }
 
 func DecodeAccentMappings(data []byte) ([]AccentMapping, error) {
+	// Both bundled defaults and local accent overrides use this format.
 	var entries []AccentMapping
 	err := json.Unmarshal(data, &entries)
 	return entries, err

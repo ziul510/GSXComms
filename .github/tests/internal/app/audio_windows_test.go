@@ -20,6 +20,7 @@ func TestAudioEndpointMatching(t *testing.T) {
 		{"renamed", "three", 2},
 		{"Headset Studio", "gone", 2},
 		{"Desk", "", 3},
+		// The exact name is ambiguous because two devices advertise it.
 		{"Headset", "", defaultWaveDevice},
 		{"set", "", defaultWaveDevice},
 		{"", "", defaultWaveDevice},
@@ -70,6 +71,7 @@ func TestOpenCaptureDeviceFallback(t *testing.T) {
 				}
 				return nil
 			})
+			// Check the device attempts because a successful open can hide an unintended fallback.
 			if !slices.Equal(attempts, tc.attempts) || (err != nil) != tc.wantedError {
 				t.Fatalf("attempts %v, error %v. Want attempts %v, error present %v", attempts, err, tc.attempts, tc.wantedError)
 			}

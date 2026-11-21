@@ -38,6 +38,7 @@ func TestPortableSettingsKeepCustomPresetServices(t *testing.T) {
 	values.Put(MenuReadoutSetting, true)
 	values.Put("presets", []Preset{{
 		Name: "Turnaround", Codeword: "turnaround", Enabled: true,
+		// Mix duplicate, blank, and padded entries to check normalization without losing service order.
 		Services: []string{"gpu", " read menu ", "Custom:  Cabin Check  ", "JETWAY", "Custom: cabin check", "Custom: "},
 	}})
 	if err := Save(dir, values); err != nil {
@@ -74,6 +75,7 @@ func TestPortableSettingsKeepExistingFile(t *testing.T) {
 	}
 	// If another instance finishes first, the exclusive publish keeps its file
 	path := filepath.Join(dir, SettingsFile)
+	// Try publishing defaults over a real settings file to exercise the collision path.
 	if err := writeAtomic(path, defaultJSON, moveNew); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected exclusive publish to reject an existing file: %v", err)
 	}
@@ -91,6 +93,7 @@ func TestPortableSettingsStartWithDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	values, err := Load(dir)
+	// Creating the settings file must leave the accent wizard pending.
 	if err != nil || Get[bool](values, "accent_setup_complete") {
 		t.Fatalf("invalid first-run settings: %v", err)
 	}
@@ -104,6 +107,7 @@ func TestLegacyControllerBindingDropsSDLIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Keep the old controller name and button for rebinding while dropping its session-specific index.
 	b := Get[Binding](v, "ptt_bind")
 	if b.Type != "joystick" || b.JoyID != nil || b.JoyName != "Flight Stick" || b.JoyButton == nil || *b.JoyButton != 3 {
 		t.Fatalf("legacy binding = %+v", b)
@@ -126,6 +130,7 @@ func TestBroaderModeMigratesEitherLegacyOption(t *testing.T) {
 		settings string
 		enabled  bool
 	}{
+		// Either older switch can keep Broader Mode enabled after migration.
 		{`{"enable_menu_matching":true,"enable_gsx_menu_text_correction":false}`, true},
 		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":true}`, true},
 		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":false}`, false},
@@ -221,6 +226,7 @@ func TestLegacyPTTBackupOmitsCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The backup needs the old device ID for rebinding but must omit the cloud key.
 	if bytes.Contains(data, []byte("fixture-secret")) || !bytes.Contains(data, []byte("\"joy_id\": 3")) {
 		t.Fatal("backup lost the SDL binding or retained the secret")
 	}

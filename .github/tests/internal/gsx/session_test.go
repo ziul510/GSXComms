@@ -67,6 +67,7 @@ func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
 	session := New(transport, t.TempDir())
 	page := ParseMenu("Ramp\nJetway")
 	session.ReadMenu = func() Menu { return page }
+	// A lost reply leaves the selection unconfirmed, so the UI should get no callback.
 	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
 	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, errWriteUncertain) || transport.attempts != 1 {
 		t.Fatalf("choice error = %v, attempts = %d", err, transport.attempts)
@@ -77,6 +78,7 @@ func TestScriptedSession(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{Started: 1, Speed: 12}, failGet: 1}
 	s := New(f, "")
 	var clock time.Duration
+	// Count the required GSX delays without making the test wait for them.
 	s.Sleep = func(ctx context.Context, d time.Duration) error { clock += d; return ctx.Err() }
 	// Mix the panel's HTML and plain text formats while walking the service and operator menus
 	menus := []Menu{
@@ -122,6 +124,7 @@ func TestHotfixMenu(t *testing.T) {
 		{"Back!\nClose.", true},
 		{"Back\nCancel", true},
 		{"Close\nCancel…", true},
+		// Two spellings of Back alone should not look like the broken navigation-only menu.
 		{"Back\nBack!", false},
 		{"Back\nRequest boarding", false},
 	} {
@@ -246,6 +249,7 @@ func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 }
 
 func TestMenuKeepsLabelsThatStartWithNumbers(t *testing.T) {
+	// Mix menu prefixes with measurements and ranges so numeric label content stays intact.
 	page := ParseMenu("Fuel\n10,000 lbs\n180\n[3] Close\n4.Back\n5)GSX Choice\n2.5 NM\n1-2")
 	want := []string{"10,000 lbs", "180", "Close", "Back", "GSX Choice", "2.5 NM", "1-2"}
 	if !reflect.DeepEqual(page.Options, want) {
@@ -256,6 +260,7 @@ func TestMenuKeepsLabelsThatStartWithNumbers(t *testing.T) {
 func TestCustomServicePrefersExactLabel(t *testing.T) {
 	s := New(&fakeSim{values: map[string]float64{}}, "")
 	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	// Put the partial match first to test that the exact label wins over menu order.
 	s.ReadMenu = func() Menu { return ParseMenu("Ramp\nRemove Chocks and Cones\nRemove Chocks") }
 	selected, err := s.Execute(t.Context(), "", "Custom: Remove Chocks", []string{"Remove Chocks"}, false)
 	if err != nil || selected != "Remove Chocks" {
@@ -308,6 +313,7 @@ type operatorSim struct {
 }
 
 func (f *operatorSim) Set(ctx context.Context, key string, value float64) error {
+	// Fail only the close write so the test still reaches the operator menu.
 	if key == MenuOpen && value == 0 && f.failClose {
 		return errors.New("menu could not close")
 	}
@@ -335,6 +341,7 @@ func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
 				choices++
 			}
 		}
+		// Select the first operator only if the attempt to close that menu failed.
 		if (choices == 2) != failClose || (f.values[MenuOpen] == 1) != failClose {
 			t.Fatalf("failedClose=%t open=%v choices=%d", failClose, f.values[MenuOpen], choices)
 		}
@@ -348,6 +355,7 @@ func TestIdleRefreshSnapshotsBeforeRelease(t *testing.T) {
 	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	want := ParseMenu("Updated\nRequest stairs")
 	s.ReadMenu = func() Menu {
+		// Hide the fake panel after release so a snapshot taken too late fails the test.
 		if f.values[MenuOpen] == 1 && f.values[Remote] == 1 {
 			return want
 		}

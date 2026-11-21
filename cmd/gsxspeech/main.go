@@ -160,11 +160,13 @@ func main() {
 				resp.Error = "voice activity detector is unavailable"
 				break
 			}
+			// The cloud path can filter speech without loading a local recognizer.
 			if request.Op == "transcribe" && r == nil {
 				resp.Error = "no model loaded"
 				break
 			}
 			pcm, err := vad.filter(request)
+			// An empty filtered clip needs neither a transcript nor an audio payload.
 			if err == nil && len(pcm) != 0 {
 				if request.Op == "filter_speech" {
 					resp.PCM = pcm
@@ -183,6 +185,7 @@ func main() {
 		default:
 			resp.Error = "unknown speech worker operation"
 		}
+		// Stop reading commands once the reply pipe is gone.
 		if err := speech.Write(os.Stdout, resp); err != nil {
 			return
 		}

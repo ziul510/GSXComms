@@ -16,6 +16,7 @@ import (
 )
 
 func TestCorrectLocalTranscript(t *testing.T) {
+	// Check common mishearings alongside lookalikes that must survive correction.
 	for input, want := range map[string]string{
 		"Cock pitch a ground.":            "cockpit to ground.",
 		"clock pit to ground":             "cockpit to ground",
@@ -105,6 +106,7 @@ func TestReferenceCorpus(t *testing.T) {
 	for i, entry := range input.Menus {
 		index, score := Match(entry.Text, entry.Options)
 		corrected, similarity := CorrectMenu(entry.Text, entry.Options)
+		// Compare scores and corrections too because a changed ranking can keep the same winner.
 		if want := expected.Menus[i]; index != want.Index || score != want.Points || corrected != want.Correction || math.Abs(similarity-want.Similarity) > 1e-9 {
 			t.Errorf("%q: got index=%d score=%d correction=%q similarity=%v, want %+v", entry.Text, index, score, corrected, similarity, want)
 		}
@@ -143,6 +145,7 @@ func TestEmptyPresetFallsThroughToService(t *testing.T) {
 	prefs.Put("presets", []config.Preset{{
 		Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{config.ReadMenuAction},
 	}})
+	// Remove the preset's only action so the same codeword can fall through to a service.
 	prefs.RemoveDisabledReadMenu()
 	action := vocab.Route("jetway", "jetway", config.Get[[]config.Preset](prefs, "presets"), true)
 	if action.Kind != "service" || len(action.Services) != 1 || action.Services[0] != "JETWAY" {
@@ -156,6 +159,7 @@ func TestLegacyDirectMenuNumbers(t *testing.T) {
 			t.Errorf("expected menu slot three for %q, got %d, %v", text, index, ok)
 		}
 	}
+	// Keep the standalone slot parser limited to bare numbers the GSX menu can address.
 	for _, text := range []string{"option 3", "third", "10", "3rd"} {
 		if _, ok := Number(text); ok {
 			t.Errorf("%q was accepted as a bare menu number", text)
@@ -181,6 +185,7 @@ func TestVocabularyKeepsLastGoodOverride(t *testing.T) {
 	if vocab, warning := loader.Load(dir); !strings.Contains(warning, "expected strings") || vocab.Normalize("ramps") != "ramp" {
 		t.Fatalf("failed to keep last good override: %s", warning)
 	}
+	// Read the unchanged broken file again to check that the warning stays quiet.
 	if _, warning := loader.Load(dir); warning != "" {
 		t.Fatal("repeated the parse warning without a change")
 	}

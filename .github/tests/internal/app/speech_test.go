@@ -11,8 +11,10 @@ import (
 )
 
 func TestWaitForPTTStatic(t *testing.T) {
+	// Use a fake clock so scheduler delays cannot hide a one millisecond regression.
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
+		// Release one millisecond before the threshold to catch an early static cue.
 		shortPress, release := context.WithTimeout(t.Context(), 274*time.Millisecond)
 		defer release()
 		if waitForPTTStatic(shortPress) || time.Since(start) != 274*time.Millisecond {

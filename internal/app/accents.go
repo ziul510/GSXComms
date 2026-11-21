@@ -50,6 +50,7 @@ func assetDir(name string) string {
 			return dir
 		}
 	}
+	// Allow source-tree runs to find assets relative to the working directory.
 	return name
 }
 
@@ -61,6 +62,7 @@ func (s *state) openAccents(onSaved func()) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	var closeDialog func()
 	closeDialog = s.dialog(accentWindow(), func() {
+		// Cancel any installation still in progress when the accent window closes.
 		cancel()
 		s.accentOpen = false
 	}, accentSetupView(ctx, s.accentsDir, filepath.Join(s.dir, "Accents"), s.settingsDraft(), func(enabled []string, fallback string, then func(error)) {
@@ -80,6 +82,7 @@ func accentWindow() gui.WindowCfg {
 func accentPreferences(prefs config.Values, enabled []string, fallback string) config.Values {
 	prefs.Put("installed_packs", enabled)
 	prefs.Put("default_accent", fallback)
+	// Mark setup complete alongside the selection so startup can skip the wizard.
 	prefs.Put("accent_setup_complete", true)
 	return prefs
 }
@@ -261,6 +264,7 @@ func (s *state) accentCue(dir, pack, accentName, service, option, voice string) 
 		}
 	}
 	clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
+	// Try the current pack layout before looking in older extraction locations.
 	for _, relative := range []string{pack, "Extracted", ""} {
 		if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
 			return pcm, rate
@@ -280,6 +284,7 @@ func decodeAccentClip(source io.Reader) ([]byte, int) {
 	if err != nil {
 		return nil, 0
 	}
+	// Cap decoded audio separately because a small MP3 can expand into a large buffer.
 	pcm, err := io.ReadAll(io.LimitReader(decoder, (8<<20)+1))
 	if err != nil || len(pcm) > 8<<20 || len(pcm)%4 != 0 {
 		return nil, 0
@@ -304,7 +309,9 @@ func (s *state) loadClip(path string) ([]byte, int) {
 	for i, clip := range s.clipCache {
 		if clip.path == path {
 			s.clipCache = slices.Delete(s.clipCache, i, i+1)
+			// Decode the file again if its size or modification time changed.
 			if clip.size == info.Size() && clip.modified.Equal(info.ModTime()) {
+				// Move cache hits to the end so eviction drops the least recently used clip.
 				s.clipCache = append(s.clipCache, clip)
 				return clip.pcm, clip.rate
 			}
@@ -332,6 +339,7 @@ func installedCrewAccent(enabled []string, candidate string) (packName, accentNa
 			continue
 		}
 		for _, name := range pack.accents {
+			// Match overrides without case sensitivity and return the pack's spelling for filenames.
 			if strings.EqualFold(name, candidate) {
 				return pack.name, name
 			}
@@ -366,6 +374,7 @@ func (s *state) regionalCue(next playback) ([]byte, int, string) {
 		if name == "" {
 			continue
 		}
+		// Try the next accent if this pack lacks the recording for the requested cue.
 		if pcm, rate := s.accentCue(recordings, pack, name, next.cue, next.option, next.voice); len(pcm) > 0 {
 			return pcm, rate, name
 		}

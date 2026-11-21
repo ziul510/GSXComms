@@ -128,6 +128,7 @@ func list(raw json.RawMessage) ([]string, bool) {
 		return nil, true
 	}
 	var values []string
+	// Accept a single string as shorthand for a list in a vocabulary rule.
 	switch raw[0] {
 	case '"':
 		var value string
@@ -346,6 +347,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 		return Action{Kind: "service", Services: matches}
 	case greeting:
 		return Action{Kind: "greeting"}
+	// Only hand unmatched speech to the GSX menu when Broader Mode is enabled.
 	case menuMatching:
 		return Action{Kind: "menu"}
 	default:
@@ -557,6 +559,7 @@ func Match(text string, options []string) (index, points int) {
 
 func ExplicitNumber(text string) (int, bool) {
 	words := strings.Fields(strings.ToLower(text))
+	// Require an explicit option phrase so a number inside another command cannot select a slot.
 	if len(words) != 2 || !slices.Contains([]string{"option", "number", "choice"}, strings.TrimSuffix(words[0], ":")) {
 		return -1, false
 	}

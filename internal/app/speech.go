@@ -96,6 +96,7 @@ func (s *state) record(down bool) {
 		defer stop()
 		if volume := config.Get[float64](prefs, "volume_static"); volume > 0 && config.Get[bool](prefs, "enable_static") {
 			go func() {
+				// Delay the static cue so a quick tap stays quiet.
 				if !waitForPTTStatic(capctx) {
 					return
 				}
@@ -192,6 +193,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	provider := config.Get[string](prefs, "speech_provider")
 	// Only the explicitly selected cloud provider reads the credential and sends audio
 	if provider == "mistral" {
+		// Run voice detection locally so silence never reaches Voxtral.
 		pcm, err := s.recognizer.FilterSpeech(s.ctx, pcm)
 		if err != nil || len(pcm) == 0 {
 			return "", err
@@ -242,12 +244,14 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 	if s.recognizer == nil {
 		return
 	}
+	// Cancel the earlier setup when the user picks another provider or requests a reload.
 	if s.speechLoadCancel != nil {
 		s.speechLoadCancel()
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	s.speechLoadCancel = cancel
 	s.speechGeneration++
+	// Tag this load so a late result cannot change the status of a newer provider.
 	generation := s.speechGeneration
 	provider := config.Get[string](s.cfg, "speech_provider")
 	s.speechReady, s.speechStatus, s.speechLoading = false, "Loading speech", provider

@@ -47,12 +47,14 @@ func TestInstalledWorkerRestarts(t *testing.T) {
 	if err := w.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
+	// Make a real exchange after the kill so the worker detects the broken pipe.
 	if _, err := w.Transcribe(ctx, make([]byte, 8000)); err == nil {
 		t.Fatal("crashed worker still looked usable")
 	}
 	if err := w.Load(ctx, "restart-fixture", paths, vocab.Hotwords()); err != nil {
 		t.Fatal(err)
 	}
+	// Check the process ID because a cached model signature alone cannot prove the restart.
 	if w.cmd.Process.Pid == first {
 		t.Fatal("worker did not restart")
 	}

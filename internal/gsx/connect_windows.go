@@ -29,11 +29,13 @@ func addonManager() string {
 			return value
 		}
 	}
+	// Fall back to the default install path when neither registry entry gives an absolute path.
 	return `C:\Program Files (x86)\Addon Manager`
 }
 
 // The console and GUI both need the installed panel's menu file
 func Panel() string {
+	// Require a full override path so the panel lookup works from any working directory.
 	if override := os.Getenv("GSX_PANEL_DIR"); filepath.IsAbs(override) {
 		return override
 	}

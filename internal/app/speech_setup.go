@@ -61,6 +61,7 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 		if downloading {
 			err = downloadModel(ctx, m, s.dir, func(done, total int64) {
 				w.QueueCommand(func(w *gui.Window) {
+					// Ignore stale progress callbacks after the download ends or the user cancels it.
 					if ctx.Err() != nil || setup.running != id {
 						return
 					}
@@ -89,6 +90,7 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 			}
 			setup.running, setup.cancel = "", nil
 			setup.local[id] = next
+			// Reload the recognizer only if the download belongs to the active provider.
 			if err == nil && downloading && config.Get[string](s.cfg, "speech_provider") == id {
 				s.prepareSpeech(false, false)
 			}
@@ -115,6 +117,7 @@ func (setup *speechSetup) useProvider(s *state, w *gui.Window, provider string, 
 		} else if onSaved != nil {
 			onSaved()
 		}
+		// The settings window can close while the provider save is pending.
 		if !w.CloseRequested() {
 			w.InvalidateLayout()
 		}
@@ -177,6 +180,7 @@ func modelButton(id, label string, width float32, disabled bool, click func()) g
 	switch label {
 	case "Use":
 		control.Content = []gui.View{text(label, 11, bg)}
+	// Give deletion a distinct color because it removes local model files.
 	case "Delete":
 		control.Colors.Base, control.Colors.Hover = elevated, panel
 		control.Content = []gui.View{text(label, 11, red)}
@@ -194,6 +198,7 @@ func speechCard(label, note string, actions ...gui.View) gui.View {
 		Content: append([]gui.View{bold(label, settingsTextSize, ink), spacer()}, actions...),
 	})
 	content := []gui.View{row}
+	// Keep recovery messages below the actions so long errors do not crowd the buttons.
 	if note != "" {
 		content = append(content, wrapped(note, 11, muted))
 	}

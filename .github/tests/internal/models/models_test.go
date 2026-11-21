@@ -52,6 +52,7 @@ func TestResumeAndPublishModel(t *testing.T) {
 	if err := m.Download(context.Background(), dir, func(int64, int64) {}); err != nil {
 		t.Fatal(err)
 	}
+	// Check the published file so a valid marker alone cannot pass the resume test.
 	if !called || !m.Ready(dir) || !f.matches(m.Paths(dir)["fixture"]) {
 		t.Fatal("resumed model not committed")
 	}
@@ -122,6 +123,7 @@ func TestTruncatedDownloadRetainsVerifiedResumeOffset(t *testing.T) {
 	f := File{"fixture", int64(len(body)), fmt.Sprintf("%x", sha256.Sum256([]byte(body)))}
 	m := Model{"test", "owner/example", "pinned", []File{f}}
 	dir := t.TempDir()
+	// Use an empty cache so both attempts exercise the HTTP download path.
 	t.Setenv("HF_HUB_CACHE", t.TempDir())
 	original := client
 	defer func() { client = original }()

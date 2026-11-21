@@ -56,6 +56,7 @@ func pollConnection(ctx context.Context, s *gsx.Session, dial func(context.Conte
 		return
 	}
 	*failures = *failures + 1
+	// Drop a disconnected transport immediately so the next poll can reconnect.
 	if errors.Is(err, gsx.ErrDisconnected) || *failures >= 3 {
 		_ = s.Close()
 		*failures = 0
@@ -96,6 +97,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			}
 			pollConnection(ctx, s, connect, &healthFailures)
 		case line, ok := <-lines:
+			// An IPC client closing stdin ends the session even without a shutdown command.
 			if !ok {
 				return
 			}
@@ -154,6 +156,7 @@ func console(ctx context.Context, s *gsx.Session) {
 			return
 		case <-t.C:
 		}
+		// Check the connection once a second while polling keys more frequently.
 		if time.Now().After(nextPoll) {
 			pollConnection(ctx, s, connect, &healthFailures)
 			nextPoll = time.Now().Add(time.Second)

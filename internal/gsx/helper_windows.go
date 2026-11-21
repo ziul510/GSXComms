@@ -72,6 +72,7 @@ func connectHelper(ctx context.Context, cmd *exec.Cmd) (Transport, error) {
 	transport := &helperTransport{gate: make(chan struct{}, 1), cmd: cmd, in: in, out: out, send: json.NewEncoder(in), recv: json.NewDecoder(out)}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// Read the helper's unsolicited handshake before exposing the transport.
 	if _, err := transport.exchange(ctx, nil, nil); err != nil {
 		_ = transport.Close()
 		return nil, fmt.Errorf("SimConnect unavailable: %w", err)
@@ -81,6 +82,7 @@ func connectHelper(ctx context.Context, cmd *exec.Cmd) (Transport, error) {
 
 func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, check func() error) (helperReply, error) {
 	select {
+	// Hold the gate across the round trip so telemetry and menu requests cannot trade replies.
 	case t.gate <- struct{}{}:
 		defer func() { <-t.gate }()
 	case <-ctx.Done():
@@ -103,6 +105,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 	if req != nil && req.Op == "get" {
 		req.TimeoutMS = 350
 		if deadline, ok := ctx.Deadline(); ok {
+			// Leave time for the helper to return its reply before the caller times out.
 			remaining := time.Until(deadline) - 30*time.Millisecond
 			if remaining <= 0 {
 				return helperReply{}, context.DeadlineExceeded
@@ -166,6 +169,7 @@ func (t *helperTransport) Get(ctx context.Context, name string) (float64, error)
 	if err != nil {
 		return 0, err
 	}
+	// A missing value is a protocol error because zero can be valid telemetry.
 	if reply.Value == nil {
 		return 0, errors.New("SimConnect helper returned no value")
 	}
@@ -182,6 +186,7 @@ func (t *helperTransport) setChecked(ctx context.Context, name string, value flo
 }
 
 func (t *helperTransport) Close() error {
+	// Wait for the active exchange before closing the shared pipes.
 	t.gate <- struct{}{}
 	defer func() { <-t.gate }()
 	t.stop()
@@ -194,6 +199,7 @@ func (t *helperTransport) stop() {
 	}
 	cmd := t.cmd
 	t.cmd = nil
+	// Stop the helper before waiting since the pipe exchange may have stalled.
 	_ = cmd.Process.Kill()
 	_ = t.in.Close()
 	_ = t.out.Close()

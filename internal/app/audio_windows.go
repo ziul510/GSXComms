@@ -34,6 +34,7 @@ func audioDevices(input bool) []audioDevice {
 	caps := mm.NewProc(prefix + "GetDevCapsW")
 	message := mm.NewProc(prefix + "Message")
 	count, _, _ := num.Call()
+	// Keep entries at their Windows device indices even if reading a device name fails.
 	out := make([]audioDevice, count)
 	for i := range out {
 		var raw [128]byte
@@ -72,6 +73,7 @@ func matchAudioDevice(name, endpoint string, candidates []audioDevice, allowFall
 		id := uintptr(defaultWaveDevice)
 		for i, candidate := range candidates {
 			if matches(candidate) {
+				// Treat duplicate matches as ambiguous so we never pick one by enumeration order.
 				if id != defaultWaveDevice {
 					return defaultWaveDevice, true
 				}
@@ -254,6 +256,7 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 	if len(pcm) == 0 {
 		return nil
 	}
+	// Reject partial PCM frames before handing the buffer to WinMM.
 	if channels < 1 || channels > 2 || rate < 8000 || rate > 192000 || len(pcm)%(2*channels) != 0 {
 		return errors.New("invalid playback format")
 	}
@@ -282,6 +285,7 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 	h := waveHeader{data: &pcm[0], length: uint32(len(pcm))}
 	if loop {
 		h.flags = 0x04 | 0x08 // WHDR_BEGINLOOP and WHDR_ENDLOOP
+		// Keep static looping until cancellation resets the playback buffer.
 		h.loops = ^uint32(0)
 	}
 	var pins runtime.Pinner
@@ -298,6 +302,7 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 		return err
 	}
 	defer func() {
+		// Reset unfinished playback before the deferred header cleanup runs.
 		if h.flags&1 == 0 {
 			_ = mmCall(mm.NewProc("waveOutReset"), handle)
 		}

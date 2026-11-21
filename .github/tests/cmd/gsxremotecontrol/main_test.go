@@ -45,6 +45,7 @@ func TestIPCKeepsPollingBeforeSimulatorStarts(t *testing.T) {
 			t.Fatal("IPC stopped retrying SimConnect")
 		}
 	}
+	// Send commands only after polling has retried without any input.
 	if _, err := io.WriteString(client, "PING\nSHUTDOWN\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +160,7 @@ func TestIPCReportsMenuReadiness(t *testing.T) {
 			// IPC readiness and menu readiness are separate replies
 			var ready struct{ Ready bool }
 			var response struct {
+				// Use a pointer so a missing field fails even when the expected value is false.
 				MenuOpened *bool `json:"menu_opened"`
 			}
 			if err := decoder.Decode(&ready); err != nil || !ready.Ready {
