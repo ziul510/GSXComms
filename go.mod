@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/go-gui-org/go-gui v0.98.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/yalue/onnxruntime_go v1.32.0
+	github.com/yalue/onnxruntime_go v1.32.0 // ONNX Runtime API 28 matches the bundled DLL
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
 )
@@ -17,6 +17,8 @@ require (
 	github.com/go-gui-org/go-glyph v1.28.0 // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
+	github.com/godbus/dbus/v5 v5.2.4 // indirect
+	github.com/jezek/xgb v1.3.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tdewolff/parse/v2 v2.25.0 // indirect
 	github.com/yuin/goldmark v1.8.7 // indirect
