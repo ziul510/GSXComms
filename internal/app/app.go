@@ -166,7 +166,6 @@ func Run(dir string) {
 		Title: "GSXComms", Width: 420, Height: 680, MinWidth: 380, MinHeight: 560, State: s, IconPNG: icon,
 		OnInit: func(w *gui.Window) {
 			s.main = w
-			w.TitlebarDark(true)
 			w.SetView(mainView)
 			// Start background work after the main window can accept UI callbacks
 			go s.simulator()
@@ -190,6 +189,8 @@ func Run(dir string) {
 		},
 		OnCloseRequest: func(w *gui.Window) { s.quit() },
 	})
+	// Request a dark caption before the backend shows the window
+	w.TitlebarDark(true)
 	backend.RunApp(s.host, w)
 	// Give queued settings writes time to finish after the UI closes
 	close(s.saves)
@@ -217,7 +218,9 @@ func runFirstAccentSetup(dir, archives string, prefs config.Values, icon []byte)
 		prefs = saved
 	})
 	cfg.IconPNG = icon
-	backend.RunApp(gui.NewApp(), gui.NewWindow(cfg))
+	w := gui.NewWindow(cfg)
+	w.TitlebarDark(true)
+	backend.RunApp(gui.NewApp(), w)
 	return prefs
 }
 
@@ -233,7 +236,6 @@ func firstAccentWindow(ctx context.Context, dir, archives string, prefs config.V
 	})
 	cfg := accentWindow()
 	cfg.OnInit = func(w *gui.Window) {
-		w.TitlebarDark(true)
 		w.SetView(view)
 	}
 	cfg.OnCloseRequest = func(w *gui.Window) { w.Close() }
