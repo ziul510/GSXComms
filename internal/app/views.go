@@ -457,7 +457,7 @@ func (s *state) openSettings() {
 				ctx.Window.InvalidateLayout()
 			})
 			if hint := help[key]; hint != "" {
-				control = gui.WithTooltip(w, gui.WithTooltipCfg{ID: key + "-help", Text: hint, Content: []gui.View{control}})
+				control = fullWidthTooltip{gui.WithTooltip(w, gui.WithTooltipCfg{ID: key + "-help", Text: hint, Content: []gui.View{control}})}
 			}
 			body = append(body, labelRow(control, 24))
 		}
@@ -661,7 +661,7 @@ func (s *state) openSettings() {
 			body = append(body, wrapped("Needs rebinding: "+binding.Description, 12, orange))
 		}
 		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(w) })
-		section("Developer", "Debug mode opens a console and writes a debug.log file")
+		section("Developer", "Debug mode opens your default terminal and writes debug.log")
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")

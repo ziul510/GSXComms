@@ -146,6 +146,27 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 	}
 }
 
+func TestSettingsTogglesAlignWithAndWithoutTooltips(t *testing.T) {
+	s := &state{cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context()}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.openSettings()
+	settings := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	layout := settings.TestRender(nil)
+	left, previousY := float32(0), float32(0)
+	for i, key := range []string{"debug_mode", "simulation_mode", "ignore_speed_restriction"} {
+		node, ok := layout.FindByID("settings-scroll:" + key)
+		if !ok {
+			t.Fatalf("missing switch %s", key)
+		}
+		if i == 0 {
+			left = node.Shape.X
+		} else if node.Shape.X != left || node.Shape.Y-previousY != 40 {
+			t.Fatalf("switch %s is misaligned at (%v, %v)", key, node.Shape.X, node.Shape.Y)
+		}
+		previousY = node.Shape.Y
+	}
+}
+
 func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
 	parent := gui.NewTestWindow(t, gui.WindowCfg{})

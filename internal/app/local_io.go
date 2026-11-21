@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/ziul510/GSXCommsGo/internal/config"
@@ -81,11 +84,31 @@ func (s *state) finishSave(req *saveRequest, err error) {
 	}
 }
 
+func startDebugTerminal() (io.WriteCloser, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	// Windows chooses the host when it starts a new console process
+	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxdebug.exe"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE}
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = input.Close()
+		return nil, err
+	}
+	go func() { _ = cmd.Wait() }()
+	return input, nil
+}
+
 func (s *state) debugWriter() {
-	kernel := windows.NewLazySystemDLL("kernel32.dll")
-	newConsole, freeConsole := kernel.NewProc("AllocConsole"), kernel.NewProc("FreeConsole")
-	// The writer owns the file and native console for the active debug session
-	var file, output *os.File
+	// The writer owns the file and the terminal's input for the active debug session
+	var file *os.File
+	var output io.WriteCloser
+	var terminalAttempted bool
 	var size int64
 	closeDebug := func() {
 		if file != nil {
@@ -95,8 +118,8 @@ func (s *state) debugWriter() {
 		if output != nil {
 			_ = output.Close()
 			output = nil
-			_, _, _ = freeConsole.Call()
 		}
+		terminalAttempted = false
 	}
 	defer closeDebug()
 	// Append to any existing log and count its old bytes toward rotation
@@ -130,9 +153,13 @@ func (s *state) debugWriter() {
 				if err := openLog(); err != nil {
 					continue
 				}
-				// The GUI binary needs a console allocation before it can open CONOUT$
-				if ok, _, _ := newConsole.Call(); ok != 0 {
-					output, _ = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+			}
+			if !terminalAttempted {
+				terminalAttempted = true
+				var err error
+				output, err = startDebugTerminal()
+				if err != nil {
+					s.trace("SYS", "Could not open the debug terminal")
 				}
 			}
 			// An enabled event with no text opens the debug output without writing a line
@@ -153,7 +180,10 @@ func (s *state) debugWriter() {
 			n, _ := fmt.Fprintln(file, event.line)
 			size += int64(n)
 			if output != nil {
-				_, _ = fmt.Fprintln(output, event.line)
+				if _, err := fmt.Fprintln(output, event.line); err != nil {
+					_ = output.Close()
+					output = nil
+				}
 			}
 		}
 	}

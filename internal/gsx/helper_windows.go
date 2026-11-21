@@ -133,9 +133,13 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		sent <- result{reply: reply, err: err}
 	}()
 	fail := func(err error) (helperReply, error) {
-		// A lost reply can mean the simulator already processed the write.
 		t.stop()
-		if req != nil && req.Op == "set" {
+		// A failed initial handshake has no live connection to lose
+		if req == nil {
+			return helperReply{}, err
+		}
+		// A lost reply can mean the simulator already processed the write
+		if req.Op == "set" {
 			err = errors.Join(errWriteUncertain, err)
 		}
 		return helperReply{}, errors.Join(ErrDisconnected, err)
