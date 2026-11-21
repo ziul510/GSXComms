@@ -1,0 +1,66 @@
+Ecosystem,Dependency,Version,License,Notice SHA256
+Go,github.com/alecthomas/assert/v2,v2.11.0,MIT,6c4d41af4ae6d2509db1349d66b7bde0651a87a0c702260214ad4f2b3dd4d588
+Go,github.com/alecthomas/chroma/v2,v2.27.0,MIT,0e4d7020384571b1bb5578defee4484f918858749511dd03005d2651f818edaf
+Go,github.com/alecthomas/repr,v0.5.2,MIT,95785f68b44a6f49a4b567955bca503daa2e832d5367b53c4114cc7b7cd8db85
+Go,github.com/boombuler/barcode,v1.0.1,MIT,5cbc9d0ca8feb55c8dff8cf4e75dfadb312ef0b9109cac052e2dddd42adb9fb1
+Go,github.com/dlclark/regexp2/v2,v2.2.2,MIT,ea375a1b438ac693f61d13fcc07bada43e26b6167e67c01015c69c1955e0af38
+Go,github.com/ebitengine/oto/v3,v3.3.2,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
+Go,github.com/ebitengine/purego,v0.11.3,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
+Go,github.com/go-gui-org/go-glyph,v1.28.0,MIT,a5f7f560f7406ecf4ac147909bb1074dfefee346e580ef77e4d23dbcb7990764
+Go,github.com/go-gui-org/go-gui,v0.98.0,MIT,e894092ed118a24588c49b0c9db58956834cdcca91b4dc2fef77355f9d16eb73
+Go,github.com/go-pdf/fpdf,v0.9.0,MIT,6524a5eb749053c4d04482a67331b044ab1555abe058627b35ddca1b300e145e
+Go,github.com/go-text/typesetting,v0.3.5,BSD-3-Clause (chosen from Unlicense OR BSD-3-Clause),b792d2c1e241ea37735f580ab6812cc8409ca98314e46db2ffc762420f22faaf
+Go,github.com/go-text/typesetting-utils,v0.0.0-20260419141703-4ffe8874dabc,Unlicense OR BSD-3-Clause,1cbb0acc808c76d131c4f21ed607c4afd7966b4308fdfce81d45a9275ae448ac
+Go,github.com/godbus/dbus/v5,v5.2.4,BSD-2-Clause,38a68d1c10456ca44381975a976aa15c6f5fa4d23ee8401d32f8145ecf2ed79b
+Go,github.com/gopxl/beep/v2,v2.1.1,MIT,f76d34a336b087a88af0918309962b23f0591950ddc1418726ce1587471392ff
+Go,github.com/hajimehoshi/go-mp3,v0.3.4,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
+Go,github.com/hajimehoshi/oto/v2,v2.3.1,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
+Go,github.com/hexops/gotextdiff,v1.0.3,BSD-3-Clause,888a00ca938af439fa00f3616e920712ac0b6017120434b034b93c51b10aba3e
+Go,github.com/icza/bitio,v1.1.0,Apache-2.0,dfdafd57185de8c19b89f9e68d38f891218b854ed89d5300e39d9c5f17816a23
+Go,github.com/jezek/xgb,v1.3.1,BSD-3-Clause,75bcaaae1860dcda9887ac55829ccaddd48aa4f3f085854fe19db13be5d41dd4
+Go,github.com/jfreymuth/oggvorbis,v1.0.5,MIT,f1f0f839c5141eedcdc9c2bba172d8d3f265a2ecf3e3acd4bdd27ae014b2a131
+Go,github.com/jfreymuth/pulse,v0.1.3,MIT,f3e51db2216b7b6b6b09255212ea36ac0bf03e911fe6a18c0c0683b9955ec130
+Go,github.com/jfreymuth/vorbis,v1.0.2,MIT,f1f0f839c5141eedcdc9c2bba172d8d3f265a2ecf3e3acd4bdd27ae014b2a131
+Go,github.com/mewkiz/flac,v1.0.12,Unlicense,ca1305a6206d1517dfd19d7369ea0e69f151d1e5c2e6cd1e86a0182b3815f1cc
+Go,github.com/mewkiz/pkg,v0.0.0-20230226050401-4010bf0fec14,Unlicense,4cea191fd2b740f867de5fdac317d866c29acb4706b6912d0d8b2544b065254c
+Go,github.com/phpdave11/gofpdi,v1.0.13,MIT,34c2ed270ec2354c76815ce281eb3237b48dba09ba02c8fce9f56b5bedbdb664
+Go,github.com/pkg/errors,v0.9.1,BSD-2-Clause,61ad9c27af5c1e014a5952afbfb06cd2f59fa93565cb400cd516fed98a7fe7ee
+Go,github.com/rivo/uniseg,v0.4.7,MIT,7370dd2e90a1a7a8db1f785c548eb9f9d91982bbe25887b896fe82fa8fc5ed52
+Go,github.com/ruudk/golang-pdf417,v0.0.0-20201230142125-a7e3863a1245,MIT,a2a300e863f077e70c1387a9dd5712c09e17697b3db7e14aa20458337bf9e4dd
+Go,github.com/tdewolff/parse/v2,v2.25.0,MIT,4dcda6e94cc54dacb5df19aef29ff21e2d2315909b141601ed741b1a3f1c592c
+Go,github.com/tdewolff/test,v1.0.12,MIT,4dcda6e94cc54dacb5df19aef29ff21e2d2315909b141601ed741b1a3f1c592c
+Go,github.com/yalue/onnxruntime_go,v1.38.0,MIT,c8cebe7ebd3d2a98adacde2291a07134b83ae333cd4f8068d5efbacad1099fdf
+Go,github.com/yuin/goldmark,v1.8.7,MIT,6eee66467b953e40ed2e385888979d6c76e77ccc1f929d7f8cfd34a89a452983
+Go,github.com/yuin/goldmark-emoji,v1.0.6,MIT,5c058001a4fbba950ae43f9ecea516a4e216cc9814a5ed3e33c46c996159c880
+Go,golang.org/x/image,v0.48.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/mobile,v0.0.0-20261117202452-47699113848a,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/mod,v0.43.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/sync,v0.25.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/sys,v0.50.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/text,v0.44.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Go,golang.org/x/tools,v0.53.0,BSD-3-Clause,b3792d6bb619a36ff5203b15caf7b6b0d205013ae2f2850e855dee2685d2ed17
+Rust,bitflags,2.13.2,MIT OR Apache-2.0,2eba0728bb7cc9904c2f452baa7311b1a9645f2d73ad897e6c7d15740162f440
+Rust,bytes,1.12.2,MIT,cb592281b11ae034282e3189947442cab19693a27b2c172045e068d95a06fb12
+Rust,flybywireless-simconnect,0.2.1,MIT,30c3b381cba23e79075d4e6462a174b0d21ec30a76b08dc74e36931b61371ae5
+Rust,flybywireless-simconnect-derive,0.2.1,MIT,30c3b381cba23e79075d4e6462a174b0d21ec30a76b08dc74e36931b61371ae5
+Rust,flybywireless-simconnect-proto,0.2.1,MIT,30c3b381cba23e79075d4e6462a174b0d21ec30a76b08dc74e36931b61371ae5
+Rust,itoa,1.0.19,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,libc,0.2.191,MIT OR Apache-2.0,ef2516d9c81c8d3310f3c980583b64a554469e7df6bbb14f8d81b4fb02ab5213
+Rust,memchr,2.8.3,Unlicense OR MIT,5e3997af009a195dfef96068356e53495207d614f50e2c911bbfab31e914d641
+Rust,mio,1.2.5,MIT,015501a7bf9d5bdb7e58f8f5bd440dd4b8f4675871fe1a7461e6e3e60526f70b
+Rust,pin-project-lite,0.2.18,Apache-2.0 OR MIT,bc6a92a1138921320384ec6b77faffc95500fc44429373d6fd85a9417bb12540
+Rust,proc-macro2,1.0.107,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,quote,1.0.47,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,serde,1.0.229,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,serde_core,1.0.229,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,serde_derive,1.0.229,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,serde_json,1.0.154,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,socket2,0.6.5,MIT OR Apache-2.0,d8f1b9b70141f52224fae684e2fea9d6b9d26addc6f5be10c142e8f1534e84d6
+Rust,syn,3.0.10,MIT OR Apache-2.0,8a54e06bd7b62e0b7ef62ee7c00a82d1dc96d55ebbf0f4c2db415e0c9eb11904
+Rust,tokio,1.54.1,MIT,b73b739b6e4485f5104483a2c1074e39770c11bdcece3a6374dab24ef8a71fb8
+Rust,tokio-macros,2.7.2,MIT,30ec309e8e15872dd2387911285f41ad05d7770746aa2dd866ffe3c618abd508
+Rust,unicode-ident,1.0.27,(MIT OR Apache-2.0) AND Unicode-3.0,ed8521281d1fd173ba6898025561341998251eb826c7f1ef3f008111745248f8
+Rust,wasi,0.11.1+wasi-snapshot-preview1,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,ccfdd184648a0e4b5195396108d2623fc1f0012c01a23a0bc01e565cb254f288
+Rust,windows-link,0.2.1,MIT OR Apache-2.0,d0cf9598eb1134496a0a79f4123189e80d5d758c66ebbae5194e18334285fd94
+Rust,windows-sys,0.61.2,MIT OR Apache-2.0,d0cf9598eb1134496a0a79f4123189e80d5d758c66ebbae5194e18334285fd94
+Rust,zmij,1.0.23,MIT,b4da6907baea505a74d2dc1ce412ebddfdc08b4e157d011503cac6633fa2295b
