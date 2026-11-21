@@ -75,7 +75,7 @@ func TestMainShowsPTTAvailability(t *testing.T) {
 		name                                string
 		speed                               float64
 		high, offline, simulation, override bool
-		speechLoading, unbound              bool
+		speechLoading, unbound, noAltitude  bool
 		activity, want                      string
 		color                               gui.Color
 	}{
@@ -84,6 +84,7 @@ func TestMainShowsPTTAvailability(t *testing.T) {
 		{name: "above altitude limit", high: true, want: "Unavailable", color: red},
 		{name: "speed override", speed: 51, override: true, want: "PTT Idle", color: ink},
 		{name: "speed override at altitude", high: true, override: true, want: "Unavailable", color: red},
+		{name: "speed override before altitude arrives", noAltitude: true, override: true, want: "Unavailable", color: red},
 		{name: "offline", offline: true, want: "Unavailable", color: red},
 		{name: "simulation", offline: true, high: true, simulation: true, want: "PTT Idle", color: ink},
 		{name: "speech loading", speechLoading: true, want: "Unavailable", color: red},
@@ -102,7 +103,13 @@ func TestMainShowsPTTAvailability(t *testing.T) {
 				s.speechStatus = "Loading speech"
 			}
 			s.groundSpeed.Store(&speedReading{tc.speed, time.Now()})
-			s.abovePTTAltitude.Store(tc.high)
+			if !tc.noAltitude {
+				altitude := 10000.0
+				if tc.high {
+					altitude++
+				}
+				s.pttAltitude.Store(&altitude)
+			}
 			w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
 			w.TestRender(mainView)
 			// Check the visible status text and color together
@@ -612,6 +619,26 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 }
 
+func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "ground powder", Enabled: true, Services: []string{"JETWAY"}}})
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGround Power\nJetway") }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+	s.submitCommand("ground powder", true)
+	(<-s.jobs)(s.ctx, session)
+	if !slices.Equal(transport.selected, []int{1}) {
+		t.Fatalf("GSX choices = %v, want [1] for Jetway", transport.selected)
+	}
+}
+
 func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(),
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}
@@ -669,6 +696,9 @@ func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 	queue := s.audioQueue
 	if len(queue) != 3 || queue[0].cue != "refueling" || queue[1].readout != "One: Refuel. Two: Catering." || queue[2].cue != "catering" {
 		t.Fatalf("preset audio queued out of order: %+v", queue)
+	}
+	if !strings.Contains(strings.Join(s.lines, "\n"), "2/2 services ok, 1/1 menu readouts queued") {
+		t.Fatalf("preset did not report queued readout separately: %v", s.lines)
 	}
 }
 

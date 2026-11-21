@@ -97,7 +97,7 @@ type state struct {
 	servicesMu                                       sync.Mutex
 	services                                         map[string]bool
 	groundSpeed                                      atomic.Pointer[speedReading]
-	abovePTTAltitude                                 atomic.Bool
+	pttAltitude                                      atomic.Pointer[float64]
 	policy                                           atomic.Pointer[transmissionPolicy]
 	highlights                                       []menuHighlight
 	vocabulary                                       commands.Loader
@@ -490,7 +490,8 @@ func (s *state) simulator() {
 func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan struct{}) {
 	lost := false
 	defer func() {
-		close(done)
+		s.groundSpeed.Store(nil)
+		s.pttAltitude.Store(nil)
 		if lost {
 			s.async(func() {
 				s.connected, s.ready, s.overlay = false, false, false
@@ -501,9 +502,8 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 				}
 			})
 		}
+		close(done)
 	}()
-	defer s.groundSpeed.Store(nil)
-	defer s.abovePTTAltitude.Store(false)
 	session := gsx.New(sim, "")
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
@@ -570,7 +570,9 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 				s.async(func() { s.log("SYS", "Cruise: crew will refresh on descent") })
 			}
 			high = above
-			s.abovePTTAltitude.Store(high)
+			s.pttAltitude.Store(&altitude)
+		} else {
+			s.pttAltitude.Store(nil)
 		}
 		// Redraw after both flight readings have been updated
 		s.async(func() { s.ready = ready })
@@ -779,6 +781,10 @@ func (s *state) loadVocabulary() commands.Vocabulary {
 }
 
 func (s *state) submit(input string) {
+	s.submitCommand(input, false)
+}
+
+func (s *state) submitCommand(input string, localSpeech bool) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return
@@ -797,7 +803,12 @@ func (s *state) submit(input string) {
 	s.addJob(func(ctx context.Context, session *gsx.Session) {
 		words := s.loadVocabulary()
 		raw := strings.ToLower(input)
-		text := words.Normalize(raw)
+		text := raw
+		// Keep the original transcript available for user-defined codewords
+		if localSpeech {
+			text = commands.CorrectLocalTranscript(text)
+		}
+		text = words.Normalize(text)
 		// Typed readouts need the simulator and Kokoro, but never require a recognizer
 		if readoutMatches(prefs, text, raw) {
 			s.trace("CMD", "Routed command to menu readout")
@@ -938,12 +949,15 @@ func (s *state) submit(input string) {
 		switch action.Kind {
 		case "preset":
 			log("PRESET", fmt.Sprintf("Preset %q triggered", action.Preset))
-			done := 0
+			done, readouts := 0, 0
 			// A duplicate preset entry may retry a failed service but won't repeat a successful one
 			seen := map[string]bool{}
 			for _, service := range action.Services {
 				if s.ctx.Err() != nil {
 					return
+				}
+				if service == config.ReadMenuAction {
+					readouts++
 				}
 				if !seen[service] && execute(service) {
 					if service != config.ReadMenuAction {
@@ -953,9 +967,13 @@ func (s *state) submit(input string) {
 				}
 			}
 			s.async(func() {
-				total := done + queuedReadouts
-				s.log("PRESET", fmt.Sprintf("Preset %q complete: %d/%d services ok", action.Preset, total, len(action.Services)))
-				s.trace("CMD", fmt.Sprintf("Preset completed: %d of %d services succeeded", total, len(action.Services)))
+				result := fmt.Sprintf("%d/%d services ok", done, len(action.Services)-readouts)
+				// Count queued readouts separately from completed GSX services
+				if readouts > 0 {
+					result += fmt.Sprintf(", %d/%d menu readouts queued", queuedReadouts, readouts)
+				}
+				s.log("PRESET", fmt.Sprintf("Preset %q complete: %s", action.Preset, result))
+				s.trace("CMD", "Preset completed: "+result)
 			})
 		case "service":
 			if !execute(action.Services[0]) {

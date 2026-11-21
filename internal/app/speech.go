@@ -35,7 +35,12 @@ func (s *state) pttBlock() string {
 		if !s.connected {
 			return "SimConnect disconnected"
 		}
-		if s.abovePTTAltitude.Load() {
+		// Speed override still requires an altitude reading
+		altitude := s.pttAltitude.Load()
+		if altitude == nil {
+			return "Aircraft altitude unavailable"
+		}
+		if *altitude > 10000 {
 			return "Aircraft above 10,000 ft"
 		}
 	}
@@ -166,7 +171,7 @@ func (s *state) record(down bool) {
 				return
 			}
 			// Recognized speech and typed commands share routing and the current speed gate
-			s.submit(transcript)
+			s.submitCommand(transcript, localSpeech)
 		})
 	}()
 }
@@ -207,8 +212,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	if err := s.loadRecognizer(s.ctx, m, s.loadVocabulary()); err != nil {
 		return "", err
 	}
-	text, err := s.recognizer.Transcribe(s.ctx, pcm)
-	return commands.CorrectLocalTranscript(text), err
+	return s.recognizer.Transcribe(s.ctx, pcm)
 }
 
 func (s *state) loadRecognizer(ctx context.Context, model models.Model, vocab commands.Vocabulary) error {
@@ -271,6 +275,11 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 			if err == nil && key == "" {
 				stage = "missing Mistral API key"
 				err = errors.New("Mistral API key is missing")
+			}
+			if err == nil {
+				stage = "local voice detector check"
+				// An empty frame checks the detector before PTT without recording or uploading audio
+				_, err = s.recognizer.FilterSpeech(ctx, nil)
 			}
 		case !local:
 			err = errors.New("Selected speech provider is unavailable")
