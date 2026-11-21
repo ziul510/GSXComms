@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/go-gui-org/go-gui v0.98.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/yalue/onnxruntime_go v1.32.0 // ONNX Runtime API 28 matches the bundled DLL
+	github.com/yalue/onnxruntime_go v1.38.0 // ONNX Runtime API 28 matches the bundled DLL
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
 )
