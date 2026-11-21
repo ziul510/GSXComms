@@ -56,17 +56,28 @@ foreach ($file in (Get-ChildItem 'docs/licenses' -File | Sort-Object Name)) {
 $rust = cargo +1.98.0 metadata --locked --manifest-path cmd/gsxsimconnect/Cargo.toml --filter-platform x86_64-pc-windows-msvc --format-version 1 | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or !$rust.packages) { throw 'Failed to inventory Rust dependencies' }
 foreach ($crate in ($rust.packages | Where-Object source | Sort-Object name)) {
-    Add-Notice "========== $($crate.name) $($crate.version) ($($crate.license)) =========="
-    $licenses = @(Get-ChildItem -LiteralPath (Split-Path -Parent $crate.manifest_path) -File |
-        Where-Object { $_.Name -match '^(LICENSE|COPYING|NOTICE)' } | Sort-Object Name)
+    $license = $crate.license
+    if (!$license -and $crate.license_file) {
+        $license = (Import-Csv -LiteralPath 'third_party/licenses.csv' | Where-Object {
+            $_.Ecosystem -eq 'Rust' -and $_.Dependency -eq $crate.name -and $_.Version -eq $crate.version
+        }).License
+    }
+    if (!$license) { throw "Missing Rust license identifier for $($crate.name) $($crate.version)" }
+    Add-Notice "========== $($crate.name) $($crate.version) ($license) =========="
+    $crateDir = Split-Path -Parent $crate.manifest_path
+    $licenses = @(Get-ChildItem -LiteralPath $crateDir -File | Where-Object {
+        $_.Name -match '^(licen[cs]e|unlicen[cs]e|copying|notice|patents|third.party.notices)($|[._-])'
+    } | Select-Object -ExpandProperty FullName)
+    if ($crate.license_file) { $licenses += (Get-Item -LiteralPath (Join-Path $crateDir $crate.license_file)).FullName }
     if (!$licenses.Count) {
-        if ($crate.name -notmatch '^flybywireless-simconnect(-derive|-proto)?$' -or $crate.license -ne 'MIT') {
+        if ($crate.name -notmatch '^flybywireless-simconnect(-derive|-proto)?$' -or
+            $crate.version -ne '0.2.1' -or $license -ne 'MIT') {
             throw "Missing Rust license for $($crate.name) $($crate.version)"
         }
         Add-Notice 'See FlyByWireless-LICENSE above.'
     }
-    foreach ($license in $licenses) {
-        Add-Notice (Get-Content -LiteralPath $license.FullName -Raw)
+    foreach ($file in ($licenses | Sort-Object -Unique)) {
+        Add-Notice (Get-Content -LiteralPath $file -Raw)
     }
 }
 Set-Content -LiteralPath $Output -Value $notice.ToString() -Encoding utf8

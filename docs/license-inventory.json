@@ -363,13 +363,6 @@
       "mode": "bundled with optional local vocabulary and mapping overrides"
     },
     {
-      "name": "flybywireless-simconnect",
-      "version": "0.2.1",
-      "license": "MIT",
-      "source": "https://github.com/wegylexy/SimConnect",
-      "mode": "statically linked in the bundled gsxsimconnect helper"
-    },
-    {
       "name": "OpenPhonemizer code and checkpoint",
       "version": "c949f6bc5d3c4a8f3d9babf221b49d8145eced0b",
       "license": "BSD-3-Clause-Clear",

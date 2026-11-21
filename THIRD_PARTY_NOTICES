@@ -40,10 +40,6 @@ words, accent mappings, default configuration and Voxtral prompt, ziul510 refere
 Use: bundled with optional local vocabulary and mapping overrides
 Source: GSXComms reference snapshot
 
-flybywireless-simconnect 0.2.1 — MIT
-Use: statically linked in the bundled gsxsimconnect helper
-Source: https://github.com/wegylexy/SimConnect
-
 OpenPhonemizer code and checkpoint c949f6bc5d3c4a8f3d9babf221b49d8145eced0b — BSD-3-Clause-Clear
 Use: pinned checkpoint export and tokenizer data bundled in Kokoro test builds
 Source: https://huggingface.co/openphonemizer/ckpt
