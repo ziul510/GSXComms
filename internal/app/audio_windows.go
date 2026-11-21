@@ -115,20 +115,29 @@ type waveHeader struct {
 	next, reserved   uintptr
 }
 
+type waveError struct {
+	operation string
+	code      uintptr
+}
+
+func (err waveError) Error() string { return fmt.Sprintf("%s failed (%d)", err.operation, err.code) }
+
 //go:uintptrescapes
 func mmCall(proc *windows.LazyProc, args ...uintptr) error {
 	// WinMM APIs report MMRESULT directly Zero is success
 	if result, _, _ := proc.Call(args...); result != 0 {
-		return fmt.Errorf("%s failed (%d)", proc.Name, result)
+		return waveError{proc.Name, result}
 	}
 	return nil
 }
+
+var errMicUnavailable = errors.New("selected microphone is unavailable")
 
 func openCaptureDevice(name, endpoint string, candidates []audioDevice, allowFallback bool, open func(uintptr) error) error {
 	id := matchAudioDevice(name, endpoint, candidates, allowFallback)
 	// WAVE_MAPPER is safe for cloud capture only when the settings select it
 	if !allowFallback && id == defaultWaveDevice && !defaultAudioSelection(name, endpoint) {
-		return errors.New("selected microphone is unavailable")
+		return errMicUnavailable
 	}
 	err := open(id)
 	if err == nil || id == defaultWaveDevice {

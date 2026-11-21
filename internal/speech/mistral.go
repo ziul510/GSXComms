@@ -9,7 +9,6 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +21,12 @@ var prompt string
 
 const mistralAPI = "https://api.mistral.ai/v1/"
 
-var errInvalidTranscription = errors.New("Mistral returned an invalid transcription response")
+// MistralError contains a local summary of an API failure without the response body
+type MistralError struct{ reason string }
+
+func (err *MistralError) Error() string { return err.reason }
+
+var errInvalidTranscription = &MistralError{"Mistral returned an invalid transcription response"}
 
 func Usable(pcm []byte) bool {
 	// At 16 kHz PCM16, 8000 bytes is a quarter second Partial samples are invalid
@@ -62,13 +66,13 @@ func wave(pcm []byte) []byte {
 func request(ctx context.Context, key, method, endpoint string, data []byte, timeout time.Duration) ([]byte, error) {
 	// Fail before building a request when no vault credential is available
 	if strings.TrimSpace(key) == "" {
-		return nil, errors.New("Mistral API key is not set")
+		return nil, &MistralError{"Mistral API key is not set"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, mistralAPI+endpoint, bytes.NewReader(data))
 	if err != nil {
-		return nil, errors.New("Mistral request could not be prepared")
+		return nil, &MistralError{"Mistral request could not be prepared"}
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
@@ -79,7 +83,7 @@ func request(ctx context.Context, key, method, endpoint string, data []byte, tim
 	client := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, errors.New("Mistral network error")
+		return nil, &MistralError{"Mistral network error"}
 	}
 	defer resp.Body.Close()
 	// Translate service errors into UI messages without exposing the response body
@@ -87,11 +91,11 @@ func request(ctx context.Context, key, method, endpoint string, data []byte, tim
 	case http.StatusOK:
 		return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, errors.New("Mistral rejected the API key")
+		return nil, &MistralError{"Mistral rejected the API key"}
 	case http.StatusTooManyRequests:
-		return nil, errors.New("Mistral rate limit reached; wait and try again")
+		return nil, &MistralError{"Mistral rate limit reached; wait and try again"}
 	default:
-		return nil, fmt.Errorf("Mistral request failed with HTTP %d", resp.StatusCode)
+		return nil, &MistralError{fmt.Sprintf("Mistral request failed with HTTP %d", resp.StatusCode)}
 	}
 }
 
@@ -123,7 +127,7 @@ func Voxtral(ctx context.Context, key, model, table string, pcm []byte) (string,
 	}}}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", errors.New("could not encode Mistral audio")
+		return "", &MistralError{"could not encode Mistral audio"}
 	}
 	data, err := request(ctx, key, http.MethodPost, "chat/completions", body, 30*time.Second)
 	if err != nil {

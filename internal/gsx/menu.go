@@ -31,11 +31,19 @@ const (
 )
 
 var (
-	ErrDisconnected     = errors.New("SimConnect handshake required")
-	ErrSpeedUnavailable = errors.New("ground speed unavailable")
-	ErrMenuChanged      = errors.New("GSX menu changed before selection")
-	ErrHotfix           = errors.New("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms")
+	ErrDisconnected           = errors.New("SimConnect handshake required")
+	ErrSpeedUnavailable       = errors.New("ground speed unavailable")
+	ErrMenuChanged            = errors.New("GSX menu changed before selection")
+	ErrHotfix                 = errors.New("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms")
+	ErrMenuInactive           = errors.New("GSX menu opened but did not become active")
+	ErrAdditionalMenuInactive = errors.New("GSX Additional Services menu did not become active")
+	ErrNoMenuMatch            = errors.New("No matching GSX menu option found")
 )
+
+type serviceMatchError string
+
+func (err serviceMatchError) Error() string { return fmt.Sprintf("service %q not found", string(err)) }
+func (err serviceMatchError) Unwrap() error { return ErrNoMenuMatch }
 
 type Transport interface {
 	Get(context.Context, string) (float64, error)
@@ -414,9 +422,9 @@ func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	}
 	// Distinguish a delayed submenu from a menu that never populated
 	if previous != nil {
-		return menu, errors.New("GSX Additional Services menu did not become active")
+		return menu, ErrAdditionalMenuInactive
 	}
-	return menu, errors.New("GSX menu opened but did not become active")
+	return menu, ErrMenuInactive
 }
 
 // Use menu order to break ties when several labels contain a service term
@@ -504,9 +512,9 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	if index < 0 {
 		if service != "" {
-			return "", fmt.Errorf("service %q not found", service)
+			return "", serviceMatchError(service)
 		}
-		return "", errors.New("No matching GSX menu option found")
+		return "", ErrNoMenuMatch
 	}
 	selected := menu.Options[index]
 	if err := s.ChooseOn(ctx, menu, index); err != nil {

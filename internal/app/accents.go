@@ -234,7 +234,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 	}
 }
 
-func (s *state) accentCue(dir string, enabled []string, accentName, service, option, voice string) ([]byte, int) {
+func (s *state) accentCue(dir, pack, accentName, service, option, voice string) ([]byte, int) {
 	folder, action := service, ""
 	switch service {
 	case "greeting":
@@ -254,17 +254,10 @@ func (s *state) accentCue(dir string, enabled []string, accentName, service, opt
 			}
 		}
 	}
-	for _, pack := range packs {
-		if !slices.Contains(enabled, pack.name) || !slices.ContainsFunc(pack.accents, func(name string) bool {
-			return strings.EqualFold(name, accentName)
-		}) {
-			continue
-		}
-		clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
-		for _, relative := range []string{pack.name, "Extracted", ""} {
-			if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
-				return pcm, rate
-			}
+	clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
+	for _, relative := range []string{pack, "Extracted", ""} {
+		if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
+			return pcm, rate
 		}
 	}
 	return nil, 0
@@ -327,35 +320,51 @@ func (s *state) loadClip(path string) ([]byte, int) {
 	return pcm, rate
 }
 
-func (s *state) regionalCue(next playback) ([]byte, int) {
-	enabled := config.Get[[]string](next.prefs, "installed_packs")
-	if len(enabled) == 0 {
-		return nil, 0
+func installedCrewAccent(enabled []string, candidate string) (packName, accentName string) {
+	for _, pack := range packs {
+		if !slices.Contains(enabled, pack.name) {
+			continue
+		}
+		for _, name := range pack.accents {
+			if strings.EqualFold(name, candidate) {
+				return pack.name, name
+			}
+		}
 	}
+	return "", ""
+}
+
+// Share the candidate order between playback and the debug location summary
+func crewAccentCandidates(prefs config.Values, location *geo.Position, overrides map[string]string) []string {
 	var pos geo.Position
-	if next.location != nil {
-		pos = *next.location
+	if location != nil {
+		pos = *location
 	}
-	fallback := config.Get[string](next.prefs, "default_accent")
-	forced := config.Get[string](next.prefs, "force_accent")
-	names := []string{}
-	if forced != "Disabled" {
+	var names []string
+	if forced := config.Get[string](prefs, "force_accent"); forced != "Disabled" {
 		names = append(names, forced)
 	}
-	names = append(names, geo.AccentCandidates(pos, geo.Overrides(s.dir))...)
-	names = append(names, fallback)
-	// Resolve a real clip, since a configured accent can belong to a disabled or missing pack.
+	names = append(names, geo.AccentCandidates(pos, overrides)...)
+	names = append(names, config.Get[string](prefs, "default_accent"))
 	installed := slices.Clone(accents)
 	slices.Sort(installed)
-	names = append(names, installed...)
+	return append(names, installed...)
+}
+
+func (s *state) regionalCue(next playback) ([]byte, int, string) {
+	enabled := config.Get[[]string](next.prefs, "installed_packs")
+	if len(enabled) == 0 {
+		return nil, 0, ""
+	}
 	recordings := filepath.Join(s.dir, "Accents")
-	for _, name := range names {
+	for _, candidate := range crewAccentCandidates(next.prefs, next.location, geo.Overrides(s.dir)) {
+		pack, name := installedCrewAccent(enabled, candidate)
 		if name == "" {
 			continue
 		}
-		if pcm, rate := s.accentCue(recordings, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
-			return pcm, rate
+		if pcm, rate := s.accentCue(recordings, pack, name, next.cue, next.option, next.voice); len(pcm) > 0 {
+			return pcm, rate, name
 		}
 	}
-	return nil, 0
+	return nil, 0, ""
 }

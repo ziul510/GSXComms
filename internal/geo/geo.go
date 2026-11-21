@@ -33,6 +33,21 @@ type city struct {
 
 type Position struct{ Country, Region string }
 
+// Label uses the nearest indexed region and country for display
+func (p *Position) Label() string {
+	if p == nil || p.Country == "" {
+		return "unavailable"
+	}
+	country := mapping.Names[p.Country]
+	if country == "" {
+		country = p.Country
+	}
+	if p.Region != "" && !strings.EqualFold(p.Region, country) {
+		return p.Region + ", " + country
+	}
+	return country
+}
+
 // Decompress the index on the first position lookup and reuse it for later polls
 var cities = sync.OnceValues(load)
 var mapping struct {

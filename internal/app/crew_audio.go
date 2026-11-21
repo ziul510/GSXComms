@@ -21,7 +21,7 @@ type playback struct {
 	pcm                   []byte
 	rate                  int
 	cue, option           string
-	voice                 string
+	voice, crewAccent     string
 	location              *geo.Position
 	priority, stateChange bool
 	dry                   bool
@@ -73,6 +73,7 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 	} else if request.stateChange || len(s.audioQueue) < 16 {
 		s.audioQueue = append(s.audioQueue, request)
 	} else {
+		s.traceLevel("WARN", "AUDIO", "Playback skipped because the queue is full")
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 		return false
 	}
@@ -106,19 +107,19 @@ func (s *state) playbackLoop() {
 		s.audioMu.Unlock()
 
 		if next.cue != "" {
-			next.pcm, next.rate = s.regionalCue(next)
+			next.pcm, next.rate, next.crewAccent = s.regionalCue(next)
 		}
 		if ctx.Err() == nil {
 			if next.cue != "" && len(next.pcm) == 0 {
 				if missing != next.cue {
 					message := "No installed crew recording for " + next.cue
 					s.async(func() { s.log("AUDIO", message) })
-					s.trace("AUDIO", "No installed crew recording matched the cue")
+					s.traceLevel("WARN", "AUDIO", "No installed crew recording matched the cue")
 				}
 				missing = next.cue
 			} else if err := s.output(ctx, next); err != nil && ctx.Err() == nil {
 				s.async(func() { s.log("AUDIO", err.Error()) })
-				s.traceFailure("AUDIO", "Windows audio playback failed")
+				s.traceFailure("AUDIO", "Windows audio playback failed", err)
 			}
 		}
 		cancel()
@@ -208,6 +209,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	if m.release == nil {
 		release, err := startMute(ctx, s.dir)
 		if err != nil {
+			s.traceFailure("AUDIO", "Could not mute Couatl/GSX audio", err)
 			s.async(func() { s.log("AUDIO", "Could not mute Couatl/GSX audio") })
 			return func() {}
 		}

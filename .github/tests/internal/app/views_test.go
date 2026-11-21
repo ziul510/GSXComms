@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -587,7 +588,9 @@ func (f *telemetrySim) Get(ctx context.Context, key string) (float64, error) {
 
 func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	s := &state{ctx: ctx, cfg: config.Defaults(), done: make(chan struct{}), jobs: make(chan func(context.Context, *gsx.Session), 2)}
+	s := &state{ctx: ctx, cfg: config.Defaults(), done: make(chan struct{}), jobs: make(chan func(context.Context, *gsx.Session), 2),
+		debug: make(chan debugEvent, 16)}
+	s.debugEnabled.Store(true)
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.overlay, s.connected = true, true
 	s.menu = gsx.ParseMenu("Ramp\nJetway")
@@ -627,6 +630,15 @@ func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 			if s.overlay || len(s.menu.Options) != 0 || len(s.highlights) != 0 || s.groundSpeed.Load() != nil {
 				t.Fatal("disconnect kept stale menu or telemetry")
 			}
+			var output strings.Builder
+			for len(s.debug) > 0 {
+				fmt.Fprintln(&output, (<-s.debug).line)
+			}
+			for _, want := range []string{"Waiting for GSX/Couatl to start", "Ground speed available", "SimConnect disconnected"} {
+				if strings.Count(output.String(), want) != 1 {
+					t.Errorf("expected one %q event, got:\n%s", want, output.String())
+				}
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -639,17 +651,28 @@ func TestDebugDiagnosticsExcludeCredentialsAndTranscripts(t *testing.T) {
 	s := &state{cfg: config.Defaults(), debug: make(chan debugEvent, 16)}
 	s.setLogSecret(strings.ToUpper(key))
 	s.cfg.Put("speech_provider", key)
+	s.cfg.Put("ptt_bind", config.Binding{Type: key})
+	s.cfg.Put("input_device_name", key)
 	s.setDebug(true)
 	s.log("CMD", "transcript "+key)
 	s.log("ERR", "error response "+key)
-	s.traceFailure("GSX", "Simulator stopped")
+	s.traceFailure("SIM", "Handshake failed", fmt.Errorf("%s: %w", key, context.DeadlineExceeded))
+	s.traceFailure("AUDIO", "Playback failed", errors.New(key))
 	if strings.Contains(strings.Join(s.lines, "\n"), key) {
 		t.Fatal("conversation exposed the saved credential")
 	}
+	var output strings.Builder
 	for len(s.debug) > 0 {
 		event := <-s.debug
 		if strings.Contains(event.line, key) || strings.Contains(event.line, "transcript") || strings.Contains(event.line, "error response") {
 			t.Fatal("debug writer received user or credential text")
+		}
+		fmt.Fprintln(&output, event.line)
+	}
+	for _, want := range []string{"INFO  SYS    GSXComms debug session", "Provider=unknown", "Binding=unknown",
+		"WARN  SIM    Handshake failed: timed out", "WARN  AUDIO  Playback failed: see the in-app message for details"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("missing %q in debug output:\n%s", want, output.String())
 		}
 	}
 }

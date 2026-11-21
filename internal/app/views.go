@@ -393,6 +393,7 @@ func (s *state) save(next config.Values, then func(error)) {
 	default:
 		// Report a full queue through the dialog callback or the main conversation
 		err := errors.New("settings save queue is busy")
+		s.traceLevel("WARN", "SYS", "Settings save skipped because the queue is full")
 		if then != nil {
 			then(err)
 		} else {
@@ -687,7 +688,7 @@ func (s *state) openSettings() {
 			body = append(body, wrapped("Needs rebinding: "+binding.Description, 12, orange))
 		}
 		action("rebind", "Rebind PTT", saving || s.binding != nil, func() { s.rebind(w) })
-		section("Developer", "Debug mode opens your default terminal and writes debug.log")
+		section("Developer", "Debug mode shows diagnostics in your default terminal and saves debug.log in the app’s data folder")
 		toggle("debug_mode", "Debug Mode")
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
