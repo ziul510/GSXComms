@@ -3,7 +3,7 @@ module github.com/ziul510/GSXCommsGo
 go 1.27.0
 
 require (
-	github.com/go-gui-org/go-gui v0.96.0
+	github.com/go-gui-org/go-gui v0.97.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/yalue/onnxruntime_go v1.38.0
 	golang.org/x/sys v0.50.0
