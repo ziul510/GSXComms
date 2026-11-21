@@ -591,17 +591,6 @@ func Number(text string) (int, bool) {
 	return index, index >= 0
 }
 
-// Voxtral gets service names and keywords in the prompt it uses for transcription
-func (v Vocabulary) HotwordTable() string {
-	var lines []string
-	for _, e := range v.entries {
-		if len(e.Keywords) > 0 {
-			lines = append(lines, e.Name+": "+strings.Join(e.Keywords, ", "))
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 // The GSX session uses these custom labels before trying built-in aliases
 func (v Vocabulary) Keywords(service string) []string {
 	for _, e := range v.entries {

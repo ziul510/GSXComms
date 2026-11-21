@@ -185,15 +185,17 @@ func waitForPTTStatic(ctx context.Context) bool {
 
 func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	provider := config.Get[string](prefs, "speech_provider")
-	vocab := s.loadVocabulary()
 	// Only the explicitly selected cloud provider reads the credential and sends audio
 	if provider == "mistral" {
+		pcm, err := s.recognizer.FilterSpeech(s.ctx, pcm)
+		if err != nil || len(pcm) == 0 {
+			return "", err
+		}
 		key, err := config.ReadKey()
 		if err != nil {
 			return "", err
 		}
-		// Send the vocabulary table so cloud transcription uses the same service words as routing
-		return speech.Voxtral(s.ctx, key, config.Get[string](prefs, "mistral_model"), vocab.HotwordTable(), pcm)
+		return speech.Voxtral(s.ctx, key, config.Get[string](prefs, "mistral_model"), pcm)
 	}
 	m, ok := models.Lookup(provider)
 	if !ok || !m.Ready(s.dir) {
@@ -202,7 +204,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	s.sttMu.Lock()
 	defer s.sttMu.Unlock()
 	// Keep the model and hotwords stable between loading and transcribing this recording.
-	if err := s.loadRecognizer(s.ctx, m, vocab); err != nil {
+	if err := s.loadRecognizer(s.ctx, m, s.loadVocabulary()); err != nil {
 		return "", err
 	}
 	text, err := s.recognizer.Transcribe(s.ctx, pcm)

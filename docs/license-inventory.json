@@ -142,6 +142,14 @@
       "runtimeFile": "onnxruntime.dll"
     },
     {
+      "name": "Silero VAD ONNX weights",
+      "version": "v6.2",
+      "license": "MIT",
+      "source": "https://github.com/snakers4/silero-vad/blob/be95df9152c0d7618fa1edfeb296fc3dae32376f/src/silero_vad/data/silero_vad.onnx",
+      "mode": "embedded in the speech worker",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    {
       "name": "Parakeet TDT v2 0.6B INT8 (NVIDIA foundation, sherpa-onnx conversion)",
       "version": "1ab9323565ddb038682214b292f588070a538ce2",
       "license": "CC-BY-4.0",

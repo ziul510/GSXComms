@@ -20,7 +20,7 @@
     "max_recording_seconds": 45,
     "gsx_hotfix_completed": false,
     "speech_provider": "parakeet",
-    "mistral_model": "voxtral-small-latest",
+    "mistral_model": "voxtral-small-transcribe-3",
     "presets": [],
     "enable_menu_matching": true,
     "read_gsx_menus_aloud_after_keyword": false,

@@ -62,7 +62,7 @@ static const SherpaOnnxOfflineRecognizer *recognizer(
   if (words[0] && vocab[0]) {
     cfg.hotwords_file=words;
     // Higher scores inserted unrelated service words in Parakeet smoke tests
-    cfg.hotwords_score=2.5f;
+    cfg.hotwords_score=1.5f;
     cfg.model_config.modeling_unit="bpe";
     cfg.model_config.bpe_vocab=vocab;
   }
@@ -112,6 +112,14 @@ func main() {
 	dll, _ := windows.UTF16PtrFromString(filepath.Join(dir, "sherpa-onnx-c-api.dll"))
 	// The worker stays available to report a missing native runtime during hello
 	ready := C.load_library((*C.wchar_t)(unsafe.Pointer(wide)), (*C.wchar_t)(unsafe.Pointer(dll))) != 0
+	var vad *voiceDetector
+	var vadErr error
+	if ready {
+		vad, vadErr = openVoiceDetector(dir)
+		if vad != nil {
+			defer vad.close()
+		}
+	}
 	var r *C.SherpaOnnxOfflineRecognizer
 	defer func() {
 		if r != nil {
@@ -129,6 +137,8 @@ func main() {
 		case "hello":
 			if !ready {
 				resp.Error = "app-local sherpa-onnx runtime is unavailable"
+			} else if vadErr != nil {
+				resp.Error = "could not load voice activity detector: " + vadErr.Error()
 			}
 		case "load":
 			if !ready {
@@ -145,12 +155,23 @@ func main() {
 				C.destroy(r)
 			}
 			r = next
-		case "transcribe":
-			if r == nil {
+		case "filter_speech", "transcribe":
+			if vad == nil {
+				resp.Error = "voice activity detector is unavailable"
+				break
+			}
+			if request.Op == "transcribe" && r == nil {
 				resp.Error = "no model loaded"
 				break
 			}
-			resp.Text, err = recognize(r, request)
+			pcm, err := vad.filter(request)
+			if err == nil && len(pcm) != 0 {
+				if request.Op == "filter_speech" {
+					resp.PCM = pcm
+				} else {
+					resp.Text, err = recognize(r, pcm)
+				}
+			}
 			if err != nil {
 				resp.Error = err.Error()
 			}
@@ -236,25 +257,10 @@ func load(f speech.Frame) (*C.SherpaOnnxOfflineRecognizer, error) {
 	return r, nil
 }
 
-func recognize(r *C.SherpaOnnxOfflineRecognizer, f speech.Frame) (string, error) {
-	// The pipe payload must match the Windows capture format
-	if f.SampleRate != 16000 || len(f.PCM)%2 != 0 {
-		return "", errors.New("expected 16 kHz PCM16 mono")
-	}
-	if len(f.PCM) < 8000 {
-		return "", nil
-	}
-	samples := make([]float32, len(f.PCM)/2)
-	peak := 0
-	// Convert PCM16 to normalized float samples and measure peak loudness in one pass
+func recognize(r *C.SherpaOnnxOfflineRecognizer, pcm []byte) (string, error) {
+	samples := make([]float32, len(pcm)/2)
 	for i := range samples {
-		n := int(int16(binary.LittleEndian.Uint16(f.PCM[i*2:])))
-		peak = max(peak, n, -n)
-		samples[i] = float32(n) / 32768
-	}
-	// Keep the same silence gate for callers that bypass the UI
-	if peak < 350 {
-		return "", nil
+		samples[i] = float32(int16(binary.LittleEndian.Uint16(pcm[i*2:]))) / 32768
 	}
 	res := C.transcribe(r, (*C.float)(&samples[0]), C.int(len(samples)))
 	if res == nil {

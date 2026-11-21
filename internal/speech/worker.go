@@ -20,7 +20,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const Version = 1
+const Version = 2
 const MaxFrame = 16 << 20
 
 // The parent and both native workers share this request and reply payload
@@ -147,6 +147,25 @@ func (w *Worker) Transcribe(ctx context.Context, pcm []byte) (string, error) {
 		return "", errors.New(resp.Error)
 	}
 	return resp.Text, nil
+}
+
+// FilterSpeech uses the same local voice detector as the offline recognizers
+func (w *Worker) FilterSpeech(ctx context.Context, pcm []byte) ([]byte, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.cmd == nil {
+		if err := w.start(ctx); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := w.exchange(ctx, 30*time.Second, Frame{Op: "filter_speech", SampleRate: 16000, PCM: pcm})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.PCM, nil
 }
 
 func (w *Worker) start(ctx context.Context) error {
