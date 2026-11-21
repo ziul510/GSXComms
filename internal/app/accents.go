@@ -39,6 +39,7 @@ var accents = func() []string {
 	for _, pack := range packs {
 		names = append(names, pack.accents...)
 	}
+	slices.Sort(names)
 	return names
 }()
 
@@ -52,7 +53,7 @@ func assetDir(name string) string {
 	return name
 }
 
-func (s *state) openAccents() {
+func (s *state) openAccents(onSaved func()) {
 	if s.accentOpen {
 		return
 	}
@@ -63,7 +64,12 @@ func (s *state) openAccents() {
 		cancel()
 		s.accentOpen = false
 	}, accentSetupView(ctx, s.accentsDir, filepath.Join(s.dir, "Accents"), s.settingsDraft(), func(enabled []string, fallback string, then func(error)) {
-		s.save(accentPreferences(s.settingsDraft(), enabled, fallback), then)
+		s.save(accentPreferences(s.settingsDraft(), enabled, fallback), func(err error) {
+			if err == nil && onSaved != nil {
+				onSaved()
+			}
+			then(err)
+		})
 	}, func(*gui.Window) { closeDialog() }))
 }
 
@@ -107,7 +113,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 	fallback := config.Get[string](prefs, "default_accent")
 	available, selected := map[string]bool{}, map[string]bool{}
 	for _, pack := range packs {
-		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(recordings, pack.name, pack.accents)
+		extracted := legacyAccentPack(recordings, pack.name, pack.accents)
 		if extracted {
 			available[pack.name] = true
 		} else if archive, err := zip.OpenReader(filepath.Join(archives, pack.name+".zip")); err == nil {
@@ -346,9 +352,7 @@ func crewAccentCandidates(prefs config.Values, location *geo.Position, overrides
 	}
 	names = append(names, geo.AccentCandidates(pos, overrides)...)
 	names = append(names, config.Get[string](prefs, "default_accent"))
-	installed := slices.Clone(accents)
-	slices.Sort(installed)
-	return append(names, installed...)
+	return append(names, accents...)
 }
 
 func (s *state) regionalCue(next playback) ([]byte, int, string) {

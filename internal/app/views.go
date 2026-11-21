@@ -71,12 +71,12 @@ func button(id, label string, width float32, primary, disabled bool, onClick fun
 	return gui.Button(buttonConfig(id, label, width, primary, disabled, onClick))
 }
 
-// A fill-width spacer pushes later controls to the far edge of a row
+// A flexible spacer pushes later controls to the far edge of a row
 func spacer() gui.View {
 	return gui.Rectangle(gui.RectangleCfg{Sizing: gui.FillFixed, Height: 1})
 }
 
-// Use a fixed-size gap when the layout needs stable spacing
+// Use a fixed gap when the layout needs stable spacing
 func gap(width, height float32) gui.View {
 	return gui.Rectangle(gui.RectangleCfg{Sizing: gui.FixedFixed, Width: width, Height: height})
 }
@@ -128,7 +128,7 @@ func mainView(w *gui.Window) gui.View {
 	ptt, pttColor := "PTT Idle", ink
 	binding, bound := s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind"))
 	bindingColor := muted
-	// In-progress activity takes priority over readiness for a new recording
+	// Current activity takes priority over readiness for a new recording
 	switch {
 	case s.ptt == "LISTENING":
 		ptt, pttColor = "PTT LISTENING", accent
@@ -191,7 +191,7 @@ func mainView(w *gui.Window) gui.View {
 			logArea.Content = append(logArea.Content, text("No GSX menu available", controlTextSize, muted))
 		}
 		for i, item := range s.menu.Options {
-			// Display one-based labels but pass the original zero-based slot back to GSX
+			// Add one for display and send the original slot to GSX
 			label := fmt.Sprintf("%d. %s", i+1, item)
 			fill, fg := card, ink
 			for _, highlight := range s.highlights {
@@ -268,7 +268,7 @@ func (s *state) dialog(cfg gui.WindowCfg, onClose func(), view gui.ViewFunc) fun
 	onInit := cfg.OnInit
 	cfg.OnInit = func(w *gui.Window) {
 		window = w
-		// The close callback can run before go-gui creates the queued window
+		// The close callback can run before the GUI framework creates the queued window
 		if closed {
 			w.Close()
 			return
@@ -352,7 +352,7 @@ func formSelect(cfg gui.SelectCfg) gui.View {
 }
 
 func toggleControl(id, label string, size float32, selected bool, onClick func(gui.EventCtx)) gui.View {
-	// Use the passed-in value so toggles can show draft edits before Save
+	// Show the draft value before Save
 	track := disabledInk
 	if selected {
 		track = accent
@@ -440,7 +440,7 @@ func (s *state) openSettings() {
 			if s.binding != nil {
 				s.binding(config.Binding{})
 			}
-			// Close the child editor with Settings.
+			// Close the child editor with Settings
 			if closePresets != nil {
 				closePresets()
 			}
@@ -497,7 +497,7 @@ func (s *state) openSettings() {
 			nameKey, idKey := prefix+"_device_name", prefix+"_device_id"
 			name := config.Get[string](draft, nameKey)
 			endpoint := config.Get[string](draft, idKey)
-			allowFallback := prefix != "input" || config.Get[string](draft, "speech_provider") != "mistral"
+			allowFallback := prefix != "input" || config.Get[string](s.cfg, "speech_provider") != "mistral"
 			id := matchAudioDevice(name, endpoint, devices, allowFallback)
 			items := []string{"Default"}
 			choices := map[string]audioDevice{"Default": {name: "Default"}}
@@ -608,7 +608,19 @@ func (s *state) openSettings() {
 		}
 		slices.Sort(selectedAccents)
 		pick("default_accent", "Default accent", selectedAccents)
-		action("accent-setup", "Open Accent Setup", false, s.openAccents)
+		action("accent-setup", "Open Accent Setup", false, func() {
+			s.openAccents(func() {
+				if closed {
+					return
+				}
+				const key = "default_accent"
+				if bytes.Equal(base[key], draft[key]) {
+					draft[key] = bytes.Clone(s.cfg[key])
+				}
+				base[key] = bytes.Clone(s.cfg[key])
+				w.InvalidateLayout()
+			})
+		})
 		section("Presets", "Bundle multiple services behind a codeword and pick the run order")
 		presets := config.Get[[]config.Preset](s.cfg, "presets")
 		summary := "No presets yet. Open Preset Manager to create one."
@@ -625,7 +637,8 @@ func (s *state) openSettings() {
 		toggle("enable_menu_matching", "Broader Mode")
 		const readKey = config.MenuReadoutSetting
 		readerEnabled := config.Get[bool](s.cfg, readKey)
-		readerDownloading := setup.running == "kokoro"
+		readerDownloading := setup.running == "kokoro" && setup.cancel != nil
+		readerModel, _ := models.Lookup("kokoro")
 		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", settingsTextSize, readerEnabled || readerDownloading, func(ctx gui.EventCtx) {
 			ctx.Consume()
 			if readerSaving {
@@ -647,14 +660,14 @@ func (s *state) openSettings() {
 				setup.cancel()
 			} else if readerEnabled {
 				setEnabled(false)
-			} else if setup.local["kokoro"].ready {
-				setEnabled(true)
 			} else if setup.running != "" {
 				status := setup.local["kokoro"]
 				status.message = "Wait for the speech model operation to finish, then try again"
 				setup.local["kokoro"] = status
+			} else if readerModel.Ready(s.dir) {
+				setEnabled(true)
 			} else {
-				// Failed or canceled downloads leave readout off.
+				// Failed or canceled downloads leave readout off
 				setup.runLocal(s, w, "kokoro", "Downloading", func(err error) {
 					if err == nil && !closed {
 						setEnabled(true)
@@ -669,8 +682,20 @@ func (s *state) openSettings() {
 				ID: "menu-reader-keyword", Label: "Keyword:", Placeholder: "e.g. read menu", TextStyle: labelStyle(settingsTextSize, ink),
 				Text: config.Get[string](draft, "gsx_menu_reader_keyword"), OnTextChanged: func(v string, _ gui.EventCtx) { draft.Put("gsx_menu_reader_keyword", v) },
 			}))
-		} else if note := setup.local["kokoro"].message; note != "" {
+		}
+		if note := setup.local["kokoro"].message; note != "" {
 			body = append(body, wrapped(note, 11, muted))
+		}
+		readerStatus := setup.local["kokoro"]
+		if readerStatus.cached && !readerStatus.ready {
+			body = append(body, modelButton("delete-kokoro", "Delete menu reader model", 180, setup.running != "" || readerSaving, func() {
+				setup.runLocal(s, w, "kokoro", "Deleting", nil)
+			}))
+		}
+		if readerEnabled && !readerStatus.ready && !readerDownloading {
+			body = append(body, modelButton("download-kokoro", "Download menu reader model", 180, setup.running != "" || readerSaving, func() {
+				setup.runLocal(s, w, "kokoro", "Downloading", nil)
+			}))
 		}
 		toggle("auto_connect_sim", "Auto-connect to simulator")
 		toggle("auto_select_operator", "Auto-select operator")

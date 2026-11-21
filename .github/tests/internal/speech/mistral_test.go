@@ -73,7 +73,7 @@ func TestVoxtralTranscriptionResponse(t *testing.T) {
 			if (calls == 2) != (tc.translation != "") {
 				t.Fatalf("unexpected request count: %d", calls)
 			}
-			// Unexpected response content must surface as the sanitized user-facing error
+			// Keep unexpected response content out of the error
 			if tc.invalid {
 				if err == nil || err.Error() != "Mistral returned an invalid transcription response" {
 					t.Fatalf("expected sanitized transcription error, got %v", err)

@@ -184,7 +184,7 @@ func (s *state) listenHID(ctx context.Context) {
 	if err := windows.GetModuleHandleEx(windows.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, nil, &module); err != nil {
 		return
 	}
-	// A message-only window receives controller input without adding a visible window
+	// A hidden window receives controller input without adding a visible window
 	class := windows.StringToUTF16Ptr("STATIC")
 	hwnd, _, _ := user.NewProc("CreateWindowExW").Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, ^uintptr(2), 0, uintptr(module), 0)
 	if hwnd == 0 {
@@ -226,7 +226,7 @@ func (s *state) listenHID(ctx context.Context) {
 				delete(known, msg.lParam)
 			}
 			s.refreshHIDPaths()
-		// WM_INPUT carries a variable-size packet Ask Windows how much data to allocate
+		// Ask Windows for the packet size before allocating the buffer
 		case 0x00ff:
 			var size uint32
 			const input = 0x10000003
@@ -281,7 +281,7 @@ func (s *state) hidReport(d *hidDevice, report []byte) {
 	next := usages[:size]
 	// HID reports list held buttons, so compare with the prior report for releases
 	for _, value := range d.buttons {
-		// HID button usages are one-based The settings store zero-based indices
+		// Subtract one to convert HID usages to saved button indices
 		if value > 0 && !slices.Contains(next, value) {
 			s.hidButton(d, int(value)-1, false)
 		}
@@ -298,7 +298,7 @@ func (s *state) hidButton(device *hidDevice, index int, down bool) {
 	path, name := device.path, device.name
 	s.async(func() {
 		if !down {
-			// A hotplug can change name resolution while the original button is held.
+			// A hotplug can change name resolution while the original button is held
 			if s.heldHIDPath != "" && strings.EqualFold(s.heldHIDPath, path) && s.heldHIDButton == index {
 				s.record(false)
 			}

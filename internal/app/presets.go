@@ -14,7 +14,7 @@ import (
 )
 
 func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
-	// Reopening can overlap the previous editor's pending write.
+	// Reopening can overlap the previous editor's pending write
 	entries := config.Get[[]config.Preset](s.settingsDraft(), "presets")
 	form := config.Preset{Enabled: true}
 	selected, expanded := -1, -1
@@ -50,6 +50,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 	}
 	finishEdit := func() { selected, editing = -1, false }
 	save := func() {
+		if !editing || saving {
+			return
+		}
 		// Check duplicates against every other draft entry before inserting or replacing one
 		value := form
 		if !config.Get[bool](s.settingsDraft(), config.MenuReadoutSetting) {
@@ -109,6 +112,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		var body []gui.View
 		for i, p := range entries {
 			id := strconv.Itoa(i)
+			current := func() bool {
+				return !saving && i < len(entries) && entries[i].Name == p.Name
+			}
 			count := "1 service"
 			if len(p.Services) != 1 {
 				count = fmt.Sprintf("%d services", len(p.Services))
@@ -123,6 +129,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				action = "Collapse"
 			}
 			entry := buttonConfig("preset-"+id, action+" "+p.Name, 0, false, saving, func() {
+				if !current() {
+					return
+				}
 				if expanded == i {
 					expanded = -1
 				} else {
@@ -137,7 +146,11 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(4), VAlign: gui.VAlignMiddle,
 				Content: []gui.View{
 					gui.Button(entry),
-					modelButton("delete-preset-"+id, "Delete", 68, saving, func() { deletePreset(i, p.Name) }),
+					modelButton("delete-preset-"+id, "Delete", 68, saving, func() {
+						if current() {
+							deletePreset(i, p.Name)
+						}
+					}),
 				},
 			})}
 			if expanded == i {
@@ -145,14 +158,17 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 					rows = append(rows, wrapped(fmt.Sprintf("%d. %s", index+1, service), 13, color))
 				}
 				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving, func() {
-					selected, form, message, editing = i, p, "", true
-					form.Services = slices.Clone(p.Services)
+					if !current() {
+						return
+					}
+					selected, form, message, editing = i, entries[i], "", true
+					form.Services = slices.Clone(form.Services)
 					customText = ""
 				}))
 			}
 			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(8), 5, rows...)))
 		}
-		// Show a first-preset action only while there is no editor to fill in
+		// Show a preset creation action only while there is no editor to fill in
 		if len(entries) == 0 && !editing {
 			create := buttonConfig("create-preset", "Create a preset", 160, true, false, startNew)
 			create.Height = 36
@@ -216,11 +232,27 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			// The order shown here is the order GSX will receive the services
 			for i, service := range form.Services {
 				id := strconv.Itoa(i)
+				// A settings save can remove readout steps before this window redraws
+				current := func() bool {
+					return editing && i < len(form.Services) && form.Services[i] == service
+				}
 				editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle, Content: []gui.View{
 					wrapped(fmt.Sprintf("%d. %s", i+1, service), 13, ink), spacer(),
-					button("up-"+id, "Up", 0, false, i == 0, func() { form.Services[i], form.Services[i-1] = form.Services[i-1], form.Services[i] }),
-					button("down-"+id, "Down", 0, false, i+1 == len(form.Services), func() { form.Services[i], form.Services[i+1] = form.Services[i+1], form.Services[i] }),
-					button("remove-"+id, "Remove", 0, false, false, func() { form.Services = slices.Delete(form.Services, i, i+1) }),
+					button("up-"+id, "Up", 0, false, i == 0, func() {
+						if i > 0 && current() {
+							form.Services[i], form.Services[i-1] = form.Services[i-1], form.Services[i]
+						}
+					}),
+					button("down-"+id, "Down", 0, false, i+1 == len(form.Services), func() {
+						if i+1 < len(form.Services) && current() {
+							form.Services[i], form.Services[i+1] = form.Services[i+1], form.Services[i]
+						}
+					}),
+					button("remove-"+id, "Remove", 0, false, false, func() {
+						if current() {
+							form.Services = slices.Delete(form.Services, i, i+1)
+						}
+					}),
 				}}))
 			}
 			if message != "" {
@@ -230,7 +262,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			// Deletion is available only when the form refers to an existing preset
 			if selected >= 0 {
 				actions = append(actions, button("delete", "Delete", 0, false, saving, func() {
-					deletePreset(selected, entries[selected].Name)
+					if editing && !saving && selected >= 0 && selected < len(entries) {
+						deletePreset(selected, entries[selected].Name)
+					}
 				}))
 			}
 			actions = append(actions, spacer(), button("cancel-edit", "Cancel", 0, false, saving, func() { editing = false }),

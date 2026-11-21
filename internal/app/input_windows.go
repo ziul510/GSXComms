@@ -43,7 +43,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	peek := user.NewProc("PeekMessageW")
 	get := user.NewProc("GetMessageW")
 	post := user.NewProc("PostThreadMessageW")
-	// The low-level hook receives keyboard transitions even when another window has focus
+	// The low level hook receives keyboard transitions even when another window has focus
 	callback := windows.NewCallback(func(code, wParam, lParam uintptr) uintptr {
 		if int32(code) >= 0 && lParam != 0 {
 			type lowLevelKey struct {
@@ -153,7 +153,7 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 			if !down && key == captureKey.Load() {
 				s.record(false)
 			}
-			// The rebind dialog treats Escape as cancel Key-up never creates a binding
+			// Bind only on presses and use Escape to cancel
 			if down {
 				if key == 0x1b {
 					s.binding(config.Binding{})
@@ -198,7 +198,7 @@ func (s *state) rebind(parent *gui.Window) {
 		if window != nil {
 			window.InvalidateLayout()
 		}
-		// The live binding changes only after the settings writer confirms the save.
+		// The live binding changes only after the settings writer confirms the save
 		s.saveSetting("ptt_bind", b, func(err error) {
 			if closed {
 				return
@@ -327,12 +327,12 @@ func windowByTitle(title string) uintptr {
 
 func (s *state) setTopmost() {
 	if hwnd := windowByTitle("GSXComms"); hwnd != 0 {
-		// Win32 uses negative pseudo-handles for HWND_NOTOPMOST and HWND_TOPMOST
+		// Use the Win32 constants HWND_NOTOPMOST and HWND_TOPMOST
 		placement := ^uintptr(1)
 		if config.Get[bool](s.cfg, "topmost_active") {
 			placement = ^uintptr(0)
 		}
-		// Change z-order without moving, resizing, or activating the window
+		// Change window stacking without moving, resizing, or activating it
 		_, _, _ = user.NewProc("SetWindowPos").Call(hwnd, placement, 0, 0, 0, 0, 0x0013)
 	}
 }

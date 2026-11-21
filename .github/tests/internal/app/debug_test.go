@@ -44,7 +44,7 @@ func TestDebugLocationShowsPreferredCrewAccent(t *testing.T) {
 
 func TestDebugTerminalSurvivesLogFailure(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	// A regular file at the data directory path makes opening debug.log fail
+	// Block log creation by putting a file at the data directory path
 	if err := os.WriteFile(dir, nil, 0600); err != nil {
 		t.Fatal(err)
 	}

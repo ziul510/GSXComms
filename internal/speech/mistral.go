@@ -41,7 +41,7 @@ func Usable(pcm []byte) bool {
 }
 
 func wave(pcm []byte) []byte {
-	// Wrap the captured mono PCM16 in a standard 44-byte WAV header for the API
+	// Wrap mono PCM16 in a WAV container for the API
 	wav := make([]byte, 44+len(pcm))
 	copy(wav, "RIFF")
 	// The RIFF chunk length excludes the first eight header bytes

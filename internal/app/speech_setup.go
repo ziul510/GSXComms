@@ -102,7 +102,7 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 	}()
 }
 
-// Persist the provider before advertising it as active or triggering model startup.
+// Persist the provider before advertising it as active or triggering model startup
 func (setup *speechSetup) useProvider(s *state, w *gui.Window, provider string, onSaved func()) {
 	if setup.savingProvider {
 		return
@@ -300,11 +300,11 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 	useMistral := func() {
 		setup.keyMessage = "Saving speech provider…"
 		setup.useProvider(s, w, "mistral", func() {
-			// Recheck a previously selected provider when the user supplies its missing key.
+			// Recheck a previously selected provider when the user supplies its missing key
 			if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
 				s.prepareSpeech(false, false)
 			}
-			// A closed window's save must not dismiss a later tutorial.
+			// A closed window's save must not dismiss a later tutorial
 			if !w.CloseRequested() {
 				leave()
 			}

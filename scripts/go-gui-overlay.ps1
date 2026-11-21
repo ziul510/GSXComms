@@ -7,14 +7,14 @@ $module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
 $version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
 # Stop if the selected module differs from the source these patches target
 if ($version -ne 'v0.98.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.98.0' }
-# Patch a local copy so other builds can keep using the upstream module cache
-$destination = Join-Path $PWD 'build/go-gui-win32'
+# Hide the copy from Go package discovery while it is being staged
+$destination = Join-Path $PWD 'build/.go-gui-win32'
 $copy = Join-Path $destination "module-$version"
 New-Item -ItemType Directory -Force $copy | Out-Null
 if (!(Test-Path -LiteralPath (Join-Path $copy 'go.mod'))) {
     Copy-Item -Path (Join-Path $module '*') -Destination $copy -Recurse -Force
 }
-# Module cache copies may be read-only Make only the local output writable
+# Make only the local copy writable
 function Publish-Patch([string]$relative,[string]$source) {
     $name = Join-Path $copy $relative
     if (Test-Path -LiteralPath $name) { [IO.File]::SetAttributes($name, [IO.FileAttributes]::Normal) }
@@ -130,7 +130,7 @@ Publish-Patch $file $src
 
 # Install the adapter next to the patched GL backend so it can use internal renderer methods
 Publish-Patch 'gui/backend/gl/gsxcomms_software_windows.go' ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'win32-software.go.in')))
-# The alternate modfile keeps the local replacement out of go.mod
+# Keep the local replacement in a separate module file
 $modfile = Join-Path $destination 'gsxcomms.mod'
 Copy-Item -LiteralPath 'go.mod' -Destination $modfile -Force
 Copy-Item -LiteralPath 'go.sum' -Destination (Join-Path $destination 'gsxcomms.sum') -Force

@@ -21,7 +21,7 @@ for name, expected in snapshot.items():
         if hashlib.file_digest(f, "sha256").hexdigest() != expected:
             raise SystemExit(f"Unexpected snapshot for {name}")
 
-# Build a lookup for the human-readable region names before processing city rows
+# Build a lookup for the readable region names before processing city rows
 admin = {}
 for line in (source / "admin1CodesASCII.txt").read_text(encoding="utf8").splitlines():
     key, label, *_ = line.split("\t")

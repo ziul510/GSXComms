@@ -16,11 +16,20 @@ import (
 func TestInstalledWorkerRestarts(t *testing.T) {
 	dir := os.Getenv("GSXCOMMS_TEST_ASR_MODEL")
 	if dir == "" {
-		t.Skip("set GSXCOMMS_TEST_ASR_MODEL to a verified model directory beside the test package")
+		t.Skip("set GSXCOMMS_TEST_ASR_MODEL to an absolute verified model directory")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	w := NewWorker("sherpa")
+	workerPath := os.Getenv("GSXCOMMS_TEST_ASR_WORKER")
+	if workerPath == "" {
+		workerPath = filepath.Join("..", "..", "build", "workers", "sherpa", "gsxspeech.exe")
+	}
+	var err error
+	w.workerPath, err = filepath.Abs(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer w.Reset()
 	vocab, err := commands.Load(t.TempDir())
 	if err != nil {

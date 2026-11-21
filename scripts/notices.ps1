@@ -24,7 +24,7 @@ $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 # Include dependencies linked by the native speech workers in the inventory
 $env:CGO_ENABLED = '1'
-# Inventory packages reachable from the command binaries instead of every module in go.sum
+# Inventory only modules linked by the command binaries
 $modules = go list -deps -f '{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}' ./cmd/... |
     Where-Object { $_ -and $_ -notmatch '^github.com/ziul510/GSXCommsGo\|' } | Sort-Object -Unique
 if ($LASTEXITCODE -ne 0) { throw 'Failed to inventory linked modules' }

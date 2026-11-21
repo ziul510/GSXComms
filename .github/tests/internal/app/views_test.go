@@ -19,6 +19,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
+	"github.com/ziul510/GSXCommsGo/internal/models"
 )
 
 func TestMainMinimizeToTray(t *testing.T) {
@@ -50,7 +51,7 @@ func TestMainMinimizeToTray(t *testing.T) {
 
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	s := &state{cfg: config.Defaults(), ptt: "Idle"}
-	// Include the optional command field in the minimum-width layout check
+	// Include the optional command field in the minimum width layout check
 	s.cfg.Put("enable_keyboard_input", true)
 	w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
 	layout := w.TestRender(mainView)
@@ -269,6 +270,9 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 	if config.Get[bool](s.cfg, readKey) {
 		t.Fatal("readout stayed enabled after saving")
 	}
+	if err := manager.TestClick("presets-scroll:remove-0"); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.TestClick(dropdown); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +388,7 @@ func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	click(first, "presets-scroll:create-preset")
 	arrival := add(first, "Arrival")
 	click(first, "done")
-	// Reopen before the editor receives its first write completion.
+	// Reopen before the editor receives its first write completion
 	second := open()
 	click(second, "new")
 	departure := add(second, "Departure")
@@ -498,7 +502,7 @@ type menuChoices struct {
 	open        bool
 }
 
-// Zero lets the session exercise its normal closed-menu sequence in tests
+// Zero lets the session exercise its normal closed menu sequence in tests
 func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
@@ -634,6 +638,23 @@ func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
 	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true,
 		Services: []string{"REFUELING", config.ReadMenuAction, "CATERING"}}})
+	model, _ := models.Lookup("kokoro")
+	base := model.Directory(s.dir)
+	for _, entry := range model.Files {
+		path := filepath.Join(base, entry.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(path, entry.Bytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, ".verified"), []byte(model.Revision), 0600); err != nil {
+		t.Fatal(err)
+	}
 	page := gsx.ParseMenu("Ramp\nRefuel\nCatering")
 	transport := &menuChoices{}
 	session := gsx.New(transport, t.TempDir())
@@ -669,6 +690,22 @@ func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	(<-s.jobs)(s.ctx, session)
 	if !slices.Equal(transport.selected, []int{0}) {
 		t.Fatalf("normalized number selected %v", transport.selected)
+	}
+}
+
+func TestExplicitNumberBypassesMenuCorrection(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGate 2\nAdditional Services") }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("option 2")
+	(<-s.jobs)(s.ctx, session)
+	if !slices.Equal(transport.selected, []int{1}) {
+		t.Fatalf("explicit number selected %v", transport.selected)
 	}
 }
 

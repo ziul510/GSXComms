@@ -54,7 +54,7 @@ func TestCorrectLocalTranscript(t *testing.T) {
 
 func readTest(t *testing.T, path string, out any) {
 	t.Helper()
-	// The overlay runs this test from internal/commands, with fixtures kept under .github
+	// Resolve fixtures from the package directory used by the overlay
 	data, err := os.ReadFile("../../.github/tests/testdata/" + path)
 	if err != nil {
 		t.Fatal(err)
@@ -120,16 +120,33 @@ func TestParseRejectsTrailingVocabulary(t *testing.T) {
 
 func TestMatchRequiresWholeNumberTokens(t *testing.T) {
 	options := []string{"Jetway", "Catering"}
-	// Keep multi-digit numbers from matching a single-digit menu slot
+	// Keep option 21 from matching slot 1
 	for text, want := range map[string]int{
 		"option 10":              -1,
 		"number 21":              -1,
+		"option -1":              -1,
 		"please choose option 1": 0,
 		"option 21 option 2":     1,
 	} {
 		if got, _ := Match(text, options); got != want {
 			t.Errorf("%q: matched item %d, want %d", text, got, want)
 		}
+	}
+}
+
+func TestEmptyPresetFallsThroughToService(t *testing.T) {
+	vocab, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefs := config.Defaults()
+	prefs.Put("presets", []config.Preset{{
+		Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{config.ReadMenuAction},
+	}})
+	prefs.RemoveDisabledReadMenu()
+	action := vocab.Route("jetway", "jetway", config.Get[[]config.Preset](prefs, "presets"), true)
+	if action.Kind != "service" || len(action.Services) != 1 || action.Services[0] != "JETWAY" {
+		t.Fatalf("route = %+v", action)
 	}
 }
 

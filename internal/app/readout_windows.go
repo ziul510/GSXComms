@@ -72,23 +72,24 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	return false
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, inPreset bool) bool {
+func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, onPresetQueued func()) bool {
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
+	inPreset := onPresetQueued != nil
 	if !session.Connected() {
 		s.traceLevel("WARN", "TTS", "Menu readout blocked: SimConnect disconnected")
 		log("SYS", "SimConnect handshake required to read the GSX menu")
 		return false
 	}
-	// Couatl can still be replacing the panel after a selection.
+	if !s.menuReaderReady() {
+		return false
+	}
+	// Couatl can still be replacing the panel after a selection
 	if since := time.Since(s.menuActivity); since < 4*time.Second {
 		if err := session.Sleep(ctx, 4*time.Second-since); err != nil {
 			return false
 		}
 	}
 	if !inPreset {
-		if !s.menuReaderReady() {
-			return false
-		}
 		select {
 		// Reserve the reader through synthesis so repeated standalone requests don't pile up
 		case s.speaking <- struct{}{}:
@@ -118,8 +119,9 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	if inPreset {
 		// Queue through the same window thread as the neighboring service acknowledgments
 		s.async(func() {
-			if config.Get[bool](s.cfg, config.MenuReadoutSetting) {
-				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true}, false)
+			if config.Get[bool](s.cfg, config.MenuReadoutSetting) &&
+				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true}, false) {
+				onPresetQueued()
 			}
 		})
 		return true
@@ -142,7 +144,7 @@ func (s *state) menuReaderReady() bool {
 	}
 	s.traceLevel("WARN", "TTS", "Menu readout blocked: Kokoro model unavailable")
 	s.async(func() {
-		s.log("ERR", "Kokoro menu-reader model is unavailable. Turn menu readout off and back on in Settings to retry the download")
+		s.log("ERR", "Kokoro menu-reader model is unavailable. Open Settings to download or repair it")
 	})
 	return false
 }
@@ -208,7 +210,7 @@ func (s *state) output(ctx context.Context, next playback) error {
 	return playPCMBuffer(ctx, config.Get[string](next.prefs, "output_device_name"), config.Get[string](next.prefs, "output_device_id"), pcm, next.rate, channels, false)
 }
 
-// Match the legacy RMS gain limits without turning silence into noise.
+// Match the legacy RMS gain limits without turning silence into noise
 func normalizationGain(pcm []byte) float64 {
 	var sum float64
 	for i := 0; i+1 < len(pcm); i += 2 {

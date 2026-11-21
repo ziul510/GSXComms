@@ -31,7 +31,7 @@ type helperReply struct {
 	Fatal bool     `json:"fatal"`
 }
 
-// Serialize individual exchanges so telemetry can run between menu operations.
+// Serialize individual exchanges so telemetry can run between menu operations
 type helperTransport struct {
 	gate chan struct{}
 	cmd  *exec.Cmd
@@ -48,7 +48,7 @@ func Connect(ctx context.Context) (Transport, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve the helper beside the executable so the ZIP can launch from any working directory.
+	// Resolve the helper beside the executable so the ZIP can launch from any working directory
 	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
 	return connectHelper(ctx, cmd)
 }
@@ -111,7 +111,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		}
 	}
 	if req != nil {
-		// Bound stalled pipe writes and reads even when the console supplies no deadline.
+		// Bound stalled pipe writes and reads even when the console supplies no deadline
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Second)
 		defer cancel()

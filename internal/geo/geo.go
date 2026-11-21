@@ -129,7 +129,7 @@ func init() {
 		panic(err)
 	}
 	stockNames = parseOverrides(raw)
-	// Fill gaps in the country-code map from the bundled name-based table
+	// Fill missing country codes from the bundled names
 	for code, name := range mapping.Names {
 		if mapping.Country[code] == "" {
 			mapping.Country[code] = stockNames[strings.ToLower(name)]
@@ -137,7 +137,7 @@ func init() {
 	}
 }
 
-// AccentCandidates preserves the legacy country-label preference before regional fallbacks.
+// AccentCandidates preserves the legacy country name preference before regional fallbacks
 func AccentCandidates(pos Position, overrides map[string]string) []string {
 	name := strings.ToLower(mapping.Names[pos.Country])
 	return []string{
@@ -146,7 +146,7 @@ func AccentCandidates(pos Position, overrides map[string]string) []string {
 	}
 }
 
-// Only the user override file is optional Built-in mappings are loaded at startup
+// Load the optional user override file
 func Overrides(dir string) map[string]string {
 	raw, err := os.ReadFile(filepath.Join(dir, assets.AccentMappingsFile))
 	if err != nil {
@@ -169,26 +169,4 @@ func parseOverrides(raw []byte) map[string]string {
 		}
 	}
 	return values
-}
-
-func Accent(pos Position, overrides map[string]string, defaultAccent, forced string) string {
-	// A forced accent wins over both local choices and geographic defaults
-	if forced != "" && forced != "Disabled" {
-		return forced
-	}
-	if v := overrides[strings.ToLower(pos.Country)]; v != "" {
-		return v
-	}
-	// Local overrides can use a country name in place of its code.
-	if v := overrides[strings.ToLower(mapping.Names[pos.Country])]; v != "" {
-		return v
-	}
-	// A stock regional accent can override the country default
-	if v := mapping.Regions[pos.Country][strings.ToLower(pos.Region)]; v != "" {
-		return v
-	}
-	if v := mapping.Country[pos.Country]; v != "" {
-		return v
-	}
-	return defaultAccent
 }

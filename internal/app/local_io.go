@@ -36,7 +36,7 @@ type debugEvent struct {
 	line    string
 }
 
-// Apply one control immediately without saving unrelated edits still open in Settings.
+// Apply one control immediately without saving unrelated edits still open in Settings
 func (s *state) saveSetting(key string, value any, then func(error)) {
 	next := s.settingsDraft()
 	next.Put(key, value)
@@ -253,7 +253,7 @@ func (s *state) setDebug(enabled bool) {
 	s.trace("SIM", fmt.Sprintf("Connected=%t, GSX ready=%t, auto-connect=%t", s.connected, s.ready, config.Get[bool](prefs, "auto_connect_sim")))
 	s.trace("GSX", fmt.Sprintf("Auto-select operator=%t, Broader Mode=%t, menu readout=%t",
 		config.Get[bool](prefs, "auto_select_operator"), config.Get[bool](prefs, "enable_menu_matching"),
-		config.Get[bool](prefs, "read_gsx_menus_aloud_after_keyword")))
+		config.Get[bool](prefs, config.MenuReadoutSetting)))
 	s.trace("STT", fmt.Sprintf("Provider=%s, ready=%t, loading=%t, recording cap=%ds", debugProvider(config.Get[string](prefs, "speech_provider")),
 		s.speechReady, s.speechLoading != "", config.Get[int](prefs, "max_recording_seconds")))
 	s.trace("PTT", fmt.Sprintf("Binding=%s, simulation=%t, ignore speed limit=%t, fresh speed=%t", debugBinding(config.Get[config.Binding](prefs, "ptt_bind").Type),
@@ -323,7 +323,7 @@ func debugLine(level, category, detail string) string {
 	return fmt.Sprintf("%s  %-4s  %-5s  %s", time.Now().Format("2006-01-02 15:04:05.000"), level, category, detail)
 }
 
-// Trace only app-generated facts and keep conversation content out of diagnostics
+// Trace only internal facts and keep conversation content out of diagnostics
 func (s *state) trace(category, detail string) {
 	s.traceLevel("INFO", category, detail)
 }

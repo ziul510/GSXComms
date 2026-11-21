@@ -45,7 +45,7 @@ type Binding struct {
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
 
-// Keep custom steps in the same ordered list as built-in service IDs
+// Keep custom steps in the same ordered list as built in service IDs
 const CustomServicePrefix = "Custom:"
 
 const ReadMenuAction = "Read Menu"
@@ -73,7 +73,7 @@ func (v Values) RemoveDisabledReadMenu() {
 	}
 }
 
-// InitializeSettings creates the portable file from defaults before Accent Setup opens.
+// InitializeSettings creates the portable file from defaults before Accent Setup opens
 func InitializeSettings(dir string) error {
 	path := filepath.Join(dir, SettingsFile)
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -83,7 +83,7 @@ func InitializeSettings(dir string) error {
 	if err != nil {
 		return err
 	}
-	// Publish only if another instance has not already created the file.
+	// Publish only if another instance has not already created the file
 	err = writeAtomic(path, data, moveNew)
 	if errors.Is(err, os.ErrExist) {
 		return nil
@@ -103,7 +103,7 @@ var defaults = func() Values {
 	return values
 }()
 
-// Give each window its own copy of the defaults.
+// Give each window its own copy of the defaults
 func Defaults() Values { return defaults.Copy() }
 
 // Clone the raw JSON bytes too so a background job gets an independent snapshot
@@ -186,7 +186,7 @@ func decode(data []byte) (Values, error) {
 	if err := json.Unmarshal(data, &saved); err != nil || saved == nil {
 		return nil, errors.New("expected a JSON settings object")
 	}
-	// Older settings can omit new keys and still carry user-defined values
+	// Older settings can omit new keys and still carry custom values
 	values := Defaults()
 	for name, raw := range saved {
 		if name != legacySecret {
@@ -213,7 +213,7 @@ func decode(data []byte) (Values, error) {
 	values.RemoveDisabledReadMenu()
 	if binding := Get[Binding](values, "ptt_bind"); binding.Type == "joy" {
 		binding.Type = "joystick"
-		// SDL indexes identify a device only within the legacy process.
+		// SDL indexes identify a device only within the legacy process
 		binding.JoyID = nil
 		values.Put("ptt_bind", binding)
 	}
@@ -348,7 +348,7 @@ func CleanPreset(p Preset) Preset {
 				continue
 			}
 		}
-		// Preserve the first occurrence of case-insensitive matches
+		// Keep the first spelling when labels match
 		if !slices.ContainsFunc(services, func(other string) bool { return strings.EqualFold(other, service) }) {
 			services = append(services, service)
 		}
@@ -395,7 +395,7 @@ func migratePresets(raw json.RawMessage) []Preset {
 		}
 		p = CleanPreset(p)
 		name := strings.ToLower(p.Name)
-		// Keep the first valid entry for each name and trigger in saved presets.
+		// Keep the first valid entry for each name and trigger in saved presets
 		if name == "" || p.Codeword == "" || names[name] || codewords[p.Codeword] {
 			continue
 		}

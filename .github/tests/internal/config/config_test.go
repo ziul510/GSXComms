@@ -72,7 +72,7 @@ func TestPortableSettingsKeepExistingFile(t *testing.T) {
 	if err := Save(dir, values); err != nil {
 		t.Fatal(err)
 	}
-	// If another instance finishes first, the exclusive publish keeps its file.
+	// If another instance finishes first, the exclusive publish keeps its file
 	path := filepath.Join(dir, SettingsFile)
 	if err := writeAtomic(path, defaultJSON, moveNew); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected exclusive publish to reject an existing file: %v", err)

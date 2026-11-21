@@ -47,7 +47,7 @@ func audioDevices(input bool) []audioDevice {
 }
 
 func waveEndpointID(message *windows.LazyProc, device uintptr) string {
-	// WinMM returns the Core Audio endpoint ID as a UTF-16 string
+	// The endpoint ID buffer holds UTF16 code units
 	const queryID, querySize = 0x0800 + 17, 0x0800 + 18
 	var size uint32
 	if err := mmCall(message, device, querySize, uintptr(unsafe.Pointer(&size)), 0); err != nil || size < 2 || size > 8192 || size%2 != 0 {
@@ -297,10 +297,13 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 	if err := mmCall(mm.NewProc("waveOutWrite"), handle, ptr, hs); err != nil {
 		return err
 	}
-	for h.flags&1 == 0 {
-		// Return the queued buffer before the deferred unprepare and unpin
-		if ctx.Err() != nil {
+	defer func() {
+		if h.flags&1 == 0 {
 			_ = mmCall(mm.NewProc("waveOutReset"), handle)
+		}
+	}()
+	for h.flags&1 == 0 {
+		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		status, err := windows.WaitForSingleObject(event, 25)

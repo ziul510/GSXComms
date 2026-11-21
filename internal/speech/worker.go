@@ -22,6 +22,7 @@ import (
 
 const Version = 2
 const MaxFrame = 16 << 20
+const retryWindow = time.Minute
 
 // The parent and both native workers share this request and reply payload
 type Frame struct {
@@ -39,7 +40,7 @@ type Frame struct {
 
 func Read(r io.Reader) (Frame, error) {
 	var f Frame
-	// Read the little-endian length first, then exactly one JSON message
+	// Read the byte count before decoding one JSON message
 	var size uint32
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return f, err
@@ -82,17 +83,18 @@ func Write(w io.Writer, f Frame) error {
 }
 
 type Worker struct {
-	mu       sync.Mutex
-	kind     string
-	cmd      *exec.Cmd
-	in       io.WriteCloser
-	out      io.ReadCloser
-	job      windows.Handle
-	sequence uint64
-	loaded   string
-	runtime  string
-	failed   time.Time
-	failures int
+	mu         sync.Mutex
+	kind       string
+	workerPath string
+	cmd        *exec.Cmd
+	in         io.WriteCloser
+	out        io.ReadCloser
+	job        windows.Handle
+	sequence   uint64
+	loaded     string
+	runtime    string
+	failed     time.Time
+	failures   int
 }
 
 // Construction records the provider The subprocess starts on the first load
@@ -169,9 +171,11 @@ func (w *Worker) FilterSpeech(ctx context.Context, pcm []byte) ([]byte, error) {
 }
 
 func (w *Worker) start(ctx context.Context) error {
-	// Require an explicit reload after repeated failures to avoid a crash loop
-	if w.failures >= 2 {
-		return errors.New("speech worker stopped after repeated failures; reload the model to retry")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.failures >= 2 && time.Since(w.failed) < retryWindow {
+		return errors.New("speech worker stopped after repeated failures, try again in a minute")
 	}
 	// Back off briefly after a crash before starting another child
 	if !w.failed.IsZero() && time.Since(w.failed) < time.Second {
@@ -201,14 +205,16 @@ func (w *Worker) start(ctx context.Context) error {
 }
 
 func (w *Worker) launch() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
+	if w.workerPath == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		w.workerPath = filepath.Join(filepath.Dir(exe), "workers", w.kind, "gsxspeech.exe")
 	}
 	// Each provider has its own executable directory and native libraries
-	base := filepath.Join(filepath.Dir(exe), "workers", w.kind)
-	cmd := exec.Command(filepath.Join(base, "gsxspeech.exe"))
-	cmd.Dir = base
+	cmd := exec.Command(w.workerPath)
+	cmd.Dir = filepath.Dir(w.workerPath)
 	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	in, err := cmd.StdinPipe()
@@ -271,7 +277,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 		w.fail()
 		return Frame{}, errors.New("speech worker exited or returned an invalid response")
 	case <-ctx.Done():
-		// Give in-flight inference a short chance to finish before stopping the process
+		// Give active inference a short chance to finish before stopping the process
 		if req.Op != "shutdown" {
 			t := time.NewTimer(2 * time.Second)
 			select {
@@ -292,7 +298,7 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 
 func (w *Worker) fail() {
 	// Only failures within a minute of each other share the retry budget
-	if time.Since(w.failed) >= time.Minute {
+	if time.Since(w.failed) >= retryWindow {
 		w.failures = 0
 	}
 	w.failed = time.Now()

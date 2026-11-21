@@ -52,7 +52,7 @@ func (s *state) record(down bool) {
 		}
 		return
 	}
-	// Ignore repeated key-down events while PTT is held
+	// Ignore repeated key press events while PTT is held
 	if s.pttHeld {
 		return
 	}
@@ -111,7 +111,7 @@ func (s *state) record(down bool) {
 			})
 		if captureErr == nil && capctx.Err() == nil {
 			s.trace("PTT", "Recording cap reached. Waiting for release")
-			// A full recording still waits for release so held PTT cannot transmit twice.
+			// A full recording still waits for release so held PTT cannot transmit twice
 			s.async(func() { s.log("SYS", "Recording cap reached. Release PTT to transmit") })
 			<-capctx.Done()
 		}
@@ -203,7 +203,7 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 	}
 	s.sttMu.Lock()
 	defer s.sttMu.Unlock()
-	// Keep the model and hotwords stable between loading and transcribing this recording.
+	// Keep the model and hotwords stable between loading and transcribing this recording
 	if err := s.loadRecognizer(s.ctx, m, s.loadVocabulary()); err != nil {
 		return "", err
 	}
@@ -221,7 +221,7 @@ func downloadModel(ctx context.Context, model models.Model, dir string, progress
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	stalled := errors.New("Download stalled. Check your connection and try again")
-	// A stalled transfer can resume from its verified staging directory on retry.
+	// A stalled transfer can resume from its verified staging directory on retry
 	timer := time.AfterFunc(180*time.Second, func() { cancel(stalled) })
 	defer timer.Stop()
 	err := model.Download(ctx, dir, func(done, total int64) {
@@ -263,62 +263,60 @@ func (s *state) prepareSpeech(autoDownload, reload bool) {
 		vocab := s.loadVocabulary()
 		var err error
 		stage := "provider selection"
-		if err == nil {
-			switch {
-			case provider == "mistral":
-				stage = "Mistral credential check"
-				var key string
-				key, err = config.ReadKey()
-				if err == nil && key == "" {
-					stage = "missing Mistral API key"
-					err = errors.New("Mistral API key is missing")
-				}
-			case !local:
-				err = errors.New("Selected speech provider is unavailable")
-			default:
-				if download {
-					stage = "model download"
-					err = downloadModel(ctx, model, s.dir, func(done, total int64) {
-						percent := int(done * 100 / max(1, total))
-						s.async(func() {
-							if generation == s.speechGeneration {
-								s.speechStatus = fmt.Sprintf("Downloading %d%%", percent)
-							}
-						})
-					})
-					if err == nil {
-						s.async(func() {
-							if generation == s.speechGeneration {
-								s.speechStatus = "Loading speech"
-								if s.speechChanged != nil {
-									s.speechChanged(provider)
-								}
-								s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
-							}
-						})
-					}
-				}
-				if err == nil && !model.Ready(s.dir) {
-					stage = "model files unavailable"
-					err = errors.New("Open Settings to download the selected speech model")
-				}
-				if err == nil {
-					stage = "recognizer worker load"
-					s.sttMu.Lock()
-					if err = ctx.Err(); err == nil {
-						if reload {
-							s.recognizer.Reset()
+		switch {
+		case provider == "mistral":
+			stage = "Mistral credential check"
+			var key string
+			key, err = config.ReadKey()
+			if err == nil && key == "" {
+				stage = "missing Mistral API key"
+				err = errors.New("Mistral API key is missing")
+			}
+		case !local:
+			err = errors.New("Selected speech provider is unavailable")
+		default:
+			if download {
+				stage = "model download"
+				err = downloadModel(ctx, model, s.dir, func(done, total int64) {
+					percent := int(done * 100 / max(1, total))
+					s.async(func() {
+						if generation == s.speechGeneration {
+							s.speechStatus = fmt.Sprintf("Downloading %d%%", percent)
 						}
-						err = s.loadRecognizer(ctx, model, vocab)
-					}
-					s.sttMu.Unlock()
+					})
+				})
+				if err == nil {
+					s.async(func() {
+						if generation == s.speechGeneration {
+							s.speechStatus = "Loading speech"
+							if s.speechChanged != nil {
+								s.speechChanged(provider)
+							}
+							s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+						}
+					})
 				}
+			}
+			if err == nil && !model.Ready(s.dir) {
+				stage = "model files unavailable"
+				err = errors.New("Open Settings to download the selected speech model")
+			}
+			if err == nil {
+				stage = "recognizer worker load"
+				s.sttMu.Lock()
+				if err = ctx.Err(); err == nil {
+					if reload {
+						s.recognizer.Reset()
+					}
+					err = s.loadRecognizer(ctx, model, vocab)
+				}
+				s.sttMu.Unlock()
 			}
 		}
 		elapsed := time.Since(start).Round(time.Millisecond)
 		s.async(func() {
 			if generation != s.speechGeneration {
-				// A provider change invalidates startup results already queued for the window.
+				// A provider change invalidates startup results already queued for the window
 				return
 			}
 			s.speechLoading = ""

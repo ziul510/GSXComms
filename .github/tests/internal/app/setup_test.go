@@ -27,7 +27,7 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	go s.settingsWriter()
 	t.Cleanup(func() { close(s.saves); <-s.saved })
-	s.openAccents()
+	s.openAccents(nil)
 	w := gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
 	click := func(id string) {
@@ -65,14 +65,14 @@ func TestAccentSetupSavesPackSelection(t *testing.T) {
 	}
 	recordings := filepath.Join(s.dir, "Accents")
 	for _, pack := range packs {
-		if accentPackInstalled(recordings, pack.name) != slices.Contains(saved, pack.name) {
+		if completeAccentPack(filepath.Join(recordings, pack.name), pack.accents) != slices.Contains(saved, pack.name) {
 			t.Errorf("extracted packs do not match settings for %s", pack.name)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(s.dir, config.SettingsFile)); err != nil {
 		t.Fatal(err)
 	}
-	s.openAccents()
+	s.openAccents(nil)
 	w = gui.NewTestWindow(t, <-s.host.PendingOpen())
 	w.TestRender(nil)
 	click("deselect-all")
@@ -104,7 +104,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if err := os.MkdirAll(accentsDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	// Portable installs extract recordings beside the source archive.
+	// Portable installs extract recordings beside the source archive
 	pack := packs[0]
 	file, err := os.Create(filepath.Join(accentsDir, pack.name+".zip"))
 	if err != nil {
@@ -146,7 +146,7 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := waitForAccentContinue(t, w)
-	if complete || w.CloseRequested() || !accentPackInstalled(accentsDir, pack.name) {
+	if complete || w.CloseRequested() || !completeAccentPack(filepath.Join(accentsDir, pack.name), pack.accents) {
 		t.Fatal("Save should install the pack and keep the wizard open")
 	}
 	if _, err := os.Stat(filepath.Join(dir, config.SettingsFile)); !errors.Is(err, os.ErrNotExist) {
@@ -198,15 +198,37 @@ func TestFirstRunCompletesOnlyAfterCreatingSettings(t *testing.T) {
 	if !bytes.Contains(data, []byte(`"default_accent": "Australian"`)) {
 		t.Fatal("Continue did not save the selected default accent")
 	}
-	if !accentPackInstalled(accentsDir, pack.name) {
+	if !completeAccentPack(filepath.Join(accentsDir, pack.name), pack.accents) {
 		t.Fatal("no recordings alongside the archive")
 	}
 	otherDir := filepath.Join(t.TempDir(), "Accents")
 	if err := installAccentPacks(t.Context(), accentsDir, otherDir, []string{pack.name}); err != nil {
 		t.Fatal(err)
 	}
-	if !accentPackInstalled(otherDir, pack.name) {
+	if !completeAccentPack(filepath.Join(otherDir, pack.name), pack.accents) {
 		t.Fatal("a separate data directory skipped extraction")
+	}
+}
+
+func TestIncompleteAccentDirectoryIsPreservedAndReported(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	recordings := t.TempDir()
+	pack := packs[0]
+	target := filepath.Join(recordings, pack.name)
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(target, "keep.txt")
+	if err := os.WriteFile(path, []byte("existing recording data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := installAccentPacks(t.Context(), "Accents", recordings, []string{pack.name})
+	if err == nil || !strings.Contains(err.Error(), "incomplete recordings") {
+		t.Fatalf("install error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "existing recording data" {
+		t.Fatalf("existing file = %q, %v", data, err)
 	}
 }
 
@@ -245,7 +267,7 @@ func TestRestoreAccentSetupFromExtractedPacks(t *testing.T) {
 func TestAccentSetupCheckmarkWhileSaving(t *testing.T) {
 	pack := packs[0]
 	recordings := t.TempDir()
-	if err := os.Mkdir(filepath.Join(recordings, pack.name), 0700); err != nil {
+	if err := installAccentPacks(t.Context(), filepath.Join("..", "..", "Accents"), recordings, []string{pack.name}); err != nil {
 		t.Fatal(err)
 	}
 	view := accentSetupView(t.Context(), t.TempDir(), recordings, config.Defaults(), func([]string, string, func(error)) {}, nil)
@@ -392,6 +414,26 @@ func TestSpeechCardsExposeRecoveryActions(t *testing.T) {
 		layout := w.TestRender(func(w *gui.Window) gui.View { return setup.localCard(s, w, id, id) })
 		if _, ok := layout.FindByID(action); !ok {
 			t.Errorf("missing recovery action %s", action)
+		}
+	}
+}
+
+func TestEnabledMenuReaderCanRecoverIncompleteModel(t *testing.T) {
+	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), host: gui.NewApp()}
+	s.cfg.Put(config.MenuReadoutSetting, true)
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{})
+	model, _ := models.Lookup("kokoro")
+	if err := os.MkdirAll(model.Directory(s.dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s.openSettings()
+	cfg := <-s.host.PendingOpen()
+	cfg.Height = 3200
+	settings := gui.NewTestWindow(t, cfg)
+	layout := settings.TestRender(nil)
+	for _, id := range []string{"settings-scroll:delete-kokoro", "settings-scroll:download-kokoro"} {
+		if _, ok := layout.FindByID(id); !ok {
+			t.Errorf("missing recovery action %s", id)
 		}
 	}
 }

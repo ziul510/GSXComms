@@ -17,7 +17,7 @@ import (
 func TestHelperTimesOutWithoutCallerDeadline(t *testing.T) {
 	const child = "GSXCOMMS_TEST_STALLED_HELPER"
 	if os.Getenv(child) == "1" {
-		// Complete the handshake, then hold both pipes open without replying.
+		// Complete the handshake, then hold both pipes open without replying
 		fmt.Println("{}")
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		return
@@ -33,7 +33,7 @@ func TestHelperTimesOutWithoutCallerDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
-	// Keep the regression test bounded even if the transport deadline is removed.
+	// Keep the regression test bounded even if the transport deadline is removed
 	cleanup := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
 	defer cleanup.Stop()
 	_, err = transport.Get(context.Background(), Started)

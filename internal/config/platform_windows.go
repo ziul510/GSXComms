@@ -29,7 +29,7 @@ func moveFile(source, destination string, flags uint32) error {
 	if err != nil {
 		return err
 	}
-	// Flush the same-volume move before reporting success.
+	// Flush the same volume move before reporting success
 	return windows.MoveFileEx(from, to, flags|windows.MOVEFILE_WRITE_THROUGH)
 }
 
@@ -128,6 +128,6 @@ func readKey(name string) (string, error) {
 		return "", err
 	}
 	defer credFree.Call(uintptr(unsafe.Pointer(entry)))
-	// Copy the credential out of Windows-owned memory before CredFree runs
+	// Copy the credential before freeing the Windows buffer
 	return string(unsafe.Slice(entry.Blob, int(entry.Size))), nil
 }

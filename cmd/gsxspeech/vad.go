@@ -49,7 +49,7 @@ func openVoiceDetector(dir string) (_ *voiceDetector, err error) {
 	if err := opts.SetIntraOpNumThreads(1); err != nil {
 		return nil, err
 	}
-	// Bind reusable audio, recurrent state, probability, and next-state tensors
+	// Bind reusable audio, recurrent state, probability, and next state tensors
 	shapes := []ort.Shape{{1, vadWindow + vadContext}, {2, 1, 128}, {1, 1}, {2, 1, 128}}
 	for _, shape := range shapes {
 		tensor, err := ort.NewEmptyTensor[float32](shape)
@@ -65,7 +65,10 @@ func openVoiceDetector(dir string) (_ *voiceDetector, err error) {
 	v.session, err = ort.NewAdvancedSessionWithONNXData(sileroModel,
 		[]string{"input", "state", "sr"}, []string{"output", "stateN"},
 		[]ort.Value{v.tensors[0], v.tensors[1], v.rate}, []ort.Value{v.tensors[2], v.tensors[3]}, opts)
-	return v, err
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func (v *voiceDetector) close() {
@@ -109,7 +112,7 @@ func (v *voiceDetector) filter(f speech.Frame) ([]byte, error) {
 		copy(audio[:vadContext], audio[vadWindow:])
 		copy(state, next)
 	}
-	// Do not count the zero-padded final frame or pending silence as speech
+	// Do not count the padded final frame or pending silence as speech
 	end := samples
 	if spans.quiet > 0 {
 		end = (samples+vadWindow-1)/vadWindow*vadWindow - spans.quiet
