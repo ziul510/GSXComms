@@ -1,44 +1,34 @@
 # GSXComms
 
-## Install and start
+GSXComms is a Windows app for controlling GSX ground services in Microsoft Flight Simulator. You can request services by voice or keyboard, hear crew replies in regional accents, and have the GSX menu read aloud.
 
-Extract the Windows x64 ZIP into a folder you can write to, then run **GSXComms.exe**. The folder holds `user_settings.json`, downloaded models under `models`, and extracted voice packs under `Accents`. Optional `words.json` and `accent_mappings.json` files in this folder override the bundled defaults. Use `--data-dir` to specify a different folder for settings and runtime files.
+## Get started
 
-The selected local speech model downloads and loads in the background at startup. In **Settings**, choose **Download** to install and select a local model, or **Use** to switch to an installed model. Enable the menu reader to download Kokoro. Choose **Use** on **Voxtral Small** to start the illustrated API key tutorial or switch to Mistral with a saved key. Validating your key selects Mistral and stores the key in Windows Credential Manager. Mistral receives eligible voice recordings and may use them to train AI models, depending on your plan and privacy settings. The default PTT key is M. If a named microphone is unavailable in Mistral mode, recording stops. Choose **Default** under **Microphone** to use the Windows default device.
+1. Download `GSXComms-Windows-x64.zip` from [GitHub Releases](https://github.com/ziul510/GSXComms/releases), extract it to a writable folder, and run `GSXComms.exe`.
+2. In **Accent Setup**, select at least one voice pack and click **Save**. Pick a default accent and click **Continue**. GSXComms uses an installed accent that matches the aircraft's location when available.
+3. Start a flight at a GSX airport and wait for GSXComms to connect, or click **Connect**. Click **Show GSX Menu**, then hold **M** and say an item number. To type a choice, turn on **Enable keyboard typing** in **Settings**.
 
-GSXComms checks for speech locally before transcription and trims long gaps. Voxtral Small transcribes the remaining audio. Mistral translates the transcript into English when the detected language is not English or is unknown.
+## Speech and settings
 
-On first launch, **Accent Setup** opens before the main window. Select at least one regional pack and click **Save** to install it. Then choose a default accent from the installed packs and click **Continue**. You can reopen the wizard from Settings. Deselected packs stay on disk for reuse. The recordings were generated with ElevenLabs. Crew voices use aircraft location and fall back to your default or another installed accent. **Force accent** applies to crew interactions until you set it to **Disabled** or choose another accent.
+GSXComms downloads the selected local speech model on startup if it isn't installed. Use **Settings** to switch models, change the push-to-talk binding, or enable the Kokoro menu reader.
 
-## Build
+For cloud recognition, choose **Voxtral Small** and follow the API key setup. GSXComms stores the key in Windows Credential Manager and sends recordings with detected speech to Mistral for transcription. Mistral may use those recordings for training depending on your plan and privacy settings.
 
-Use Windows x64, Go 1.27.0, a MinGW-w64 UCRT C compiler, PowerShell 7, and Rust 1.98.0 with the MSVC x64 build tools. The builder prepares the pinned go-gui software renderer, verifies the bundled sherpa-onnx DLLs, and builds the FlyByWireless SimConnect helper.
+GSXComms keeps `user_settings.json`, downloaded models, and extracted voice packs beside the executable by default. Use `--data-dir` to change that folder. Place `words.json` or `accent_mappings.json` there to override the bundled defaults.
 
-For Kokoro, download the pinned checkpoint listed in [the export manifest](docs/phonemizer-export.json). In a Python 3.12 build environment with the listed dependencies, export the phonemizer. Setup verifies the graph and tokenizer hashes. Python and the build tools are unnecessary on end-user PCs.
+## Build from source
+
+On Windows x64, use Go 1.27.0, PowerShell 7, a MinGW-w64 UCRT C compiler, and Rust 1.98.0 with the MSVC x64 build tools. For the Kokoro phonemizer export, use Python 3.12 and the checkpoint and dependencies in the [export manifest](docs/phonemizer-export.json).
 
 ```powershell
 python scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
-go vet ./...
-go build ./...
 rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
 pwsh -File scripts/build.ps1 -PhonemizerDir build\phonemizer
 pwsh -File scripts/package.ps1
 ```
 
-The portable package is `dist/release/GSXComms-Windows-x64.zip`.
+Find the ZIP at `dist/release/GSXComms-Windows-x64.zip`. You can also download it as an artifact after running the [Build Windows release workflow](.github/workflows/build.yml) manually. See the [verification matrix](docs/parity.md) for simulator test coverage.
 
-## GitHub releases
+## License
 
-Publish a GitHub Release for a tag that includes the release workflow. **Build Windows release** attaches the portable ZIP with GSXComms.exe, the required runtime files, the Accents and tutorial folders, LICENSE, and third-party notices.
-
-Run **Build Windows release** manually from Actions to get the same files as a workflow artifact.
-
-## Verify live GSX
-
-Start a flight in MSFS at a GSX airport. The bundled FlyByWireless helper connects through the simulator's local Windows named pipe.
-
-Verify the GSX readiness badge, open the menu, select **Additional Services** by its spoken or typed number, and close the menu. With **Auto-connect to simulator** enabled, GSXComms reconnects after a simulator restart. Developers can run `build/gsxremotecontrol.exe` with `m` to toggle the menu, `1`–`9` to select, `0` to close, and `q` to quit. Use `--ipc` for the line-delimited interface.
-
-See the [parity matrix](docs/parity.md) and [license inventory](docs/license-inventory.json).
-
-Copyright 2026 ziul510. The rewrite code is Apache-2.0. Third-party components retain their own terms in `THIRD_PARTY_NOTICES`.
+Copyright 2026 ziul510. GSXComms code is licensed under [Apache 2.0](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES) for component licenses.
