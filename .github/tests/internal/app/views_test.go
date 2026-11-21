@@ -356,6 +356,58 @@ func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	}
 }
 
+func TestPresetEditorAddsCustomMenuText(t *testing.T) {
+	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	parent := gui.NewTestWindow(t, gui.WindowCfg{})
+	s.openPresets(parent, func() {})
+	window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	window.TestRender(nil)
+
+	click := func(id string) {
+		t.Helper()
+		if err := window.TestClick("presets-scroll:" + id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	typeText := func(id, text string) {
+		t.Helper()
+		if err := window.TestType("presets-scroll:"+id, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click("create-preset")
+	typeText("preset-name", "Turnaround")
+	typeText("preset-trigger", "turnaround")
+	click("add-service")
+
+	const field = "presets-scroll:preset-custom-text"
+	if _, shown := window.TestRender(nil).FindByID(field); shown {
+		t.Fatal("custom field shown for a built-in service")
+	}
+	click("preset-service")
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyEnter} {
+		if err := window.TestKey("presets-scroll:preset-service", key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click("add-service")
+	typeText("preset-custom-text", "  Cabin Check  ")
+	click("add-service")
+	typeText("preset-custom-text", "cabin check")
+	click("add-service")
+	click("save-preset")
+	select {
+	case request := <-s.saves:
+		s.finishSave(request, nil)
+	default:
+		t.Fatal("saving the preset did not queue a disk write")
+	}
+	presets := config.Get[[]config.Preset](s.cfg, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check"}) {
+		t.Fatalf("unexpected presets: %+v", presets)
+	}
+}
+
 func TestTransmissionSpeedGate(t *testing.T) {
 	s := &state{cfg: config.Defaults()}
 	for _, test := range []struct {
@@ -501,17 +553,17 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		t.Fatalf("command did not use the updated menu: %v", tr.selected)
 	}
 	tr.selected = nil
-	current = gsx.ParseMenu("Ramp\nRefuel\nJetway")
+	current = gsx.ParseMenu("Ramp\nRefuel\nJetway\nRequest cabin check")
 	session.ReadMenu = func() gsx.Menu { return current }
 	// A preset can share its codeword with a visible menu option
-	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{"JETWAY", "Custom: Cabin Check", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 	// Cancel the outer job on the first choice to check that later services get their own deadline
 	tr.afterChoice = cancel
 	s.submit("jetway")
 	(<-s.jobs)(outer, session)
-	if !slices.Equal(tr.selected, []int{1, 0}) {
+	if !slices.Equal(tr.selected, []int{1, 2, 0}) {
 		t.Fatalf("preset choices=%v", tr.selected)
 	}
 }

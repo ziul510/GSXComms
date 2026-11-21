@@ -866,7 +866,16 @@ func (s *state) submit(input string) {
 				return false
 			}
 			start := time.Now()
-			selected, err := session.Execute(serviceCtx, text, service, words.Keywords(service), auto)
+			keywords := words.Keywords(service)
+			customText, custom := strings.CutPrefix(service, config.CustomServicePrefix)
+			// Use the service matcher for literal custom text, including Additional Services
+			if custom {
+				keywords = nil
+				if customText = strings.TrimSpace(customText); customText != "" {
+					keywords = []string{customText}
+				}
+			}
+			selected, err := session.Execute(serviceCtx, text, service, keywords, auto)
 			elapsed := time.Since(start).Round(time.Millisecond)
 			if err == nil {
 				s.trace("GSX", fmt.Sprintf("Menu command completed in %s", elapsed))
@@ -875,7 +884,7 @@ func (s *state) submit(input string) {
 			}
 			if selected != "" {
 				matched := service
-				if matched == "" {
+				if matched == "" || custom {
 					matched = menuService(selected)
 				}
 				s.acknowledge(prefs, matched, selected, service != "" || corrected)

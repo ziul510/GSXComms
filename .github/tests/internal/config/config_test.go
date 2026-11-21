@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -28,6 +29,26 @@ func TestPortableSettingsNormalizeSavedValues(t *testing.T) {
 	p := Get[[]Preset](v, "presets")
 	if len(p) != 1 || p[0].Name != "Ramp In" || p[0].Codeword != "hi ramp" || !p[0].Enabled || len(p[0].Services) != 2 || p[0].Services[0] != "GPU" || p[0].Services[1] != "JETWAY" {
 		t.Fatalf("presets = %+v", p)
+	}
+}
+
+func TestPortableSettingsKeepCustomPresetServices(t *testing.T) {
+	dir := t.TempDir()
+	values := Defaults()
+	values.Put("presets", []Preset{{
+		Name: "Turnaround", Codeword: "turnaround", Enabled: true,
+		Services: []string{"gpu", "Custom:  Cabin Check  ", "JETWAY", "Custom: cabin check", "Custom: "},
+	}})
+	if err := Save(dir, values); err != nil {
+		t.Fatal(err)
+	}
+	values, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presets := Get[[]Preset](values, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check", "JETWAY"}) {
+		t.Fatalf("unexpected presets: %+v", presets)
 	}
 }
 

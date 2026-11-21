@@ -45,6 +45,9 @@ type Binding struct {
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
 
+// Keep custom steps in the same ordered list as built-in service IDs
+const CustomServicePrefix = "Custom:"
+
 // InitializeSettings creates the portable file from defaults before Accent Setup opens.
 func InitializeSettings(dir string) error {
 	path := filepath.Join(dir, SettingsFile)
@@ -304,9 +307,21 @@ func CleanPreset(p Preset) Preset {
 	p.Codeword = strings.ToLower(strings.Join(strings.Fields(p.Codeword), " "))
 	services := make([]string, 0, len(p.Services))
 	for _, service := range p.Services {
-		service = strings.ToUpper(strings.TrimSpace(service))
-		// Ignore unknown services and preserve the first occurrence of duplicates
-		if slices.Contains(Services, service) && !slices.Contains(services, service) {
+		service = strings.TrimSpace(service)
+		if text, custom := strings.CutPrefix(service, CustomServicePrefix); custom {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			service = CustomServicePrefix + " " + text
+		} else {
+			service = strings.ToUpper(service)
+			if !slices.Contains(Services, service) {
+				continue
+			}
+		}
+		// Preserve the first occurrence of case-insensitive matches
+		if !slices.ContainsFunc(services, func(other string) bool { return strings.EqualFold(other, service) }) {
 			services = append(services, service)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
@@ -19,9 +20,13 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 	selected, expanded := -1, -1
 	editing, saving := false, false
 	message := ""
+	const custom = "Custom"
+	choices := append(slices.Clone(config.Services), custom)
 	available := config.Services[0]
+	customText := ""
 	startNew := func() {
 		selected, form, message = -1, config.Preset{Enabled: true}, ""
+		customText = ""
 		editing = true
 	}
 	var window *gui.Window
@@ -96,6 +101,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving, func() {
 					selected, form, message, editing = i, p, "", true
 					form.Services = slices.Clone(p.Services)
+					customText = ""
 				}))
 			}
 			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(8), 5, rows...)))
@@ -123,18 +129,39 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 					ctx.Consume()
 					ctx.Window.InvalidateLayout()
 				}),
-				formSelect(gui.SelectCfg{ID: "preset-service", Label: "Services", Selected: []string{available}, Items: config.Services, OnSelect: func(v []string, ctx gui.EventCtx) {
+				formSelect(gui.SelectCfg{ID: "preset-service", Label: "Services", Selected: []string{available}, Items: choices, OnSelect: func(v []string, ctx gui.EventCtx) {
 					if len(v) > 0 {
 						available = v[0]
+						ctx.Window.InvalidateLayout()
 					}
 					ctx.Consume()
 				}}),
-				button("add-service", "Add service", 0, false, false, func() {
-					if !slices.Contains(form.Services, available) {
-						form.Services = append(form.Services, available)
-					}
-				}),
 			}
+			if available == custom {
+				editor = append(editor, formInput(gui.InputCfg{
+					ID: "preset-custom-text", Label: "GSX menu text", Text: customText,
+					Placeholder:   "Enter all or part of a menu option",
+					OnTextChanged: func(v string, _ gui.EventCtx) { customText = v },
+				}))
+			}
+			editor = append(editor, button("add-service", "Add service", 0, false, false, func() {
+				service := available
+				if available == custom {
+					text := strings.TrimSpace(customText)
+					if text == "" {
+						message = "Enter GSX menu text"
+						return
+					}
+					service = config.CustomServicePrefix + " " + text
+				}
+				if !slices.ContainsFunc(form.Services, func(other string) bool { return strings.EqualFold(other, service) }) {
+					form.Services = append(form.Services, service)
+					message = ""
+					if available == custom {
+						customText = ""
+					}
+				}
+			}))
 			// The order shown here is the order GSX will receive the services
 			for i, service := range form.Services {
 				id := strconv.Itoa(i)
