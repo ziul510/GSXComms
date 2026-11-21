@@ -276,6 +276,24 @@ def api(endpoint, method="GET", data=None, *flags):
     return json.loads(run(*args, data=None if data is None else json.dumps(data).encode("utf-8")))
 
 
+def eligible_pr(pr, repo):
+    return (
+        pr["state"] == "open"
+        and pr["user"]["login"] == "dependabot[bot]"
+        and pr["base"]["ref"] == "main"
+        and pr["head"]["ref"].startswith("dependabot/")
+        and (pr["head"]["repo"] or {}).get("full_name") == repo
+    )
+
+
+def target(number):
+    repo = os.environ["GITHUB_REPOSITORY"]
+    pr = api(f"repos/{repo}/pulls/{number}")
+    if not eligible_pr(pr, repo):
+        raise ValueError("Select an open Dependabot PR from this repository targeting main")
+    return pr["head"]["sha"]
+
+
 def comment(endpoint, number, head, report, warn):
     comments = f"{endpoint}/issues/{number}/comments"
     existing = next((
@@ -309,15 +327,15 @@ def commit_notices(repo, head, additions):
 
 
 def publish(output, status):
-    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes())
     repo = os.environ["GITHUB_REPOSITORY"]
-    number = int(event["number"])
-    head = event["pull_request"]["head"]
+    number = int(os.environ["PR_NUMBER"])
+    expected_head = os.environ["PR_HEAD"]
+    if not expected_head:
+        return
     endpoint = f"repos/{repo}"
     pr = api(f"{endpoint}/pulls/{number}")
-    if (pr["state"] != "open" or pr["user"]["login"] != "dependabot[bot]"
-            or pr["base"]["ref"] != "main" or pr["head"]["repo"]["full_name"] != repo
-            or pr["head"]["ref"] != head["ref"] or pr["head"]["sha"] != head["sha"]):
+    head = pr["head"]
+    if not eligible_pr(pr, repo) or head["sha"] != expected_head:
         return
 
     if status != "success":
@@ -337,7 +355,9 @@ def publish(output, status):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "audit":
+    if sys.argv[1] == "target":
+        print(target(int(sys.argv[2])))
+    elif sys.argv[1] == "audit":
         audit(sys.argv[2], Path(sys.argv[3]))
     elif sys.argv[1] == "publish":
         publish(Path(sys.argv[2]), sys.argv[3])

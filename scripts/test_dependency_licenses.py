@@ -43,12 +43,10 @@ class LicenseTest(unittest.TestCase):
         pr = {"state": "open", "user": {"login": "dependabot[bot]"}, "base": {"ref": "main"}, "head": head}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            event = path / "event.json"
-            event.write_text(json.dumps({"number": 10, "pull_request": {"head": head}}), encoding="utf-8")
             additions = [{"path": licenses.CSV, "contents": "YQo="}]
             (path / "result.json").write_text(json.dumps({"changes": ["Changed"], "additions": additions}), encoding="utf-8")
             with (
-                patch.dict(os.environ, {"GITHUB_REPOSITORY": repo, "GITHUB_EVENT_PATH": str(event)}),
+                patch.dict(os.environ, {"GITHUB_REPOSITORY": repo, "PR_NUMBER": "10", "PR_HEAD": head["sha"]}),
                 patch.object(licenses, "api", return_value=pr) as api,
                 patch.object(licenses, "comment", side_effect=subprocess.CalledProcessError(1, "gh")),
             ):
@@ -60,6 +58,18 @@ class LicenseTest(unittest.TestCase):
                     with self.assertRaises(subprocess.CalledProcessError):
                         licenses.publish(path, "success")
                     commit.assert_called_once_with(repo, head, additions)
+
+    def test_manual_target_rejects_non_dependabot_pr(self):
+        repo = "owner/project"
+        pr = {
+            "state": "open", "user": {"login": "dependabot[bot]"}, "base": {"ref": "main"},
+            "head": {"sha": "a" * 40, "ref": "dependabot/cargo/demo", "repo": {"full_name": repo}},
+        }
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": repo}), patch.object(licenses, "api", return_value=pr):
+            self.assertEqual(licenses.target(10), pr["head"]["sha"])
+            pr["user"]["login"] = "somebody-else"
+            with self.assertRaises(ValueError):
+                licenses.target(10)
 
 
 if __name__ == "__main__":
