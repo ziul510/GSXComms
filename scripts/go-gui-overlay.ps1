@@ -72,6 +72,12 @@ func (b *Backend) Destroy() {
         return
     }
 '@
+# Queued dialogs need the theme caption before New shows their native window
+$src = Change $src 'if err := open(gui.NewWindow(cfg)); err != nil {' @'
+w := gui.NewWindow(cfg)
+                w.TitlebarDark(w.Theme().TitlebarDark)
+                if err := open(w); err != nil {
+'@
 Publish-Patch $file $src
 
 # Repaint the cached bitmap if Windows asks for a paint between application frames
