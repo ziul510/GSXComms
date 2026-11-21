@@ -172,7 +172,7 @@ func (s *state) record(down bool) {
 }
 
 func waitForPTTStatic(ctx context.Context) bool {
-	timer := time.NewTimer(150 * time.Millisecond)
+	timer := time.NewTimer(400 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
