@@ -165,7 +165,7 @@ func (s *state) output(ctx context.Context, next playback) error {
 		seconds := float64(len(pcm)) / float64(2*next.rate*channels)
 		detail := fmt.Sprintf("Playing %.2fs of audio at %d Hz, %d channel(s)", seconds, next.rate, channels)
 		if next.crewAccent != "" {
-			detail += " | crew accent=" + next.crewAccent
+			detail += " | crew accent=" + debugCrewAccent(next.prefs, next.crewAccent)
 		}
 		s.trace("AUDIO", detail)
 	}

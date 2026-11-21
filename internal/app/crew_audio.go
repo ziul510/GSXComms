@@ -37,18 +37,14 @@ func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
 }
 
 func (s *state) enqueueCue(prefs config.Values, name, option string, priority, stateChange bool) {
-	next := s.settingsDraft()
-	forced := config.Get[string](next, "force_accent")
 	prefs = prefs.Copy()
-	prefs.Put("force_accent", forced)
-	queued := s.queueAudio(playback{
+	// Use the latest saved accent settings even if the command started before the save
+	for _, key := range []string{"force_accent", "default_accent", "installed_packs"} {
+		prefs[key] = s.cfg[key]
+	}
+	s.queueAudio(playback{
 		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(), stateChange: stateChange,
 	}, priority)
-	// Consume the accent only when the interaction actually enters playback.
-	if queued && forced != "" && forced != "Disabled" {
-		next.Put("force_accent", "Disabled")
-		s.save(next, nil)
-	}
 }
 
 func (p playback) protected() bool { return p.priority || p.stateChange }

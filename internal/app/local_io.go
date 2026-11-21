@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -265,7 +266,7 @@ func (s *state) traceLocation(prefs config.Values, pos *geo.Position) {
 	if !s.debugEnabled.Load() {
 		return
 	}
-	label := "unavailable"
+	label := ""
 	if enabled := config.Get[[]string](prefs, "installed_packs"); len(enabled) > 0 {
 		for _, candidate := range crewAccentCandidates(prefs, pos, geo.Overrides(s.dir)) {
 			if _, name := installedCrewAccent(enabled, candidate); name != "" {
@@ -275,7 +276,22 @@ func (s *state) traceLocation(prefs config.Values, pos *geo.Position) {
 		}
 	}
 	// Playback reports the actual accent after a matching recording is found
-	s.trace("GEO", fmt.Sprintf("Aircraft location=%s | preferred crew accent=%s", pos.Label(), label))
+	s.trace("GEO", fmt.Sprintf("Aircraft location=%s | preferred crew accent=%s", pos.Label(), debugCrewAccent(prefs, label)))
+}
+
+// Mark a force only when the preferred or played accent matches the override
+func debugCrewAccent(prefs config.Values, name string) string {
+	forced := config.Get[string](prefs, "force_accent")
+	if name != "" && strings.EqualFold(forced, name) {
+		return name + " (forced)"
+	}
+	if name == "" {
+		name = "unavailable"
+	}
+	if forced != "" && forced != "Disabled" {
+		return name + " (forced accent unavailable)"
+	}
+	return name
 }
 
 func debugBinding(binding string) string {

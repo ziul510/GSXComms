@@ -144,6 +144,67 @@ func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	}
 }
 
+func TestForceAccentPersistsAfterCrewCues(t *testing.T) {
+	const forceKey = "settings-scroll:force_accent"
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	commandPrefs := s.cfg.Copy()
+	s.cfg.Put("installed_packs", []string{packs[0].name})
+	open := func() *gui.Window {
+		s.openSettings()
+		cfg := <-s.host.PendingOpen()
+		cfg.Height = 3200
+		w := gui.NewTestWindow(t, cfg)
+		w.TestRender(nil)
+		return w
+	}
+	w := open()
+	if err := w.TestClick(forceKey); err != nil {
+		t.Fatal(err)
+	}
+	// Scottish is the last accent in the enabled pack's sorted list
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyEnter} {
+		if err := w.TestKey(forceKey, key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.TestClick("save"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-s.saves:
+		err := config.Save(s.dir, req.values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("Settings did not queue a save")
+	}
+
+	s.cue(commandPrefs, "greeting", "", false)
+	s.cue(commandPrefs, "boarding", "", false)
+	for _, cue := range s.audioQueue {
+		candidate := crewAccentCandidates(cue.prefs, nil, nil)[0]
+		if _, name := installedCrewAccent(config.Get[[]string](cue.prefs, "installed_packs"), candidate); name != "Scottish" {
+			t.Errorf("%s cue preferred %q, want Scottish", cue.cue, name)
+		}
+	}
+	if len(s.audioQueue) != 2 || len(s.saves) != 0 {
+		t.Fatal("queuing crew cues did not preserve settings")
+	}
+	saved, err := config.Load(s.dir)
+	if err != nil || config.Get[string](saved, "force_accent") != "Scottish" {
+		t.Fatalf("saved force accent = %q, error = %v", config.Get[string](saved, "force_accent"), err)
+	}
+	for _, cmd := range open().Renderers() {
+		if cmd.Kind == gui.RenderText && cmd.Text == "Scottish" {
+			return
+		}
+	}
+	t.Fatal("reopened Settings did not show Scottish")
+}
+
 func TestMenuReaderDisablesImmediately(t *testing.T) {
 	const readKey = "read_gsx_menus_aloud_after_keyword"
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}

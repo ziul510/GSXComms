@@ -36,8 +36,10 @@ func TestDebugLocationShowsPreferredCrewAccent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=British")
-	prefs.Put("force_accent", "Irish")
-	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=Irish")
+	prefs.Put("force_accent", "irish")
+	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=Irish (forced)")
+	prefs.Put("force_accent", "Japanese")
+	assertLocation(pos, "Aircraft location=Île-de-France, France | preferred crew accent=British (forced accent unavailable)")
 }
 
 func TestDebugTerminalSurvivesLogFailure(t *testing.T) {

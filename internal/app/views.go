@@ -693,8 +693,8 @@ func (s *state) openSettings() {
 		toggle("simulation_mode", "Simulation mode")
 		toggle("ignore_speed_restriction", "Ignore speed restriction")
 		action("randomize-gender", "Randomize gender", false, s.randomizeVoice)
-		// Disabled leaves accent selection to the user's defaults and the aircraft location
-		pick("force_accent", "Force accent", append([]string{"Disabled"}, accents...))
+		// Offer accents from the same installed packs that playback uses
+		pick("force_accent", "Force accent", append([]string{"Disabled"}, selectedAccents...))
 		save := sizedButtonConfig("save", "Save Changes", 130, settingsTextSize, true, saving || closePresets != nil || s.binding != nil || readerDownloading, func() {
 			message = "Saving…"
 			saving = true
