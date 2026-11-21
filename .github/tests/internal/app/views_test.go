@@ -41,6 +41,52 @@ func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	}
 }
 
+func TestMainShowsPTTAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		speed                               float64
+		high, offline, simulation, override bool
+		speechLoading, unbound              bool
+		activity, want                      string
+		color                               gui.Color
+	}{
+		{name: "at speed limit", speed: 50, want: "PTT Idle", color: ink},
+		{name: "above speed limit", speed: 51, want: "Unavailable", color: red},
+		{name: "above altitude limit", high: true, want: "Unavailable", color: red},
+		{name: "speed override", speed: 51, override: true, want: "PTT Idle", color: ink},
+		{name: "speed override at altitude", high: true, override: true, want: "Unavailable", color: red},
+		{name: "offline", offline: true, want: "Unavailable", color: red},
+		{name: "simulation", offline: true, high: true, simulation: true, want: "PTT Idle", color: ink},
+		{name: "speech loading", speechLoading: true, want: "Unavailable", color: red},
+		{name: "no binding", unbound: true, want: "Unavailable", color: red},
+		{name: "recording", high: true, activity: "LISTENING", want: "PTT LISTENING", color: accent},
+		{name: "processing", high: true, activity: "PROCESSING", want: "PTT PROCESSING", color: orange},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &state{cfg: config.Defaults(), connected: !tc.offline, speechReady: !tc.speechLoading, ptt: tc.activity}
+			s.cfg.Put("simulation_mode", tc.simulation)
+			s.cfg.Put("ignore_speed_restriction", tc.override)
+			if tc.unbound {
+				s.cfg.Put("ptt_bind", config.Binding{})
+			}
+			if tc.speechLoading {
+				s.speechStatus = "Loading speech"
+			}
+			s.groundSpeed.Store(&speedReading{tc.speed, time.Now()})
+			s.abovePTTAltitude.Store(tc.high)
+			w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
+			w.TestRender(mainView)
+			// Check the visible status text and color together
+			for _, cmd := range w.Renderers() {
+				if cmd.Kind == gui.RenderText && cmd.Text == tc.want && cmd.Color == tc.color {
+					return
+				}
+			}
+			t.Fatalf("missing rendered PTT status %q with color %v", tc.want, tc.color)
+		})
+	}
+}
+
 func TestFullJobQueueKeepsControlsUsable(t *testing.T) {
 	// An unbuffered queue with no receiver makes every enqueue fail immediately
 	s := &state{cfg: config.Defaults(), overlay: true, menu: gsx.ParseMenu("Ramp\nJetway"), jobs: make(chan func(context.Context, *gsx.Session))}
@@ -239,9 +285,7 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		if test.known {
 			s.groundSpeed.Store(&speedReading{test.speed, time.Now()})
 		}
-		s.cfg.Put("ignore_speed_restriction", test.override)
-		s.cfg.Put("simulation_mode", test.sim)
-		if got := s.transmissionBlock() != ""; got != test.block {
+		if got := s.speedBlock(test.sim, test.override) != ""; got != test.block {
 			t.Errorf("speed gate for %+v blocked=%v", test, got)
 		}
 	}
@@ -589,7 +633,7 @@ func TestLegacyHIDNameRequiresRebindingAndNativePathCanMove(t *testing.T) {
 	index := 5
 	s := &state{hidPaths: map[string][]string{"stick": {current}}}
 	binding := config.Binding{Type: "joystick", JoyName: "Stick", JoyButton: &index, Description: "Stick button 6"}
-	if description := s.bindingDescription(binding); !strings.Contains(description, "Unverified") || s.boundHIDPath(binding) != "" {
+	if description, bound := s.bindingDescription(binding); bound || !strings.Contains(description, "Unverified") || s.boundHIDPath(binding) != "" {
 		t.Fatalf("legacy name activated a binding: %q", description)
 	}
 	binding.JoyID, _ = json.Marshal(original)

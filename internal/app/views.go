@@ -125,25 +125,27 @@ func mainView(w *gui.Window) gui.View {
 		bar = append(bar, gui.Button(topmost), gap(4, 1))
 	}
 	bar = append(bar, bold(speed, 12, speedColor))
-	ptt, pttColor := s.ptt, ink
-	binding := s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind"))
+	ptt, pttColor := "PTT Idle", ink
+	binding, bound := s.bindingDescription(config.Get[config.Binding](s.cfg, "ptt_bind"))
 	bindingColor := muted
+	// In-progress activity takes priority over readiness for a new recording
 	switch {
-	case ptt == "LISTENING":
-		pttColor = accent
-	case ptt == "PROCESSING":
-		pttColor = orange
-	case s.speechStatus == "Speech unavailable":
-		ptt, pttColor = "Error", red
-		binding, bindingColor = "Speech recognition unavailable", red
-	case s.speechStatus != "":
-		ptt, pttColor = "Loading", orange
-		binding, bindingColor = s.speechStatus, orange
+	case s.ptt == "LISTENING":
+		ptt, pttColor = "PTT LISTENING", accent
+	case s.ptt == "PROCESSING":
+		ptt, pttColor = "PTT PROCESSING", orange
+	case !bound || !s.pttAvailable():
+		ptt, pttColor = "Unavailable", red
+		if s.speechStatus == "Speech unavailable" {
+			binding, bindingColor = "Speech recognition unavailable", red
+		} else if s.speechStatus != "" {
+			binding, bindingColor = s.speechStatus, orange
+		}
 	}
 	body := []gui.View{gui.Row(gui.ContainerCfg{
 		Sizing: gui.FillFixed, Height: 48, Color: card, ColorBorder: elevated, Radius: gui.RadiusPx(6),
 		Padding: gui.PadVH(0, 11), SizeBorder: gui.BorderPx(1), VAlign: gui.VAlignMiddle, Spacing: gui.SpacingPx(6),
-		Content: []gui.View{text("PTT", 11, muted), bold(ptt, 13, pttColor), spacer(), text(binding, 11, bindingColor)},
+		Content: []gui.View{bold(ptt, 13, pttColor), spacer(), text(binding, 11, bindingColor)},
 	})}
 	// Only show the command field when typed input is enabled
 	if config.Get[bool](s.cfg, "enable_keyboard_input") {
@@ -679,7 +681,7 @@ func (s *state) openSettings() {
 		}
 		toggle("show_topmost", "Show Top Most")
 		binding := config.Get[config.Binding](s.cfg, "ptt_bind")
-		description := s.bindingDescription(binding)
+		description, _ := s.bindingDescription(binding)
 		body = append(body, settingsField("Current PTT binding", wrapped(description, settingsTextSize, ink)))
 		if strings.Contains(description, "Rebind required") && binding.Description != "" {
 			body = append(body, wrapped("Needs rebinding: "+binding.Description, 12, orange))

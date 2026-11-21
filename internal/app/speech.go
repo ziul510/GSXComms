@@ -18,6 +18,14 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/speech"
 )
 
+// Share PTT readiness between the status row and the microphone gate
+func (s *state) pttAvailable() bool {
+	simulation := config.Get[bool](s.cfg, "simulation_mode")
+	return s.speechReady && !s.settingUpMistral &&
+		(simulation || (s.connected && !s.abovePTTAltitude.Load())) &&
+		s.speedBlock(simulation, config.Get[bool](s.cfg, "ignore_speed_restriction")) == ""
+}
+
 func (s *state) record(down bool) {
 	// A release ends capture The collected audio still has to pass the speech gate
 	if !down {
@@ -34,18 +42,14 @@ func (s *state) record(down bool) {
 	}
 	s.pttHeld = true
 	// Only one capture or transcription may be active for the PTT control
-	if s.recording != nil || s.processing || s.settingUpMistral {
-		return
-	}
-	if !s.speechReady {
-		s.log("SYS", "Speech recognition unavailable or still loading")
-		return
-	}
-	if !s.connected && !config.Get[bool](s.cfg, "simulation_mode") {
+	if s.recording != nil || s.processing {
 		return
 	}
 	// Check the current flight state before opening the microphone
-	if s.transmissionBlock() != "" {
+	if !s.pttAvailable() {
+		if !s.speechReady && !s.settingUpMistral {
+			s.log("SYS", "Speech recognition unavailable or still loading")
+		}
 		return
 	}
 	// Keep the microphone and provider fixed for the life of this recording

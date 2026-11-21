@@ -95,25 +95,26 @@ func (s *state) boundHIDPath(b config.Binding) string {
 	return ""
 }
 
-func (s *state) bindingDescription(b config.Binding) string {
+// Report whether the saved binding identifies a usable input
+func (s *state) bindingDescription(b config.Binding) (string, bool) {
 	switch b.Type {
 	case "key":
 		if bindingKey(b) != 0 {
-			return b.Description
+			return b.Description, true
 		}
 	case "joystick":
 		var slot int
 		if b.JoyButton != nil && *b.JoyButton >= 0 {
 			if s.boundHIDPath(b) != "" ||
 				(strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil && slot >= 0 && slot < 4 && *b.JoyButton < 16) {
-				return b.Description
+				return b.Description, true
 			}
 			if s.legacyHIDPath(b) != "" {
-				return "Unverified name match · Rebind required"
+				return "Unverified name match · Rebind required", false
 			}
 		}
 	}
-	return "Rebind required"
+	return "Rebind required", false
 }
 
 type rawHeader struct {

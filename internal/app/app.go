@@ -96,6 +96,7 @@ type state struct {
 	servicesMu                                       sync.Mutex
 	services                                         map[string]bool
 	groundSpeed                                      atomic.Pointer[speedReading]
+	abovePTTAltitude                                 atomic.Bool
 	policy                                           atomic.Pointer[transmissionPolicy]
 	highlights                                       []menuHighlight
 	vocabulary                                       commands.Loader
@@ -481,6 +482,7 @@ func (s *state) simulator() {
 func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan struct{}) {
 	defer close(done)
 	defer s.groundSpeed.Store(nil)
+	defer s.abovePTTAltitude.Store(false)
 	session := gsx.New(sim, "")
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
@@ -517,7 +519,6 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 		if err != nil {
 			s.trace("GSX", "SimConnect poll did not return a valid speed")
 		}
-		s.async(func() { s.ready = ready })
 		altCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 420*time.Millisecond)
 		altitude, altErr := session.Altitude(altCtx)
 		stop()
@@ -534,7 +535,10 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 				s.async(func() { s.log("SYS", "Cruise: crew will refresh on descent") })
 			}
 			high = above
+			s.abovePTTAltitude.Store(high)
 		}
+		// Redraw after both flight readings have been updated
+		s.async(func() { s.ready = ready })
 		if recovered || descended {
 			// The next ground interaction starts with fresh service state and local voices.
 			s.resetServices()
@@ -698,8 +702,8 @@ func (r *speedReading) fresh() bool {
 	return r != nil && time.Since(r.at) <= speedFreshness
 }
 
-func (s *state) speedBlock(policy *transmissionPolicy) string {
-	if policy.simulation || policy.ignoreSpeed {
+func (s *state) speedBlock(simulation, ignoreSpeed bool) string {
+	if simulation || ignoreSpeed {
 		return ""
 	}
 	if speed := s.groundSpeed.Load(); speed.fresh() {
@@ -709,11 +713,6 @@ func (s *state) speedBlock(policy *transmissionPolicy) string {
 		return ""
 	}
 	return "Taxi speed unavailable for transmission"
-}
-
-func (s *state) transmissionBlock() string {
-	s.publishTransmissionPolicy()
-	return s.speedBlock(s.policy.Load())
 }
 
 func (s *state) loadVocabulary() commands.Vocabulary {
@@ -758,7 +757,7 @@ func (s *state) submit(input string) {
 			if !session.Connected() && !policy.simulation {
 				return gsx.ErrDisconnected
 			}
-			if blocked := s.speedBlock(policy); blocked != "" {
+			if blocked := s.speedBlock(policy.simulation, policy.ignoreSpeed); blocked != "" {
 				return errors.New(blocked)
 			}
 			if !policy.speechReady {
