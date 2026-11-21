@@ -73,6 +73,7 @@ type state struct {
 	speechGeneration                                 uint64
 	speechAttempted                                  map[string]bool
 	speechChanged                                    func(string)
+	presetReadoutChanged                             func()
 	dir                                              string
 	cfg                                              config.Values
 	host                                             *gui.App
@@ -791,7 +792,7 @@ func (s *state) submit(input string) {
 		if readoutMatches(prefs, text, raw) {
 			s.trace("CMD", "Routed command to menu readout")
 			s.async(func() { s.log("CMD", "GSX menu readout requested") })
-			s.sayMenu(ctx, session, prefs)
+			s.sayMenu(ctx, session, prefs, false)
 			return
 		}
 		gate := func() error {
@@ -865,6 +866,9 @@ func (s *state) submit(input string) {
 				log("SYS", err.Error())
 				return false
 			}
+			if action.Kind == "preset" && service == config.ReadMenuAction {
+				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, true)
+			}
 			start := time.Now()
 			keywords := words.Keywords(service)
 			customText, custom := strings.CutPrefix(service, config.CustomServicePrefix)
@@ -876,6 +880,9 @@ func (s *state) submit(input string) {
 				}
 			}
 			selected, err := session.Execute(serviceCtx, text, service, keywords, auto)
+			if action.Kind == "preset" {
+				s.menuActivity = time.Now()
+			}
 			elapsed := time.Since(start).Round(time.Millisecond)
 			if err == nil {
 				s.trace("GSX", fmt.Sprintf("Menu command completed in %s", elapsed))

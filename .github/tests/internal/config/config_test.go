@@ -35,9 +35,10 @@ func TestPortableSettingsNormalizeSavedValues(t *testing.T) {
 func TestPortableSettingsKeepCustomPresetServices(t *testing.T) {
 	dir := t.TempDir()
 	values := Defaults()
+	values.Put(MenuReadoutSetting, true)
 	values.Put("presets", []Preset{{
 		Name: "Turnaround", Codeword: "turnaround", Enabled: true,
-		Services: []string{"gpu", "Custom:  Cabin Check  ", "JETWAY", "Custom: cabin check", "Custom: "},
+		Services: []string{"gpu", " read menu ", "Custom:  Cabin Check  ", "JETWAY", "Custom: cabin check", "Custom: "},
 	}})
 	if err := Save(dir, values); err != nil {
 		t.Fatal(err)
@@ -47,8 +48,20 @@ func TestPortableSettingsKeepCustomPresetServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	presets := Get[[]Preset](values, "presets")
-	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check", "JETWAY"}) {
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", ReadMenuAction, "Custom: Cabin Check", "JETWAY"}) {
 		t.Fatalf("unexpected presets: %+v", presets)
+	}
+	values.Put(MenuReadoutSetting, false)
+	if err := Save(dir, values); err != nil {
+		t.Fatal(err)
+	}
+	values, err = Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presets = Get[[]Preset](values, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check", "JETWAY"}) {
+		t.Fatalf("disabled readout remained in loaded presets: %+v", presets)
 	}
 }
 

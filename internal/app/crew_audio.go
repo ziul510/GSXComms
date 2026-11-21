@@ -22,6 +22,8 @@ type playback struct {
 	rate                  int
 	cue, option           string
 	voice, crewAccent     string
+	readout               string
+	readoutEntries        int
 	location              *geo.Position
 	priority, stateChange bool
 	dry                   bool

@@ -54,7 +54,7 @@ func formatReadout(options []string) string {
 }
 
 func readoutMatches(prefs config.Values, values ...string) bool {
-	if !config.Get[bool](prefs, "read_gsx_menus_aloud_after_keyword") {
+	if !config.Get[bool](prefs, config.MenuReadoutSetting) {
 		return false
 	}
 	// An empty setting leaves the special readout path disabled
@@ -72,36 +72,31 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	return false
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values) {
+func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, inPreset bool) bool {
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
 	if !session.Connected() {
 		s.traceLevel("WARN", "TTS", "Menu readout blocked: SimConnect disconnected")
 		log("SYS", "SimConnect handshake required to read the GSX menu")
-		return
+		return false
 	}
 	// Couatl can still be replacing the panel after a selection.
 	if since := time.Since(s.menuActivity); since < 4*time.Second {
-		timer := time.NewTimer(4*time.Second - since)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return
+		if err := session.Sleep(ctx, 4*time.Second-since); err != nil {
+			return false
 		}
 	}
-	m, _ := models.Lookup("kokoro")
-	if !m.Ready(s.dir) {
-		s.traceLevel("WARN", "TTS", "Menu readout blocked: Kokoro model unavailable")
-		log("ERR", "Kokoro menu-reader model is unavailable. Turn menu readout off and back on in Settings to retry the download")
-		return
-	}
-	select {
-	// Reserve the reader through synthesis so repeated requests don't pile up
-	case s.speaking <- struct{}{}:
-	default:
-		s.trace("TTS", "Menu readout already in progress")
-		log("SYS", "GSX menu readout is already in progress")
-		return
+	if !inPreset {
+		if !s.menuReaderReady() {
+			return false
+		}
+		select {
+		// Reserve the reader through synthesis so repeated standalone requests don't pile up
+		case s.speaking <- struct{}{}:
+		default:
+			s.trace("TTS", "Menu readout already in progress")
+			log("SYS", "GSX menu readout is already in progress")
+			return false
+		}
 	}
 	// Reuse the menu if it is already populated Open a temporary one only when needed
 	options := session.ReadMenu().Options
@@ -110,41 +105,82 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		// Release the menu opened for readout before starting the slower speech work
 		_ = session.Release(ctx)
 		if err != nil {
-			<-s.speaking
+			if !inPreset {
+				<-s.speaking
+			}
 			s.traceFailure("TTS", "Could not open the menu for readout", err)
 			log("ERR", err.Error())
-			return
+			return false
 		}
 		options = menu.Options
 	}
 	text := formatReadout(options)
+	if inPreset {
+		// Queue through the same window thread as the neighboring service acknowledgments
+		s.async(func() {
+			if config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true}, false)
+			}
+		})
+		return true
+	}
 	// Synthesizing speech is slower than GSX polling, so give the simulator queue back now
 	go func() {
 		defer func() { <-s.speaking }()
-		start := time.Now()
-		if err := s.reader.Load(s.ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
-			s.traceFailure("TTS", "Could not load the Kokoro worker", err)
-			log("ERR", "GSX menu readout failed: "+err.Error())
-			return
+		if pcm, rate := s.synthesizeReadout(s.ctx, text, len(options)); len(pcm) > 0 {
+			// Queue readout audio behind waiting priority crew cues
+			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
 		}
-		pcm, rate, err := s.reader.Synthesize(s.ctx, text)
-		if err != nil {
-			s.traceFailure("TTS", "Could not synthesize the menu readout", err)
-			log("ERR", "GSX menu readout failed: "+err.Error())
-			return
-		}
-		engine := s.reader.Runtime()
-		log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud (%s)", len(options), engine))
-		if engine != "CPU" && engine != "CUDA" {
-			engine = "unknown"
-		}
-		s.trace("TTS", fmt.Sprintf("Synthesized %d menu entries in %s on %s", len(options), time.Since(start).Round(time.Millisecond), engine))
-		// Queue readout audio behind waiting priority crew cues
-		s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
 	}()
+	return true
+}
+
+func (s *state) menuReaderReady() bool {
+	m, _ := models.Lookup("kokoro")
+	if m.Ready(s.dir) {
+		return true
+	}
+	s.traceLevel("WARN", "TTS", "Menu readout blocked: Kokoro model unavailable")
+	s.async(func() {
+		s.log("ERR", "Kokoro menu-reader model is unavailable. Turn menu readout off and back on in Settings to retry the download")
+	})
+	return false
+}
+
+func (s *state) synthesizeReadout(ctx context.Context, text string, entries int) ([]byte, int) {
+	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
+	m, _ := models.Lookup("kokoro")
+	start := time.Now()
+	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
+		s.traceFailure("TTS", "Could not load the Kokoro worker", err)
+		log("ERR", "GSX menu readout failed: "+err.Error())
+		return nil, 0
+	}
+	pcm, rate, err := s.reader.Synthesize(ctx, text)
+	if err != nil {
+		s.traceFailure("TTS", "Could not synthesize the menu readout", err)
+		log("ERR", "GSX menu readout failed: "+err.Error())
+		return nil, 0
+	}
+	engine := s.reader.Runtime()
+	log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud (%s)", entries, engine))
+	if engine != "CPU" && engine != "CUDA" {
+		engine = "unknown"
+	}
+	s.trace("TTS", fmt.Sprintf("Synthesized %d menu entries in %s on %s", entries, time.Since(start).Round(time.Millisecond), engine))
+	return pcm, rate
 }
 
 func (s *state) output(ctx context.Context, next playback) error {
+	if next.readout != "" {
+		if !s.menuReaderReady() {
+			return nil
+		}
+		next.pcm, next.rate = s.synthesizeReadout(ctx, next.readout, next.readoutEntries)
+		if len(next.pcm) == 0 || ctx.Err() != nil {
+			return nil
+		}
+	}
 	if !next.dry && next.cue != "error" {
 		defer s.muteCrew(ctx, next.prefs)()
 	}

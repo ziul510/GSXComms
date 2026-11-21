@@ -21,7 +21,6 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 	editing, saving := false, false
 	message := ""
 	const custom = "Custom"
-	choices := append(slices.Clone(config.Services), custom)
 	available := config.Services[0]
 	customText := ""
 	startNew := func() {
@@ -37,7 +36,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			if err != nil {
 				message = err.Error()
 			} else {
-				entries = updated
+				entries = config.Get[[]config.Preset](s.cfg, "presets")
 				expanded = -1
 				afterSave()
 				if !parent.CloseRequested() {
@@ -52,7 +51,12 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 	finishEdit := func() { selected, editing = -1, false }
 	save := func() {
 		// Check duplicates against every other draft entry before inserting or replacing one
-		value, err := config.ValidatePreset(form, entries, selected)
+		value := form
+		if !config.Get[bool](s.settingsDraft(), config.MenuReadoutSetting) {
+			value.Services = slices.Clone(form.Services)
+			value.RemoveReadMenu()
+		}
+		value, err := config.ValidatePreset(value, entries, selected)
 		if err != nil {
 			message = err.Error()
 			return
@@ -84,8 +88,23 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			},
 		})
 	}
+	s.presetReadoutChanged = func() {
+		entries = config.Get[[]config.Preset](s.cfg, "presets")
+		if !config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+			form.RemoveReadMenu()
+			if available == config.ReadMenuAction {
+				available = config.Services[0]
+			}
+		}
+		if window != nil && !window.CloseRequested() {
+			window.InvalidateLayout()
+		}
+	}
 	var closeDialog func()
-	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, onClose, func(w *gui.Window) gui.View {
+	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, func() {
+		s.presetReadoutChanged = nil
+		onClose()
+	}, func(w *gui.Window) gui.View {
 		window = w
 		var body []gui.View
 		for i, p := range entries {
@@ -143,6 +162,11 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			}))
 		}
 		if editing {
+			choices := slices.Clone(config.Services)
+			if config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+				choices = append(choices, config.ReadMenuAction)
+			}
+			choices = append(choices, custom)
 			title := "New preset"
 			if selected >= 0 {
 				title = "Edit preset"

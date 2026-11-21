@@ -48,6 +48,31 @@ var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOA
 // Keep custom steps in the same ordered list as built-in service IDs
 const CustomServicePrefix = "Custom:"
 
+const ReadMenuAction = "Read Menu"
+const MenuReadoutSetting = "read_gsx_menus_aloud_after_keyword"
+
+func (p *Preset) RemoveReadMenu() {
+	p.Services = slices.DeleteFunc(p.Services, func(service string) bool { return service == ReadMenuAction })
+}
+
+// Remove readout steps without dropping presets or changing the remaining order
+func (v Values) RemoveDisabledReadMenu() {
+	if Get[bool](v, MenuReadoutSetting) {
+		return
+	}
+	presets := Get[[]Preset](v, "presets")
+	changed := false
+	for i := range presets {
+		if slices.Contains(presets[i].Services, ReadMenuAction) {
+			presets[i].RemoveReadMenu()
+			changed = true
+		}
+	}
+	if changed {
+		v.Put("presets", presets)
+	}
+}
+
 // InitializeSettings creates the portable file from defaults before Accent Setup opens.
 func InitializeSettings(dir string) error {
 	path := filepath.Join(dir, SettingsFile)
@@ -185,6 +210,7 @@ func decode(data []byte) (Values, error) {
 		values.Put("speech_provider", "parakeet")
 	}
 	values.Put("presets", migratePresets(values["presets"]))
+	values.RemoveDisabledReadMenu()
 	if binding := Get[Binding](values, "ptt_bind"); binding.Type == "joy" {
 		binding.Type = "joystick"
 		// SDL indexes identify a device only within the legacy process.
@@ -314,6 +340,8 @@ func CleanPreset(p Preset) Preset {
 				continue
 			}
 			service = CustomServicePrefix + " " + text
+		} else if strings.EqualFold(service, ReadMenuAction) {
+			service = ReadMenuAction
 		} else {
 			service = strings.ToUpper(service)
 			if !slices.Contains(Services, service) {

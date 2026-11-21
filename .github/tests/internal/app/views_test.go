@@ -206,9 +206,13 @@ func TestForceAccentPersistsAfterCrewCues(t *testing.T) {
 }
 
 func TestMenuReaderDisablesImmediately(t *testing.T) {
-	const readKey = "read_gsx_menus_aloud_after_keyword"
+	const readKey = config.MenuReadoutSetting
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}
 	s.cfg.Put(readKey, true)
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Arrival", Codeword: "arrival", Enabled: true, Services: []string{"GPU", config.ReadMenuAction, "JETWAY"}},
+		{Name: "Readout", Codeword: "readout", Enabled: true, Services: []string{config.ReadMenuAction}},
+	})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.openSettings()
 	cfg := <-s.host.PendingOpen()
@@ -223,6 +227,29 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 	if err := settings.TestType("settings-scroll:menu-reader-keyword", "draft keyword"); err != nil {
 		t.Fatal(err)
 	}
+	if err := settings.TestClick("settings-scroll:presets"); err != nil {
+		t.Fatal(err)
+	}
+	manager := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	manager.TestRender(nil)
+	const dropdown = "presets-scroll:preset-service"
+	for _, id := range []string{"new", dropdown} {
+		if err := manager.TestClick(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyUp, gui.KeyEnter} {
+		if err := manager.TestKey(dropdown, key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.TestClick("presets-scroll:add-service"); err != nil {
+		t.Fatal(err)
+	}
+	manager.TestRender(nil)
+	if !slices.ContainsFunc(manager.Renderers(), func(cmd gui.RenderCmd) bool { return cmd.Text == "1. Read Menu" }) {
+		t.Fatal("enabled readout was not selectable in the preset editor")
+	}
 	if err := settings.TestClick("settings-scroll:" + readKey); err != nil {
 		t.Fatal(err)
 	}
@@ -231,12 +258,25 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 		if config.Get[bool](req.values, readKey) || config.Get[string](req.values, "gsx_menu_reader_keyword") == "draft keyword" {
 			t.Fatal("immediate save did not isolate the readout switch")
 		}
+		presets := config.Get[[]config.Preset](req.values, "presets")
+		if len(presets) != 2 || !slices.Equal(presets[0].Services, []string{"GPU", "JETWAY"}) || len(presets[1].Services) != 0 {
+			t.Fatalf("disabling readout did not prune saved sequences: %+v", presets)
+		}
 		s.finishSave(req, nil)
 	default:
 		t.Fatal("readout switch did not queue a save")
 	}
 	if config.Get[bool](s.cfg, readKey) {
 		t.Fatal("readout stayed enabled after saving")
+	}
+	if err := manager.TestClick(dropdown); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.TestKey(dropdown, gui.KeyEnd, 0); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(manager.Renderers(), func(cmd gui.RenderCmd) bool { return strings.Contains(cmd.Text, config.ReadMenuAction) }) {
+		t.Fatal("disabled readout is still in the preset editor")
 	}
 }
 
@@ -581,6 +621,33 @@ func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	log := strings.Join(s.lines, "\n")
 	if !strings.Contains(log, "Kokoro menu-reader model is unavailable") || strings.Contains(log, "Taxi speed") {
 		t.Fatalf("readout did not reach Kokoro: %s", log)
+	}
+}
+
+func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
+	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put(config.MenuReadoutSetting, true)
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true,
+		Services: []string{"REFUELING", config.ReadMenuAction, "CATERING"}}})
+	page := gsx.ParseMenu("Ramp\nRefuel\nCatering")
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("prepare ramp")
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !slices.Equal(transport.selected, []int{0, 1}) {
+		t.Fatalf("GSX choices = %v", transport.selected)
+	}
+	queue := s.audioQueue
+	if len(queue) != 3 || queue[0].cue != "refueling" || queue[1].readout != "One: Refuel. Two: Catering." || queue[2].cue != "catering" {
+		t.Fatalf("preset audio queued out of order: %+v", queue)
 	}
 }
 

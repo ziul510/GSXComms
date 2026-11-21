@@ -385,6 +385,7 @@ func (s *state) mergeSettings(base, draft config.Values) config.Values {
 }
 
 func (s *state) save(next config.Values, then func(error)) {
+	next.RemoveDisabledReadMenu()
 	req := &saveRequest{next, then}
 	select {
 	// Only advertise a pending draft once the writer has accepted it
@@ -622,7 +623,7 @@ func (s *state) openSettings() {
 		})
 		section("Behavior", "The behavior of the app")
 		toggle("enable_menu_matching", "Broader Mode")
-		const readKey = "read_gsx_menus_aloud_after_keyword"
+		const readKey = config.MenuReadoutSetting
 		readerEnabled := config.Get[bool](s.cfg, readKey)
 		readerDownloading := setup.running == "kokoro"
 		body = append(body, labelRow(toggleControl(readKey, "Read GSX menus aloud after a keyword", settingsTextSize, readerEnabled || readerDownloading, func(ctx gui.EventCtx) {
