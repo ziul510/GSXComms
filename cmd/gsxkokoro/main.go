@@ -215,7 +215,7 @@ func (s *runtimeState) load(paths map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// Each style vector is 256 little-endian float32s The first entry is skipped for nonempty input
+	// Each style vector is 256 floats and index zero is reserved for empty input
 	if len(raw) < 2048 || len(raw)%1024 != 0 {
 		return errors.New("Kokoro voice has an invalid size")
 	}
@@ -298,13 +298,13 @@ func (s *runtimeState) say(text string) ([]byte, error) {
 			for j, r := range first {
 				tokens[j+1] = s.vocab[string(r)]
 			}
-			// The voice file has a 256-float style vector for each unpadded token count
+			// Pick the style vector for the unpadded token count
 			styleIndex := len(first) * 256
 			audio, err := s.run(tokens, s.voice[styleIndex:styleIndex+256])
 			if err != nil {
 				return nil, err
 			}
-			// Convert floating-point samples to the signed PCM16 used by playback
+			// Convert samples to signed PCM16 for playback
 			for _, sample := range audio {
 				normalized := max(-32768, min(32767, float64(sample)*32768))
 				output = binary.LittleEndian.AppendUint16(output, uint16(int16(normalized)))

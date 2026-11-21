@@ -1,7 +1,7 @@
 # Copyright 2026 ziul510
 # SPDX-License-Identifier: Apache-2.0
 
-param([string]$Output = 'THIRD_PARTY_NOTICES')
+param([string]$Output = 'THIRD_PARTY_NOTICES', [string]$ModuleReport)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $inventory = Get-Content -LiteralPath 'docs/license-inventory.json' -Raw | ConvertFrom-Json -AsHashtable
@@ -24,15 +24,18 @@ $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 # Include dependencies linked by the native speech workers in the inventory
 $env:CGO_ENABLED = '1'
-# Inventory packages reachable from the command binaries instead of every module in go.sum
+# Inventory only modules linked by the command binaries
 $modules = go list -deps -f '{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}' ./cmd/... |
     Where-Object { $_ -and $_ -notmatch '^github.com/ziul510/GSXCommsGo\|' } | Sort-Object -Unique
 if ($LASTEXITCODE -ne 0) { throw 'Failed to inventory linked modules' }
+$report = [Collections.Generic.List[string]]::new()
+$report.Add('Module,Version,License')
 foreach ($line in $modules) {
     $path,$version,$dir = $line -split '\|'
     $approved = $inventory.modules[$path]
     # A version change requires a fresh license review before packaging
     if (!$approved -or $approved.version -ne $version) { throw "Unreviewed linked module $path $version" }
+    $report.Add("$path,$version,$($approved.license)")
     Add-Notice "========== $path $version ($($approved.license)) =========="
     # Include each reviewed license from the exact version selected by Go
     foreach ($license in $approved.files) {
@@ -67,3 +70,6 @@ foreach ($crate in ($rust.packages | Where-Object source | Sort-Object name)) {
     }
 }
 Set-Content -LiteralPath $Output -Value $notice.ToString() -Encoding utf8
+if ($ModuleReport) {
+    Set-Content -LiteralPath $ModuleReport -Value $report -Encoding utf8
+}

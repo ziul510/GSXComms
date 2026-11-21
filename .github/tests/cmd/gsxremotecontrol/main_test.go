@@ -110,7 +110,7 @@ func TestIPCReconnectsAfterEstablishedTransportFails(t *testing.T) {
 		defer close(done)
 		defer in.Close()
 		ipc(ctx, session, in, &out, func(_ context.Context, s *gsx.Session) {
-			// Swap in a known-good fake only after IPC clears the failed transport
+			// Swap in a working fake only after IPC clears the failed transport
 			if !s.Connected() {
 				s.Sim = ipcTestTransport{}
 				close(reconnected)

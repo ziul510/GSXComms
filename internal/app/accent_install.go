@@ -17,28 +17,22 @@ import (
 
 var accentClipPath = regexp.MustCompile(`^[a-z]+/[a-z]+/(female|male)(connect|disconnect)?11\.ai\.mp3$`)
 
-func accentPackInstalled(dir, name string) bool {
-	info, err := os.Stat(filepath.Join(dir, name))
-	return err == nil && info.IsDir()
-}
-
-// Legacy archives can be unpacked by pack or flattened under Extracted.
-func legacyAccentPack(root, name string, accents []string) bool {
-	for _, relative := range []string{name, "Extracted", ""} {
-		complete := true
-		for _, accent := range accents {
-			for _, voice := range []string{"female", "male"} {
-				info, err := os.Stat(filepath.Join(root, relative, strings.ToLower(accent), "goahead", voice+"11.ai.mp3"))
-				if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-					complete = false
-					break
-				}
-			}
-			if !complete {
-				break
+func completeAccentPack(dir string, accents []string) bool {
+	for _, accent := range accents {
+		for _, voice := range []string{"female", "male"} {
+			info, err := os.Stat(filepath.Join(dir, strings.ToLower(accent), "goahead", voice+"11.ai.mp3"))
+			if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+				return false
 			}
 		}
-		if complete {
+	}
+	return true
+}
+
+// Legacy archives can be unpacked by pack or flattened under Extracted
+func legacyAccentPack(root, name string, accents []string) bool {
+	for _, relative := range []string{name, "Extracted", ""} {
+		if completeAccentPack(filepath.Join(root, relative), accents) {
 			return true
 		}
 	}
@@ -47,8 +41,7 @@ func legacyAccentPack(root, name string, accents []string) bool {
 
 func installAccentPacks(ctx context.Context, archives, recordings string, enabled []string) error {
 	for _, pack := range packs {
-		if !slices.Contains(enabled, pack.name) || accentPackInstalled(recordings, pack.name) ||
-			legacyAccentPack(recordings, pack.name, pack.accents) {
+		if !slices.Contains(enabled, pack.name) || legacyAccentPack(recordings, pack.name, pack.accents) {
 			continue
 		}
 		if err := installAccentPack(ctx, archives, recordings, pack.name, pack.accents); err != nil {
@@ -121,9 +114,14 @@ func installAccentPack(ctx context.Context, archives, recordings, name string, a
 		return err
 	}
 	// Only a complete pack becomes visible to playback and concurrent app instances
-	err = os.Rename(stage, filepath.Join(recordings, name))
-	if err != nil && accentPackInstalled(recordings, name) {
-		return nil
+	target := filepath.Join(recordings, name)
+	if err = os.Rename(stage, target); err != nil {
+		if completeAccentPack(target, accents) {
+			return nil
+		}
+		if _, statErr := os.Stat(target); statErr == nil {
+			return fmt.Errorf("move the incomplete recordings path %q aside before retrying: %w", target, err)
+		}
 	}
 	return err
 }

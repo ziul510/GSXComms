@@ -45,7 +45,35 @@ type Binding struct {
 
 var Services = []string{"GPU", "JETWAY", "STAIRS", "CATERING", "REFUELING", "BOARDING", "DEBOARDING", "PUSHBACK", "DEICE", "LAVATORY", "WATER", "CLEANING"}
 
-// InitializeSettings creates the portable file from defaults before Accent Setup opens.
+// Keep custom steps in the same ordered list as built in service IDs
+const CustomServicePrefix = "Custom:"
+
+const ReadMenuAction = "Read Menu"
+const MenuReadoutSetting = "read_gsx_menus_aloud_after_keyword"
+
+func (p *Preset) RemoveReadMenu() {
+	p.Services = slices.DeleteFunc(p.Services, func(service string) bool { return service == ReadMenuAction })
+}
+
+// Remove readout steps without dropping presets or changing the remaining order
+func (v Values) RemoveDisabledReadMenu() {
+	if Get[bool](v, MenuReadoutSetting) {
+		return
+	}
+	presets := Get[[]Preset](v, "presets")
+	changed := false
+	for i := range presets {
+		if slices.Contains(presets[i].Services, ReadMenuAction) {
+			presets[i].RemoveReadMenu()
+			changed = true
+		}
+	}
+	if changed {
+		v.Put("presets", presets)
+	}
+}
+
+// InitializeSettings creates the portable file from defaults before Accent Setup opens
 func InitializeSettings(dir string) error {
 	path := filepath.Join(dir, SettingsFile)
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -55,7 +83,7 @@ func InitializeSettings(dir string) error {
 	if err != nil {
 		return err
 	}
-	// Publish only if another instance has not already created the file.
+	// Publish only if another instance has not already created the file
 	err = writeAtomic(path, data, moveNew)
 	if errors.Is(err, os.ErrExist) {
 		return nil
@@ -75,7 +103,7 @@ var defaults = func() Values {
 	return values
 }()
 
-// Give each window its own copy of the defaults.
+// Give each window its own copy of the defaults
 func Defaults() Values { return defaults.Copy() }
 
 // Clone the raw JSON bytes too so a background job gets an independent snapshot
@@ -158,17 +186,22 @@ func decode(data []byte) (Values, error) {
 	if err := json.Unmarshal(data, &saved); err != nil || saved == nil {
 		return nil, errors.New("expected a JSON settings object")
 	}
-	// Older settings can omit new keys and still carry user-defined values
+	// Older settings can omit new keys and still carry custom values
 	values := Defaults()
 	for name, raw := range saved {
 		if name != legacySecret {
 			values[name] = raw
 		}
 	}
+	// Keep Broader Mode enabled if either previous menu option was enabled
+	if Get[bool](saved, "enable_gsx_menu_text_correction") {
+		values.Put("enable_menu_matching", true)
+	}
 	// Retired options and download flags have no meaning in the current app
 	for _, name := range []string{
 		"use_gsx_choice", "menu_delay", "key_delay", "auto_choice_delay", "menu_hotkey", "require_sim_ptt",
 		"first_launch", "model_downloaded_parakeet", "model_downloaded_orukeet", "model_downloaded_kokoro-82m-am-adam", "legacy_accent_dir",
+		"enable_gsx_menu_text_correction",
 	} {
 		delete(values, name)
 	}
@@ -177,9 +210,10 @@ func decode(data []byte) (Values, error) {
 		values.Put("speech_provider", "parakeet")
 	}
 	values.Put("presets", migratePresets(values["presets"]))
+	values.RemoveDisabledReadMenu()
 	if binding := Get[Binding](values, "ptt_bind"); binding.Type == "joy" {
 		binding.Type = "joystick"
-		// SDL indexes identify a device only within the legacy process.
+		// SDL indexes identify a device only within the legacy process
 		binding.JoyID = nil
 		values.Put("ptt_bind", binding)
 	}
@@ -299,9 +333,23 @@ func CleanPreset(p Preset) Preset {
 	p.Codeword = strings.ToLower(strings.Join(strings.Fields(p.Codeword), " "))
 	services := make([]string, 0, len(p.Services))
 	for _, service := range p.Services {
-		service = strings.ToUpper(strings.TrimSpace(service))
-		// Ignore unknown services and preserve the first occurrence of duplicates
-		if slices.Contains(Services, service) && !slices.Contains(services, service) {
+		service = strings.TrimSpace(service)
+		if text, custom := strings.CutPrefix(service, CustomServicePrefix); custom {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			service = CustomServicePrefix + " " + text
+		} else if strings.EqualFold(service, ReadMenuAction) {
+			service = ReadMenuAction
+		} else {
+			service = strings.ToUpper(service)
+			if !slices.Contains(Services, service) {
+				continue
+			}
+		}
+		// Keep the first spelling when labels match
+		if !slices.ContainsFunc(services, func(other string) bool { return strings.EqualFold(other, service) }) {
 			services = append(services, service)
 		}
 	}
@@ -347,7 +395,7 @@ func migratePresets(raw json.RawMessage) []Preset {
 		}
 		p = CleanPreset(p)
 		name := strings.ToLower(p.Name)
-		// Keep the first valid entry for each name and trigger in saved presets.
+		// Keep the first valid entry for each name and trigger in saved presets
 		if name == "" || p.Codeword == "" || names[name] || codewords[p.Codeword] {
 			continue
 		}

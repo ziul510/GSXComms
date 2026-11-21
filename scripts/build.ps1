@@ -43,7 +43,7 @@ go build -trimpath -o (Join-Path $worker 'gsxspeech.exe') ./cmd/gsxspeech
 if ($LASTEXITCODE -ne 0) { throw 'Speech worker build failed' }
 # Each worker loads ONNX Runtime from its own executable directory
 Copy-Item -LiteralPath (Join-Path $worker 'onnxruntime.dll') -Destination $tts -Force
-# Worker launch always looks for gsxspeech.exe under the selected provider directory
+# Both providers use the same worker executable name
 go build -trimpath -o (Join-Path $tts 'gsxspeech.exe') ./cmd/gsxkokoro
 if ($LASTEXITCODE -ne 0) { throw 'Kokoro worker build failed' }
 # Native model libraries run in the workers, so the main executable can build without CGO
@@ -56,7 +56,9 @@ go build -trimpath -o 'build/gsxremotecontrol.exe' ./cmd/gsxremotecontrol
 if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
 go build -trimpath -o 'build/gsxmute.exe' ./cmd/gsxmute
 if ($LASTEXITCODE -ne 0) { throw 'GSX mute watchdog build failed' }
-# Link the C runtime into the helper so the ZIP needs no separate redistributable.
+go build -trimpath -o 'build/gsxdebug.exe' ./cmd/gsxdebug
+if ($LASTEXITCODE -ne 0) { throw 'Debug terminal build failed' }
+# Link the C runtime into the helper so the ZIP needs no separate redistributable
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
 cargo +1.98.0 build --locked --release --manifest-path cmd/gsxsimconnect/Cargo.toml --target x86_64-pc-windows-msvc --target-dir build/rust
 if ($LASTEXITCODE -ne 0) { throw 'SimConnect helper build failed' }

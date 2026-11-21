@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,11 +19,39 @@ import (
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
+	"github.com/ziul510/GSXCommsGo/internal/models"
 )
+
+func TestMainMinimizeToTray(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tray       *gui.SystemTrayHandle
+		restore    bool
+		wantHidden bool
+	}{
+		{name: "tray enabled", tray: &gui.SystemTrayHandle{}, wantHidden: true},
+		{name: "tray unavailable"},
+		{name: "restored before hide", tray: &gui.SystemTrayHandle{}, restore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dialogClosed := false
+			s := &state{tray: tc.tray, dialogs: map[uint64]func(){1: func() { dialogClosed = true }}}
+			w := gui.NewTestWindow(t, gui.WindowCfg{OnEvent: s.mainWindowEvent})
+			gui.DispatchWindowOccluded(w, true)
+			if tc.restore {
+				gui.DispatchWindowOccluded(w, false)
+			}
+			w.FrameFn()
+			if hidden := !w.IsVisible(); hidden != tc.wantHidden || dialogClosed != tc.wantHidden {
+				t.Fatalf("window hidden=%t, dialog closed=%t, want both %t", hidden, dialogClosed, tc.wantHidden)
+			}
+		})
+	}
+}
 
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	s := &state{cfg: config.Defaults(), ptt: "Idle"}
-	// Include the optional command field in the minimum-width layout check
+	// Include the optional command field in the minimum width layout check
 	s.cfg.Put("enable_keyboard_input", true)
 	w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
 	layout := w.TestRender(mainView)
@@ -38,6 +67,59 @@ func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	}
 	if found := w.TestFindings(gui.DebugDuplicates | gui.DebugMissingIDs); len(found) > 0 {
 		t.Fatalf("widget IDs: %v", found)
+	}
+}
+
+func TestMainShowsPTTAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		speed                               float64
+		high, offline, simulation, override bool
+		speechLoading, unbound, noAltitude  bool
+		activity, want                      string
+		color                               gui.Color
+	}{
+		{name: "at speed limit", speed: 50, want: "PTT Idle", color: ink},
+		{name: "above speed limit", speed: 51, want: "Unavailable", color: red},
+		{name: "above altitude limit", high: true, want: "Unavailable", color: red},
+		{name: "speed override", speed: 51, override: true, want: "PTT Idle", color: ink},
+		{name: "speed override at altitude", high: true, override: true, want: "Unavailable", color: red},
+		{name: "speed override before altitude arrives", noAltitude: true, override: true, want: "Unavailable", color: red},
+		{name: "offline", offline: true, want: "Unavailable", color: red},
+		{name: "simulation", offline: true, high: true, simulation: true, want: "PTT Idle", color: ink},
+		{name: "speech loading", speechLoading: true, want: "Unavailable", color: red},
+		{name: "no binding", unbound: true, want: "Unavailable", color: red},
+		{name: "recording", high: true, activity: "LISTENING", want: "PTT LISTENING", color: accent},
+		{name: "processing", high: true, activity: "PROCESSING", want: "PTT PROCESSING", color: orange},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &state{cfg: config.Defaults(), connected: !tc.offline, speechReady: !tc.speechLoading, ptt: tc.activity}
+			s.cfg.Put("simulation_mode", tc.simulation)
+			s.cfg.Put("ignore_speed_restriction", tc.override)
+			if tc.unbound {
+				s.cfg.Put("ptt_bind", config.Binding{})
+			}
+			if tc.speechLoading {
+				s.speechStatus = "Loading speech"
+			}
+			s.groundSpeed.Store(&speedReading{tc.speed, time.Now()})
+			if !tc.noAltitude {
+				altitude := 10000.0
+				if tc.high {
+					altitude++
+				}
+				s.pttAltitude.Store(&altitude)
+			}
+			w := gui.NewTestWindow(t, gui.WindowCfg{State: s, Width: 380, Height: 560})
+			w.TestRender(mainView)
+			// Check the visible status text and color together
+			for _, cmd := range w.Renderers() {
+				if cmd.Kind == gui.RenderText && cmd.Text == tc.want && cmd.Color == tc.color {
+					return
+				}
+			}
+			t.Fatalf("missing rendered PTT status %q with color %v", tc.want, tc.color)
+		})
 	}
 }
 
@@ -70,18 +152,111 @@ func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	}
 }
 
+func TestForceAccentPersistsAfterCrewCues(t *testing.T) {
+	const forceKey = "settings-scroll:force_accent"
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	commandPrefs := s.cfg.Copy()
+	s.cfg.Put("installed_packs", []string{packs[0].name})
+	open := func() *gui.Window {
+		s.openSettings()
+		cfg := <-s.host.PendingOpen()
+		cfg.Height = 3200
+		w := gui.NewTestWindow(t, cfg)
+		w.TestRender(nil)
+		return w
+	}
+	w := open()
+	if err := w.TestClick(forceKey); err != nil {
+		t.Fatal(err)
+	}
+	// Scottish is the last accent in the enabled pack's sorted list
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyEnter} {
+		if err := w.TestKey(forceKey, key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.TestClick("save"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-s.saves:
+		err := config.Save(s.dir, req.values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.finishSave(req, nil)
+	default:
+		t.Fatal("Settings did not queue a save")
+	}
+
+	s.cue(commandPrefs, "greeting", "", false)
+	s.cue(commandPrefs, "boarding", "", false)
+	for _, cue := range s.audioQueue {
+		candidate := crewAccentCandidates(cue.prefs, nil, nil)[0]
+		if _, name := installedCrewAccent(config.Get[[]string](cue.prefs, "installed_packs"), candidate); name != "Scottish" {
+			t.Errorf("%s cue preferred %q, want Scottish", cue.cue, name)
+		}
+	}
+	if len(s.audioQueue) != 2 || len(s.saves) != 0 {
+		t.Fatal("queuing crew cues did not preserve settings")
+	}
+	saved, err := config.Load(s.dir)
+	if err != nil || config.Get[string](saved, "force_accent") != "Scottish" {
+		t.Fatalf("saved force accent = %q, error = %v", config.Get[string](saved, "force_accent"), err)
+	}
+	for _, cmd := range open().Renderers() {
+		if cmd.Kind == gui.RenderText && cmd.Text == "Scottish" {
+			return
+		}
+	}
+	t.Fatal("reopened Settings did not show Scottish")
+}
+
 func TestMenuReaderDisablesImmediately(t *testing.T) {
-	const readKey = "read_gsx_menus_aloud_after_keyword"
+	const readKey = config.MenuReadoutSetting
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 2)}
 	s.cfg.Put(readKey, true)
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Arrival", Codeword: "arrival", Enabled: true, Services: []string{"GPU", config.ReadMenuAction, "JETWAY"}},
+		{Name: "Readout", Codeword: "readout", Enabled: true, Services: []string{config.ReadMenuAction}},
+	})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.openSettings()
 	cfg := <-s.host.PendingOpen()
 	cfg.Height = 3200
 	settings := gui.NewTestWindow(t, cfg)
 	settings.TestRender(nil)
+	for _, cmd := range settings.Renderers() {
+		if cmd.Kind == gui.RenderText && cmd.Text == "Kokoro menu reader" {
+			t.Fatal("Kokoro still has a separate settings card")
+		}
+	}
 	if err := settings.TestType("settings-scroll:menu-reader-keyword", "draft keyword"); err != nil {
 		t.Fatal(err)
+	}
+	if err := settings.TestClick("settings-scroll:presets"); err != nil {
+		t.Fatal(err)
+	}
+	manager := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	manager.TestRender(nil)
+	const dropdown = "presets-scroll:preset-service"
+	for _, id := range []string{"new", dropdown} {
+		if err := manager.TestClick(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyUp, gui.KeyEnter} {
+		if err := manager.TestKey(dropdown, key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.TestClick("presets-scroll:add-service"); err != nil {
+		t.Fatal(err)
+	}
+	manager.TestRender(nil)
+	if !slices.ContainsFunc(manager.Renderers(), func(cmd gui.RenderCmd) bool { return cmd.Text == "1. Read Menu" }) {
+		t.Fatal("enabled readout was not selectable in the preset editor")
 	}
 	if err := settings.TestClick("settings-scroll:" + readKey); err != nil {
 		t.Fatal(err)
@@ -91,12 +266,28 @@ func TestMenuReaderDisablesImmediately(t *testing.T) {
 		if config.Get[bool](req.values, readKey) || config.Get[string](req.values, "gsx_menu_reader_keyword") == "draft keyword" {
 			t.Fatal("immediate save did not isolate the readout switch")
 		}
+		presets := config.Get[[]config.Preset](req.values, "presets")
+		if len(presets) != 2 || !slices.Equal(presets[0].Services, []string{"GPU", "JETWAY"}) || len(presets[1].Services) != 0 {
+			t.Fatalf("disabling readout did not prune saved sequences: %+v", presets)
+		}
 		s.finishSave(req, nil)
 	default:
 		t.Fatal("readout switch did not queue a save")
 	}
 	if config.Get[bool](s.cfg, readKey) {
 		t.Fatal("readout stayed enabled after saving")
+	}
+	if err := manager.TestClick("presets-scroll:remove-0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.TestClick(dropdown); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.TestKey(dropdown, gui.KeyEnd, 0); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(manager.Renderers(), func(cmd gui.RenderCmd) bool { return strings.Contains(cmd.Text, config.ReadMenuAction) }) {
+		t.Fatal("disabled readout is still in the preset editor")
 	}
 }
 
@@ -146,6 +337,27 @@ func TestSettingsSlidersUseTheAvailableWidth(t *testing.T) {
 	}
 }
 
+func TestSettingsTogglesAlignWithAndWithoutTooltips(t *testing.T) {
+	s := &state{cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context()}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.openSettings()
+	settings := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	layout := settings.TestRender(nil)
+	left, previousY := float32(0), float32(0)
+	for i, key := range []string{"debug_mode", "simulation_mode", "ignore_speed_restriction"} {
+		node, ok := layout.FindByID("settings-scroll:" + key)
+		if !ok {
+			t.Fatalf("missing switch %s", key)
+		}
+		if i == 0 {
+			left = node.Shape.X
+		} else if node.Shape.X != left || node.Shape.Y-previousY != 40 {
+			t.Fatalf("switch %s is misaligned at (%v, %v)", key, node.Shape.X, node.Shape.Y)
+		}
+		previousY = node.Shape.Y
+	}
+}
+
 func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
 	parent := gui.NewTestWindow(t, gui.WindowCfg{})
@@ -183,7 +395,7 @@ func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	click(first, "presets-scroll:create-preset")
 	arrival := add(first, "Arrival")
 	click(first, "done")
-	// Reopen before the editor receives its first write completion.
+	// Reopen before the editor receives its first write completion
 	second := open()
 	click(second, "new")
 	departure := add(second, "Departure")
@@ -191,6 +403,58 @@ func TestPresetEditorReopensWithPendingChanges(t *testing.T) {
 	s.finishSave(departure, nil)
 	presets := config.Get[[]config.Preset](s.cfg, "presets")
 	if len(presets) != 2 || presets[0].Codeword != "arrival" || presets[1].Codeword != "departure" || !slices.Equal(presets[0].Services, []string{"GPU"}) {
+		t.Fatalf("unexpected presets: %+v", presets)
+	}
+}
+
+func TestPresetEditorAddsCustomMenuText(t *testing.T) {
+	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	parent := gui.NewTestWindow(t, gui.WindowCfg{})
+	s.openPresets(parent, func() {})
+	window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	window.TestRender(nil)
+
+	click := func(id string) {
+		t.Helper()
+		if err := window.TestClick("presets-scroll:" + id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	typeText := func(id, text string) {
+		t.Helper()
+		if err := window.TestType("presets-scroll:"+id, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click("create-preset")
+	typeText("preset-name", "Turnaround")
+	typeText("preset-trigger", "turnaround")
+	click("add-service")
+
+	const field = "presets-scroll:preset-custom-text"
+	if _, shown := window.TestRender(nil).FindByID(field); shown {
+		t.Fatal("custom field shown for a built-in service")
+	}
+	click("preset-service")
+	for _, key := range []gui.KeyCode{gui.KeyEnd, gui.KeyEnter} {
+		if err := window.TestKey("presets-scroll:preset-service", key, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click("add-service")
+	typeText("preset-custom-text", "  Cabin Check  ")
+	click("add-service")
+	typeText("preset-custom-text", "cabin check")
+	click("add-service")
+	click("save-preset")
+	select {
+	case request := <-s.saves:
+		s.finishSave(request, nil)
+	default:
+		t.Fatal("saving the preset did not queue a disk write")
+	}
+	presets := config.Get[[]config.Preset](s.cfg, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check"}) {
 		t.Fatalf("unexpected presets: %+v", presets)
 	}
 }
@@ -213,9 +477,7 @@ func TestTransmissionSpeedGate(t *testing.T) {
 		if test.known {
 			s.groundSpeed.Store(&speedReading{test.speed, time.Now()})
 		}
-		s.cfg.Put("ignore_speed_restriction", test.override)
-		s.cfg.Put("simulation_mode", test.sim)
-		if got := s.transmissionBlock() != ""; got != test.block {
+		if got := s.speedBlock(test.sim, test.override) != ""; got != test.block {
 			t.Errorf("speed gate for %+v blocked=%v", test, got)
 		}
 	}
@@ -247,7 +509,7 @@ type menuChoices struct {
 	open        bool
 }
 
-// Zero lets the session exercise its normal closed-menu sequence in tests
+// Zero lets the session exercise its normal closed menu sequence in tests
 func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
@@ -274,7 +536,6 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put("auto_select_operator", false)
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
-	s.cfg.Put("enable_gsx_menu_text_correction", true)
 	s.menu = gsx.ParseMenu("Ramp\nJetway")
 	current := gsx.ParseMenu("Ramp\nRefuel\nJetway")
 	tr := &menuChoices{}
@@ -299,7 +560,6 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		t.Fatal("selected a different item after the menu changed")
 	}
 
-	s.cfg.Put("enable_menu_matching", false)
 	s.main.FrameFn()
 	if !s.menu.Same(current) {
 		t.Fatal("stale selection did not refresh the displayed page")
@@ -308,7 +568,7 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	if err := session.Release(s.ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Text correction must fetch the current page even when broader matching is disabled
+	// Only Broader Mode should look up the current page for an unrecognized command
 	current = gsx.Menu{}
 	session.ReadMenu = func() gsx.Menu {
 		if tr.open {
@@ -316,7 +576,14 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 		}
 		return current
 	}
-	s.submit("Swissport")
+	s.cfg.Put("enable_menu_matching", false)
+	s.submit("swisport")
+	(<-s.jobs)(s.ctx, session)
+	if len(tr.selected) != 0 || tr.open {
+		t.Fatal("an unrecognized command opened or selected from the menu with Broader Mode off")
+	}
+	s.cfg.Put("enable_menu_matching", true)
+	s.submit("swisport")
 	readMenu := session.ReadMenu
 	session.ReadMenu = func() gsx.Menu {
 		if tr.open {
@@ -330,24 +597,48 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	}
 	s.groundSpeed.Store(&speedReading{0, time.Now()})
 	session.ReadMenu = readMenu
-	s.submit("Swissport")
+	s.submit("swisport")
 	(<-s.jobs)(s.ctx, session)
-	if !slices.Equal(tr.selected, []int{0}) {
+	s.main.FrameFn()
+	if !slices.Equal(tr.selected, []int{0}) || !strings.Contains(strings.Join(s.lines, "\n"), "swisport → Swissport") {
 		t.Fatalf("command did not use the updated menu: %v", tr.selected)
 	}
 	tr.selected = nil
-	current = gsx.ParseMenu("Ramp\nRefuel\nJetway")
+	current = gsx.ParseMenu("Ramp\nRefuel\nJetway\nRequest cabin check")
 	session.ReadMenu = func() gsx.Menu { return current }
-	s.cfg.Put("enable_gsx_menu_text_correction", false)
-	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "turnaround", Enabled: true, Services: []string{"JETWAY", "REFUELING", "JETWAY"}}})
+	// A preset can share its codeword with a visible menu option
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{"JETWAY", "Custom: Cabin Check", "REFUELING", "JETWAY"}}})
 	outer, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 	// Cancel the outer job on the first choice to check that later services get their own deadline
 	tr.afterChoice = cancel
-	s.submit("turnaround")
+	s.submit("jetway")
 	(<-s.jobs)(outer, session)
-	if !slices.Equal(tr.selected, []int{1, 0}) {
+	if !slices.Equal(tr.selected, []int{1, 2, 0}) {
 		t.Fatalf("preset choices=%v", tr.selected)
+	}
+}
+
+func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Fuel", Codeword: "ground power", Enabled: true, Services: []string{"REFUELING"}},
+		{Name: "Ramp", Codeword: "ground powder", Enabled: true, Services: []string{"JETWAY"}},
+	})
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGround Power\nJetway\nRefuel") }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+	s.submitCommand("ground powder", true)
+	(<-s.jobs)(s.ctx, session)
+	if !slices.Equal(transport.selected, []int{1}) {
+		t.Fatalf("GSX choices = %v, want [1] for Jetway", transport.selected)
 	}
 }
 
@@ -367,6 +658,53 @@ func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	}
 }
 
+func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
+	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put(config.MenuReadoutSetting, true)
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true,
+		Services: []string{"REFUELING", config.ReadMenuAction, "CATERING"}}})
+	model, _ := models.Lookup("kokoro")
+	base := model.Directory(s.dir)
+	for _, entry := range model.Files {
+		path := filepath.Join(base, entry.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(path, entry.Bytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, ".verified"), []byte(model.Revision), 0600); err != nil {
+		t.Fatal(err)
+	}
+	page := gsx.ParseMenu("Ramp\nRefuel\nCatering")
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("prepare ramp")
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !slices.Equal(transport.selected, []int{0, 1}) {
+		t.Fatalf("GSX choices = %v", transport.selected)
+	}
+	queue := s.audioQueue
+	if len(queue) != 3 || queue[0].cue != "refueling" || queue[1].readout != "One: Refuel. Two: Catering." || queue[2].cue != "catering" {
+		t.Fatalf("preset audio queued out of order: %+v", queue)
+	}
+	if !strings.Contains(strings.Join(s.lines, "\n"), "2/2 services ok, 1/1 menu readouts queued") {
+		t.Fatalf("preset did not report queued readout separately: %v", s.lines)
+	}
+}
+
 func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "words.json"), []byte(`{"CUSTOM":{"keywords":["one"],"bias_variants":["won"]}}`), 0600); err != nil {
@@ -381,10 +719,30 @@ func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	session := gsx.New(transport, t.TempDir())
 	session.ReadMenu = func() gsx.Menu { return page }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	s.submit("won")
+	s.cfg.Put("enable_menu_matching", false)
+	for _, input := range []string{"won", "option one"} {
+		transport.selected = nil
+		s.submit(input)
+		(<-s.jobs)(s.ctx, session)
+		if !slices.Equal(transport.selected, []int{0}) {
+			t.Fatalf("%q selected %v", input, transport.selected)
+		}
+	}
+}
+
+func TestExplicitNumberBypassesMenuCorrection(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.groundSpeed.Store(&speedReading{0, time.Now()})
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &menuChoices{}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGate 2\nAdditional Services") }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("option 2")
 	(<-s.jobs)(s.ctx, session)
-	if !slices.Equal(transport.selected, []int{0}) {
-		t.Fatalf("normalized number selected %v", transport.selected)
+	if !slices.Equal(transport.selected, []int{1}) {
+		t.Fatalf("explicit number selected %v", transport.selected)
 	}
 }
 
@@ -484,7 +842,9 @@ func (f *telemetrySim) Get(ctx context.Context, key string) (float64, error) {
 
 func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	s := &state{ctx: ctx, cfg: config.Defaults(), done: make(chan struct{}), jobs: make(chan func(context.Context, *gsx.Session), 2)}
+	s := &state{ctx: ctx, cfg: config.Defaults(), done: make(chan struct{}), jobs: make(chan func(context.Context, *gsx.Session), 2),
+		debug: make(chan debugEvent, 16)}
+	s.debugEnabled.Store(true)
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.overlay, s.connected = true, true
 	s.menu = gsx.ParseMenu("Ramp\nJetway")
@@ -524,6 +884,15 @@ func TestTelemetryRunsWhileCommandLaneWaits(t *testing.T) {
 			if s.overlay || len(s.menu.Options) != 0 || len(s.highlights) != 0 || s.groundSpeed.Load() != nil {
 				t.Fatal("disconnect kept stale menu or telemetry")
 			}
+			var output strings.Builder
+			for len(s.debug) > 0 {
+				fmt.Fprintln(&output, (<-s.debug).line)
+			}
+			for _, want := range []string{"Waiting for GSX/Couatl to start", "Ground speed available", "SimConnect disconnected"} {
+				if strings.Count(output.String(), want) != 1 {
+					t.Errorf("expected one %q event, got:\n%s", want, output.String())
+				}
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -536,17 +905,28 @@ func TestDebugDiagnosticsExcludeCredentialsAndTranscripts(t *testing.T) {
 	s := &state{cfg: config.Defaults(), debug: make(chan debugEvent, 16)}
 	s.setLogSecret(strings.ToUpper(key))
 	s.cfg.Put("speech_provider", key)
+	s.cfg.Put("ptt_bind", config.Binding{Type: key})
+	s.cfg.Put("input_device_name", key)
 	s.setDebug(true)
 	s.log("CMD", "transcript "+key)
 	s.log("ERR", "error response "+key)
-	s.traceFailure("GSX", "Simulator stopped")
+	s.traceFailure("SIM", "Handshake failed", fmt.Errorf("%s: %w", key, context.DeadlineExceeded))
+	s.traceFailure("AUDIO", "Playback failed", errors.New(key))
 	if strings.Contains(strings.Join(s.lines, "\n"), key) {
 		t.Fatal("conversation exposed the saved credential")
 	}
+	var output strings.Builder
 	for len(s.debug) > 0 {
 		event := <-s.debug
 		if strings.Contains(event.line, key) || strings.Contains(event.line, "transcript") || strings.Contains(event.line, "error response") {
 			t.Fatal("debug writer received user or credential text")
+		}
+		fmt.Fprintln(&output, event.line)
+	}
+	for _, want := range []string{"INFO  SYS    GSXComms debug session", "Provider=unknown", "Binding=unknown",
+		"WARN  SIM    Handshake failed: timed out", "WARN  AUDIO  Playback failed: see the in-app message for details"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("missing %q in debug output:\n%s", want, output.String())
 		}
 	}
 }
@@ -557,7 +937,7 @@ func TestLegacyHIDNameRequiresRebindingAndNativePathCanMove(t *testing.T) {
 	index := 5
 	s := &state{hidPaths: map[string][]string{"stick": {current}}}
 	binding := config.Binding{Type: "joystick", JoyName: "Stick", JoyButton: &index, Description: "Stick button 6"}
-	if description := s.bindingDescription(binding); !strings.Contains(description, "Unverified") || s.boundHIDPath(binding) != "" {
+	if description, bound := s.bindingDescription(binding); bound || !strings.Contains(description, "Unverified") || s.boundHIDPath(binding) != "" {
 		t.Fatalf("legacy name activated a binding: %q", description)
 	}
 	binding.JoyID, _ = json.Marshal(original)
@@ -588,5 +968,72 @@ func TestPresetSummaryExpandsIntoExistingEditor(t *testing.T) {
 	}
 	if _, visible := window.TestRender(nil).FindByID("presets-scroll:preset-name"); !visible {
 		t.Fatal("expanded summary did not open the existing editor")
+	}
+	if err := window.TestClick("presets-scroll:down-0"); err != nil {
+		t.Fatal(err)
+	}
+	window.TestRender(nil)
+	var numbered []string
+	for _, cmd := range window.Renderers() {
+		if cmd.Kind == gui.RenderText && (cmd.Text == "1. JETWAY" || cmd.Text == "2. GPU") {
+			numbered = append(numbered, cmd.Text)
+		}
+	}
+	if !slices.Equal(numbered, []string{"1. JETWAY", "2. GPU"}) {
+		t.Fatalf("editor did not renumber reordered services: %v", numbered)
+	}
+}
+
+type presetConfirmPlatform struct {
+	gui.NativePlatform
+	status gui.NativeDialogStatus
+	body   string
+}
+
+func (*presetConfirmPlatform) TitlebarDark(bool)                                {}
+func (*presetConfirmPlatform) SetSystemAppearanceCallback(func(gui.Appearance)) {}
+func (*presetConfirmPlatform) A11yDestroy()                                     {}
+
+func (p *presetConfirmPlatform) ShowConfirmDialog(_, body string, _ gui.NativeAlertLevel) gui.NativeAlertResult {
+	p.body = body
+	return gui.NativeAlertResult{Status: p.status}
+}
+
+func TestPresetCardDeleteRequiresConfirmation(t *testing.T) {
+	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Arrival", Codeword: "arrival", Services: []string{"GPU"}},
+		{Name: "Departure", Codeword: "departure", Services: []string{"JETWAY"}},
+	})
+	parent := gui.NewTestWindow(t, gui.WindowCfg{})
+	s.openPresets(parent, func() {})
+	window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	platform := &presetConfirmPlatform{status: gui.DialogCancel}
+	window.SetNativePlatform(platform)
+	layout := window.TestRender(nil)
+	const deleteID = "presets-scroll:delete-preset-0"
+	card, hasCard := layout.FindByID("presets-scroll:preset-0")
+	deleteButton, hasDelete := layout.FindByID(deleteID)
+	if !hasCard || !hasDelete || deleteButton.Shape.X < card.Shape.X+card.Shape.Width {
+		t.Fatal("Delete button does not sit to the right of the collapsed preset")
+	}
+	if err := window.TestClick(deleteID); err != nil {
+		t.Fatal(err)
+	}
+	if platform.body != "Delete Arrival?" || len(s.saves) != 0 {
+		t.Fatalf("canceling %q queued %d writes", platform.body, len(s.saves))
+	}
+	platform.status = gui.DialogOK
+	if err := window.TestClick(deleteID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case request := <-s.saves:
+		s.finishSave(request, nil)
+	default:
+		t.Fatal("confirming preset deletion did not queue a save")
+	}
+	if presets := config.Get[[]config.Preset](s.cfg, "presets"); len(presets) != 1 || presets[0].Name != "Departure" {
+		t.Fatalf("unexpected presets: %+v", presets)
 	}
 }

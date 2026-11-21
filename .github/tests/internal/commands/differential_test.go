@@ -15,9 +15,46 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
+func TestCorrectLocalTranscript(t *testing.T) {
+	for input, want := range map[string]string{
+		"Cock pitch a ground.":            "cockpit to ground.",
+		"clock pit to ground":             "cockpit to ground",
+		"Clock picture ground.":           "cockpit to ground.",
+		"Cock pit two ground.":            "cockpit to ground.",
+		"Clock pit a ground.":             "cockpit to ground.",
+		"Clock pit to ground, X-ray GPU.": "cockpit to ground, request GPU.",
+		"Please x ray pushback":           "Please request pushback",
+		"Ground, re quest ground powder":  "Ground, request ground power",
+		"Connect the gee pee you":         "Connect the GPU",
+		"Connect the G P U":               "Connect the GPU",
+		"Connect the jet way":             "Connect the jetway",
+		"Connect the jet breach":          "Connect the jet bridge",
+		"Bring the air stainers":          "Bring the air stairs",
+		"Bring the air stares":            "Bring the air stairs",
+		"Request the fuel track":          "Request the fuel truck",
+		"Request the fool truck":          "Request the fuel truck",
+		"Request de-sing":                 "Request deicing",
+		"Start de boarding":               "Start deboarding",
+		"Request laboratory service":      "Request lavatory service",
+		"Request the laboratory truck":    "Request the lavatory truck",
+		"X-ray.":                          "request.",
+		"request x-ray juliett alfa":      "request x-ray juliett alfa",
+		"Gate X-ray four":                 "Gate X-ray four",
+		"clock pit to grounding":          "clock pit to grounding",
+		"x-raymond":                       "x-raymond",
+		"Check the fuel tracking":         "Check the fuel tracking",
+		"Gate D boarding":                 "Gate D boarding",
+		"Check the laboratory results":    "Check the laboratory results",
+	} {
+		if got := CorrectLocalTranscript(input); got != want {
+			t.Errorf("CorrectLocalTranscript(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func readTest(t *testing.T, path string, out any) {
 	t.Helper()
-	// The overlay runs this test from internal/commands, with fixtures kept under .github
+	// Resolve fixtures from the package directory used by the overlay
 	data, err := os.ReadFile("../../.github/tests/testdata/" + path)
 	if err != nil {
 		t.Fatal(err)
@@ -83,16 +120,33 @@ func TestParseRejectsTrailingVocabulary(t *testing.T) {
 
 func TestMatchRequiresWholeNumberTokens(t *testing.T) {
 	options := []string{"Jetway", "Catering"}
-	// Keep multi-digit numbers from matching a single-digit menu slot
+	// Keep option 21 from matching slot 1
 	for text, want := range map[string]int{
 		"option 10":              -1,
 		"number 21":              -1,
+		"option -1":              -1,
 		"please choose option 1": 0,
 		"option 21 option 2":     1,
 	} {
 		if got, _ := Match(text, options); got != want {
 			t.Errorf("%q: matched item %d, want %d", text, got, want)
 		}
+	}
+}
+
+func TestEmptyPresetFallsThroughToService(t *testing.T) {
+	vocab, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefs := config.Defaults()
+	prefs.Put("presets", []config.Preset{{
+		Name: "Ramp", Codeword: "jetway", Enabled: true, Services: []string{config.ReadMenuAction},
+	}})
+	prefs.RemoveDisabledReadMenu()
+	action := vocab.Route("jetway", "jetway", config.Get[[]config.Preset](prefs, "presets"), true)
+	if action.Kind != "service" || len(action.Services) != 1 || action.Services[0] != "JETWAY" {
+		t.Fatalf("route = %+v", action)
 	}
 }
 

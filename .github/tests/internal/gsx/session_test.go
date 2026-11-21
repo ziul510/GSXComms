@@ -78,7 +78,7 @@ func TestScriptedSession(t *testing.T) {
 	s := New(f, "")
 	var clock time.Duration
 	s.Sleep = func(ctx context.Context, d time.Duration) error { clock += d; return ctx.Err() }
-	// Mix the panel's HTML and plain-text formats while walking the service and operator menus
+	// Mix the panel's HTML and plain text formats while walking the service and operator menus
 	menus := []Menu{
 		ParseMenu("<b>Ramp Services</b><br>[1] Additional Services<br>2. Close"),
 		ParseMenu("Additional Services\r\n# ignored\r\n1: Request potable water\r\n2) Back"),
@@ -154,7 +154,7 @@ func TestChooseRejectsOutOfRangeMenuItems(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{}}
 	s := New(f, "")
 	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	// Check both ends of the GSX menu's zero-based slot range
+	// Check both GSX slot boundaries
 	for _, index := range []int{-1, 9} {
 		if err := s.Choose(t.Context(), index); err == nil {
 			t.Errorf("accepted out-of-range index %d", index)
@@ -208,7 +208,7 @@ func TestServiceUsesCustomMenuKeywords(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{}}
 	s := New(f, "")
 	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	// The custom phrase must win even when a built-in alias matches an earlier item
+	// The custom phrase must win even when a built in alias matches an earlier item
 	s.ReadMenu = func() Menu { return ParseMenu("GSX\n1. Jetway status\n2. Operate boarding bridge") }
 	selected, err := s.Execute(t.Context(), "bridge", "JETWAY", []string{"boarding bridge"}, false)
 	if err != nil || selected != "Operate boarding bridge" || f.values[MenuChoice] != 1 {
@@ -242,6 +242,24 @@ func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 	selected, err := s.Execute(t.Context(), "potable water", "", nil, false)
 	if want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}, {MenuChoice, 0}}; err != nil || selected != "Request potable water" || !reflect.DeepEqual(f.writes, want) {
 		t.Fatalf("selection %q, error %v, writes %v, want %v", selected, err, f.writes, want)
+	}
+}
+
+func TestMenuKeepsLabelsThatStartWithNumbers(t *testing.T) {
+	page := ParseMenu("Fuel\n10,000 lbs\n180\n[3] Close\n4.Back\n5)GSX Choice\n2.5 NM\n1-2")
+	want := []string{"10,000 lbs", "180", "Close", "Back", "GSX Choice", "2.5 NM", "1-2"}
+	if !reflect.DeepEqual(page.Options, want) {
+		t.Fatalf("options = %v, want %v", page.Options, want)
+	}
+}
+
+func TestCustomServicePrefersExactLabel(t *testing.T) {
+	s := New(&fakeSim{values: map[string]float64{}}, "")
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.ReadMenu = func() Menu { return ParseMenu("Ramp\nRemove Chocks and Cones\nRemove Chocks") }
+	selected, err := s.Execute(t.Context(), "", "Custom: Remove Chocks", []string{"Remove Chocks"}, false)
+	if err != nil || selected != "Remove Chocks" {
+		t.Fatalf("selected %q, error %v", selected, err)
 	}
 }
 

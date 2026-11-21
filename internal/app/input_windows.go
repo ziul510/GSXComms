@@ -33,7 +33,7 @@ type keyboardMsg struct {
 	private        uint32
 }
 
-func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func(uintptr)) {
+func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	// The message pump has to run on the thread that owns the keyboard hook
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -43,7 +43,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func
 	peek := user.NewProc("PeekMessageW")
 	get := user.NewProc("GetMessageW")
 	post := user.NewProc("PostThreadMessageW")
-	// The low-level hook receives keyboard transitions even when another window has focus
+	// The low level hook receives keyboard transitions even when another window has focus
 	callback := windows.NewCallback(func(code, wParam, lParam uintptr) uintptr {
 		if int32(code) >= 0 && lParam != 0 {
 			type lowLevelKey struct {
@@ -76,18 +76,6 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func
 	handle, _, _ := set.Call(13, callback, uintptr(module), 0)
 	if handle != 0 {
 		defer unhook.Call(handle)
-	}
-	// The same message pump can receive minimize notifications for this process.
-	const minimizeStart = 0x0016
-	minimized := windows.NewCallback(func(_, _, hwnd, objectID, childID, _, _ uintptr) uintptr {
-		if hwnd != 0 && objectID == 0 && childID == 0 {
-			minimize(hwnd)
-		}
-		return 0
-	})
-	hook, _, _ := user.NewProc("SetWinEventHook").Call(minimizeStart, minimizeStart, 0, minimized, uintptr(os.Getpid()), 0, 0)
-	if hook != 0 {
-		defer user.NewProc("UnhookWinEvent").Call(hook)
 	}
 	// Wake GetMessage on cancellation so the hook can be removed on its owning thread
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x0012, 0, 0) }()
@@ -165,7 +153,7 @@ func (s *state) keyboardEvent(key uint32, down bool) {
 			if !down && key == captureKey.Load() {
 				s.record(false)
 			}
-			// The rebind dialog treats Escape as cancel Key-up never creates a binding
+			// Bind only on presses and use Escape to cancel
 			if down {
 				if key == 0x1b {
 					s.binding(config.Binding{})
@@ -210,7 +198,7 @@ func (s *state) rebind(parent *gui.Window) {
 		if window != nil {
 			window.InvalidateLayout()
 		}
-		// The live binding changes only after the settings writer confirms the save.
+		// The live binding changes only after the settings writer confirms the save
 		s.saveSetting("ptt_bind", b, func(err error) {
 			if closed {
 				return
@@ -339,12 +327,12 @@ func windowByTitle(title string) uintptr {
 
 func (s *state) setTopmost() {
 	if hwnd := windowByTitle("GSXComms"); hwnd != 0 {
-		// Win32 uses negative pseudo-handles for HWND_NOTOPMOST and HWND_TOPMOST
+		// Use the Win32 constants HWND_NOTOPMOST and HWND_TOPMOST
 		placement := ^uintptr(1)
 		if config.Get[bool](s.cfg, "topmost_active") {
 			placement = ^uintptr(0)
 		}
-		// Change z-order without moving, resizing, or activating the window
+		// Change window stacking without moving, resizing, or activating it
 		_, _, _ = user.NewProc("SetWindowPos").Call(hwnd, placement, 0, 0, 0, 0, 0x0013)
 	}
 }

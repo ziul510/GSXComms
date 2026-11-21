@@ -11,6 +11,7 @@
 *.exe
 *.dll
 *.onnx
+!/cmd/gsxspeech/silero_vad.onnx
 *.pt
 *.bin
 *.msi

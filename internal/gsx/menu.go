@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/ziul510/GSXCommsGo/internal/commands"
+	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
 const (
@@ -31,11 +32,19 @@ const (
 )
 
 var (
-	ErrDisconnected     = errors.New("SimConnect handshake required")
-	ErrSpeedUnavailable = errors.New("ground speed unavailable")
-	ErrMenuChanged      = errors.New("GSX menu changed before selection")
-	ErrHotfix           = errors.New("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms")
+	ErrDisconnected           = errors.New("SimConnect handshake required")
+	ErrSpeedUnavailable       = errors.New("ground speed unavailable")
+	ErrMenuChanged            = errors.New("GSX menu changed before selection")
+	ErrHotfix                 = errors.New("Please select the second option in the GSX menu, apply the hotfixes, and restart GSXComms")
+	ErrMenuInactive           = errors.New("GSX menu opened but did not become active")
+	ErrAdditionalMenuInactive = errors.New("GSX Additional Services menu did not become active")
+	ErrNoMenuMatch            = errors.New("No matching GSX menu option found")
 )
+
+type serviceMatchError string
+
+func (err serviceMatchError) Error() string { return fmt.Sprintf("service %q not found", string(err)) }
+func (err serviceMatchError) Unwrap() error { return ErrNoMenuMatch }
 
 type Transport interface {
 	Get(context.Context, string) (float64, error)
@@ -52,7 +61,7 @@ type Menu struct {
 var (
 	br        = regexp.MustCompile(`(?i)<br\s*/?>`)
 	tag       = regexp.MustCompile(`<[^>]+>`)
-	numbering = regexp.MustCompile(`^\s*(?:\[?\d+\]?|\d+)[\]\).:-]?\s*`)
+	numbering = regexp.MustCompile(`^(?:\[\d+\]\s*|\d+[).:-](?:\s+|$)|[1-9][).:](\pL))`)
 )
 
 func ParseMenu(raw string) Menu {
@@ -71,7 +80,7 @@ func ParseMenu(raw string) Menu {
 			continue
 		}
 		// Use panel order for selection indices since labels can already carry numbers
-		item := strings.TrimSpace(numbering.ReplaceAllString(line, ""))
+		item := strings.TrimSpace(numbering.ReplaceAllString(line, "${1}"))
 		if item != "" && !strings.EqualFold(item, menu.Title) {
 			menu.Options = append(menu.Options, item)
 		}
@@ -122,7 +131,7 @@ func New(sim Transport, panel string) *Session {
 		if bytes.Equal(last, data) {
 			return cached
 		}
-		// Couatl can replace the panel while it is still being written.
+		// Couatl can replace the panel while it is still being written
 		for range 2 {
 			time.Sleep(10 * time.Millisecond)
 			next, ok := read()
@@ -331,12 +340,12 @@ func (s *Session) Close() error {
 	return errors.Join(err, s.Sim.Close())
 }
 
-// GSX expects a zero-based slot Give the panel time to process the choice
+// Let GSX process the slot before the next choice
 func (s *Session) Choose(ctx context.Context, index int) error {
 	return s.choose(ctx, s.ReadMenu(), index, nil)
 }
 
-// ChooseOn checks the page again because a GSX slot can change while a command waits.
+// ChooseOn checks the page again because a GSX slot can change while a command waits
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
 	if index < 0 || index >= len(page.Options) {
 		return ErrMenuChanged
@@ -366,7 +375,7 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 	return s.Sleep(ctx, 300*time.Millisecond)
 }
 
-// OpenMenuPage makes a second request if Couatl accepted the open but never supplied choices.
+// OpenMenuPage makes a second request if Couatl accepted the open but never supplied choices
 func (s *Session) OpenMenuPage(ctx context.Context) (Menu, error) {
 	var menu Menu
 	var err error
@@ -414,9 +423,9 @@ func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	}
 	// Distinguish a delayed submenu from a menu that never populated
 	if previous != nil {
-		return menu, errors.New("GSX Additional Services menu did not become active")
+		return menu, ErrAdditionalMenuInactive
 	}
-	return menu, errors.New("GSX menu opened but did not become active")
+	return menu, ErrMenuInactive
 }
 
 // Use menu order to break ties when several labels contain a service term
@@ -461,6 +470,13 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	find := func(options []string) int {
 		if service != "" {
+			if strings.HasPrefix(service, config.CustomServicePrefix) && len(keywords) == 1 {
+				if index := slices.IndexFunc(options, func(option string) bool {
+					return strings.EqualFold(option, keywords[0])
+				}); index >= 0 {
+					return index
+				}
+			}
 			return optionContaining(options, keywords)
 		}
 		// Without a service ID, score the transcript against the visible labels
@@ -471,6 +487,11 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		return "", ErrHotfix
 	}
 	index := find(menu.Options)
+	if service == "" && index < 0 {
+		if _, explicit := commands.ExplicitNumber(text); explicit {
+			return "", ErrNoMenuMatch
+		}
+	}
 	// Search the submenu only after the current page has no match
 	if extra := optionContaining(menu.Options, []string{"additional services"}); index < 0 && extra >= 0 {
 		parent := menu
@@ -493,7 +514,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		// Undo submenu navigation if it didn't turn up a matching choice
 		if index < 0 {
 			back := slices.IndexFunc(menu.Options, func(option string) bool {
-				return slices.Contains([]string{"back", "close", "cancel"}, strings.ToLower(option))
+				return slices.Contains([]string{"back", "close", "cancel"}, menuLabel(option))
 			})
 			if back < 0 || s.ChooseOn(ctx, menu, back) != nil {
 				_ = s.Release(ctx)
@@ -504,9 +525,9 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	if index < 0 {
 		if service != "" {
-			return "", fmt.Errorf("service %q not found", service)
+			return "", serviceMatchError(service)
 		}
-		return "", errors.New("No matching GSX menu option found")
+		return "", ErrNoMenuMatch
 	}
 	selected := menu.Options[index]
 	if err := s.ChooseOn(ctx, menu, index); err != nil {

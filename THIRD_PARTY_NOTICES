@@ -13,6 +13,10 @@ ONNX Runtime CPU, sherpa-onnx Windows build 1.28.2 — MIT
 Use: bundled
 Source: https://github.com/csukuangfj/onnxruntime-libs/releases/tag/1.28.2
 
+Silero VAD ONNX weights v6.2 — MIT
+Use: embedded in the speech worker
+Source: https://github.com/snakers4/silero-vad/blob/be95df9152c0d7618fa1edfeb296fc3dae32376f/src/silero_vad/data/silero_vad.onnx
+
 Parakeet TDT v2 0.6B INT8 (NVIDIA foundation, sherpa-onnx conversion) 1ab9323565ddb038682214b292f588070a538ce2 — CC-BY-4.0
 Use: download or verified local cache import
 Source: https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tree/1ab9323565ddb038682214b292f588070a538ce2
@@ -65,7 +69,7 @@ Use: blocked pending review
 Source: https://onnxruntime.ai/docs/install/
 Alternative: Use built-in CPU execution and document the GPU gate.
 
-Feather icons embedded by go-gui go-gui v0.96.0 font — MIT
+Feather icons embedded by go-gui go-gui v0.98.0 font — MIT
 Use: bundled
 Source: https://github.com/feathericons/feather
 
@@ -217,7 +221,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========== github.com/ebitengine/purego v0.11.1 (Apache-2.0) ==========
+========== github.com/ebitengine/purego v0.11.3 (Apache-2.0) ==========
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -420,7 +424,7 @@ SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
-========== github.com/go-gui-org/go-glyph v1.26.5 (MIT) ==========
+========== github.com/go-gui-org/go-glyph v1.28.0 (MIT) ==========
 MIT License
 
 Copyright (c) 2026 mike-ward
@@ -443,7 +447,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========== github.com/go-gui-org/go-gui v0.96.0 (MIT) ==========
+========== github.com/go-gui-org/go-gui v0.98.0 (MIT) ==========
 MIT License
 
 Copyright (c) 2025 Mike Ward
@@ -835,7 +839,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========== github.com/tdewolff/parse/v2 v2.8.16 (MIT) ==========
+========== github.com/tdewolff/parse/v2 v2.25.0 (MIT) ==========
 Copyright (c) 2015 Taco de Wolff
 
  Permission is hereby granted, free of charge, to any person
@@ -902,7 +906,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========== github.com/yuin/goldmark v1.8.5 (MIT) ==========
+========== github.com/yuin/goldmark v1.8.7 (MIT) ==========
 MIT License
 
 Copyright (c) 2019 Yusuke Inuzuka
@@ -1351,6 +1355,28 @@ IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
+========== Silero-VAD-LICENSE ==========
+MIT License
+
+Copyright (c) 2020-present Silero Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ========== bitflags 2.13.2 (MIT OR Apache-2.0) ==========
                               Apache License
                         Version 2.0, January 2004

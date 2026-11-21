@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/png"
@@ -44,37 +45,51 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 		return
 	}
 	m, _ := models.Lookup(id)
-	ctx, cancel := context.WithCancel(s.ctx)
-	setup.running, setup.cancel = id, cancel
+	setup.running = id
+	downloading := operation == "Downloading"
+	ctx := s.ctx
+	var cancel context.CancelFunc
+	if downloading {
+		ctx, cancel = context.WithCancel(ctx)
+		setup.cancel = cancel
+	}
 	status := setup.local[id]
 	status.message = operation + "…"
 	setup.local[id] = status
 	go func() {
-		defer cancel()
 		var err error
-		var result string
-		if operation == "Downloading" {
+		if downloading {
 			err = downloadModel(ctx, m, s.dir, func(done, total int64) {
 				w.QueueCommand(func(w *gui.Window) {
+					if ctx.Err() != nil || setup.running != id {
+						return
+					}
 					status := setup.local[id]
 					status.message = fmt.Sprintf("Downloading %.1f / %.1f MiB", float64(done)/(1<<20), float64(total)/(1<<20))
 					setup.local[id] = status
 					w.InvalidateLayout()
 				})
 			})
-			result = "Downloaded"
 		} else {
 			err = m.Delete(s.dir)
-			result = "Model deleted"
 		}
-		if err != nil {
-			result = err.Error()
-		}
-		next := localModelStatus{ready: m.Ready(s.dir), cached: m.Cached(s.dir), message: result}
+		next := localModelStatus{ready: m.Ready(s.dir), cached: m.Cached(s.dir)}
 		s.async(func() {
+			if cancel != nil {
+				// A canceled download can leave usable files without changing the selection
+				if ctx.Err() != nil {
+					err = ctx.Err()
+				}
+				cancel()
+			}
+			if errors.Is(err, context.Canceled) {
+				next.message = "Download canceled"
+			} else if err != nil {
+				next.message = err.Error()
+			}
 			setup.running, setup.cancel = "", nil
 			setup.local[id] = next
-			if err == nil && operation == "Downloading" && config.Get[string](s.cfg, "speech_provider") == id {
+			if err == nil && downloading && config.Get[string](s.cfg, "speech_provider") == id {
 				s.prepareSpeech(false, false)
 			}
 			if !w.CloseRequested() {
@@ -87,7 +102,7 @@ func (setup *speechSetup) runLocal(s *state, w *gui.Window, id, operation string
 	}()
 }
 
-// Persist the provider before advertising it as active or triggering model startup.
+// Persist the provider before advertising it as active or triggering model startup
 func (setup *speechSetup) useProvider(s *state, w *gui.Window, provider string, onSaved func()) {
 	if setup.savingProvider {
 		return
@@ -108,66 +123,81 @@ func (setup *speechSetup) useProvider(s *state, w *gui.Window, provider string, 
 
 func (setup *speechSetup) localCard(s *state, w *gui.Window, id, label string) gui.View {
 	status := setup.local[id]
-	note := "Not downloaded"
-	if status.ready {
-		note = "Downloaded"
-	}
 	inUse := config.Get[string](s.cfg, "speech_provider") == id
-	busy := setup.running != "" || setup.savingProvider || s.speechLoading == id
-	action := func(id, label string, primary, disabled bool, click func()) gui.View {
-		control := buttonConfig(id, label, 0, primary, disabled, click)
-		control.Height = 30
-		return gui.Button(control)
+	loading := s.speechLoading == id
+	busy := setup.running != "" || setup.savingProvider || loading
+	note := status.message
+	if loading {
+		note = s.speechStatus
 	}
 	var actions []gui.View
-	if id != "kokoro" && !status.ready {
-		actions = append(actions, action("download-"+id, "Download", true, busy, func() {
-			setup.runLocal(s, w, id, "Downloading", nil)
+	switch {
+	case setup.running == id && setup.cancel != nil:
+		actions = append(actions, modelButton("download-"+id, "Cancel", 88, false, setup.cancel))
+	case loading && strings.HasPrefix(s.speechStatus, "Downloading"):
+		actions = append(actions, modelButton("download-"+id, "Cancel", 88, false, s.speechLoadCancel))
+	case !status.ready:
+		actions = append(actions, modelButton("download-"+id, "Download", 88, busy, func() {
+			setup.runLocal(s, w, id, "Downloading", func(err error) {
+				if err == nil && !inUse {
+					setup.useProvider(s, w, id, nil)
+				}
+			})
+		}))
+	case inUse:
+		actions = append(actions, text("✓ Active", settingsTextSize, accent))
+		if s.speechStatus == "Speech unavailable" && !busy {
+			actions = append(actions, modelButton("retry-"+id, "Reload", 64, false, func() {
+				s.prepareSpeech(false, true)
+			}))
+		}
+	default:
+		actions = append(actions, modelButton("provider-"+id, "Use", 56, busy, func() {
+			setup.useProvider(s, w, id, nil)
 		}))
 	}
 	other := "parakeet"
 	if id == other {
 		other = "orukeet"
 	}
-	if status.cached && (!status.ready || (id != "kokoro" && !inUse && setup.local[other].ready)) {
-		actions = append(actions, action("delete-"+id, "Delete", false, busy, func() {
+	// Keep recovery for partial files and protect the last working local model
+	if status.cached && setup.running != id && !loading && (!status.ready || (!inUse && setup.local[other].ready)) {
+		actions = append(actions, modelButton("delete-"+id, "Delete", 68, busy, func() {
 			setup.runLocal(s, w, id, "Deleting", nil)
 		}))
 	}
-	if id != "kokoro" && inUse && status.ready && !busy {
-		actions = append(actions, action("retry-"+id, "Reload", false, false, func() {
-			s.prepareSpeech(false, true)
-		}))
-	}
-	if setup.running == id && strings.HasPrefix(status.message, "Downloading") {
-		actions = append(actions, action("stop-download", "Cancel", false, false, setup.cancel))
-	}
-	heading := []gui.View{bold(label, 15, ink), spacer(), text(note, 13, muted)}
-	if inUse {
-		heading = append(heading, text("Active", 13, accent))
-	} else if id != "kokoro" && status.ready {
-		heading = append(heading, action("provider-"+id, "Use", true, busy, func() {
-			setup.useProvider(s, w, id, nil)
-		}))
-	}
-	if s.speechLoading == id {
-		note = s.speechStatus
-	}
-	content := []gui.View{speechRow(heading...)}
-	if len(actions) > 0 {
-		content = append(content, speechRow(actions...))
-	}
-	if s.speechLoading == id {
-		content = append(content, wrapped(note, 13, muted))
-	}
-	if status.message != "" && status.message != note {
-		content = append(content, wrapped(status.message, 13, muted))
-	}
-	return gui.Column(outlinedCard(card, gui.PadVH(8, 10), 4, content...))
+	return speechCard(label, note, actions...)
 }
 
-func speechRow(content ...gui.View) gui.View {
-	return gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8), VAlign: gui.VAlignMiddle, Content: content})
+func modelButton(id, label string, width float32, disabled bool, click func()) gui.View {
+	control := sizedButtonConfig(id, label, width, 11, label == "Use", disabled, click)
+	control.Height, control.Radius = 30, gui.RadiusPx(3)
+	control.HAlign = gui.Some(gui.HAlignCenter)
+	control.A11YLabel = label
+	switch label {
+	case "Use":
+		control.Content = []gui.View{text(label, 11, bg)}
+	case "Delete":
+		control.Colors.Base, control.Colors.Hover = elevated, panel
+		control.Content = []gui.View{text(label, 11, red)}
+	default:
+		control.SizeBorder = gui.BorderPx(1)
+		control.Colors.Border, control.Colors.BorderFocus = elevated, accent
+	}
+	return gui.Button(control)
+}
+
+func speechCard(label, note string, actions ...gui.View) gui.View {
+	row := gui.Row(gui.ContainerCfg{
+		Sizing: gui.FillFixed, Height: 30, Padding: gui.NoPadding, SizeBorder: gui.NoBorder,
+		Spacing: gui.SpacingPx(4), VAlign: gui.VAlignMiddle,
+		Content: append([]gui.View{bold(label, settingsTextSize, ink), spacer()}, actions...),
+	})
+	content := []gui.View{row}
+	if note != "" {
+		content = append(content, wrapped(note, 11, muted))
+	}
+	return gui.Column(outlinedCard(card, gui.PadVH(8, 10), 4, content...))
 }
 
 const mistralWarning = "When you use Mistral, GSXComms sends your voice recordings to Mistral for transcription. Mistral may use them to train AI models, depending on your plan and privacy settings."
@@ -185,12 +215,8 @@ type tutorialImage struct {
 	width, height float32
 }
 
-func (setup *speechSetup) mistralCard(s *state) gui.View {
-	heading := []gui.View{bold("Mistral · Voxtral Small", 15, ink)}
-	if config.Get[string](s.cfg, "speech_provider") == "mistral" {
-		heading = append(heading, text("Active", 13, accent))
-	}
-	heading = append(heading, spacer(), bold("Set up", 14, accent))
+func (setup *speechSetup) mistralCard(s *state, w *gui.Window) gui.View {
+	inUse := config.Get[string](s.cfg, "speech_provider") == "mistral"
 	open := func() {
 		setup.step = 1
 		setup.providerError = ""
@@ -212,20 +238,19 @@ func (setup *speechSetup) mistralCard(s *state) gui.View {
 			}
 		}
 	}
-	control := buttonConfig("provider-mistral", "Set up Mistral", 0, false, setup.savingProvider, open)
-	control.Sizing, control.Height = gui.FillFit, 0
-	control.Padding, control.SizeBorder = gui.PadVH(8, 10), gui.BorderPx(1)
-	control.Colors.Border, control.Colors.BorderFocus = elevated, accent
-	control.A11YCfg.A11YLabel = "Set up Mistral"
-	status := "Cloud transcription · Requires an API key"
-	if setup.hasKey {
-		status = "API key saved in Windows Credential Manager"
+	busy := setup.savingProvider || setup.running != ""
+	const label = "Multilingual (Voxtral Small, cloud)"
+	if inUse {
+		return speechCard(label, s.speechStatus, text("✓ Active", settingsTextSize, accent),
+			modelButton("provider-mistral", "Set up", 64, busy, open))
 	}
-	control.Content = []gui.View{gui.Column(gui.ContainerCfg{
-		Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(4),
-		Content: []gui.View{speechRow(heading...), wrapped(status, 13, muted)},
-	})}
-	return gui.Button(control)
+	return speechCard(label, "", modelButton("provider-mistral", "Use", 56, busy, func() {
+		if setup.hasKey {
+			setup.useProvider(s, w, "mistral", nil)
+		} else {
+			open()
+		}
+	}))
 }
 
 func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
@@ -275,11 +300,11 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 	useMistral := func() {
 		setup.keyMessage = "Saving speech provider…"
 		setup.useProvider(s, w, "mistral", func() {
-			// Recheck a previously selected provider when the user supplies its missing key.
+			// Recheck a previously selected provider when the user supplies its missing key
 			if config.Get[string](s.cfg, "speech_provider") == "mistral" && !s.speechReady && s.speechLoading == "" {
 				s.prepareSpeech(false, false)
 			}
-			// A closed window's save must not dismiss a later tutorial.
+			// A closed window's save must not dismiss a later tutorial
 			if !w.CloseRequested() {
 				leave()
 			}
@@ -290,7 +315,7 @@ func (setup *speechSetup) mistralPage(s *state, w *gui.Window) gui.View {
 		wrapped("Paste your key below. Windows Credential Manager stores it after validation.", 14, muted),
 		formInput(gui.InputCfg{ID: "voxtral-key", Label: "Mistral API key", Text: setup.key, IsPassword: !setup.showKey, Disabled: busy,
 			OnTextChanged: func(v string, _ gui.EventCtx) { setup.key = v; w.InvalidateLayout() }}),
-		toggleControl("show-mistral-key", "Show API key", setup.showKey, func(ctx gui.EventCtx) {
+		toggleControl("show-mistral-key", "Show API key", settingsTextSize, setup.showKey, func(ctx gui.EventCtx) {
 			setup.showKey = !setup.showKey
 			ctx.Consume()
 			w.InvalidateLayout()

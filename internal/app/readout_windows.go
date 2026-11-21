@@ -54,7 +54,7 @@ func formatReadout(options []string) string {
 }
 
 func readoutMatches(prefs config.Values, values ...string) bool {
-	if !config.Get[bool](prefs, "read_gsx_menus_aloud_after_keyword") {
+	if !config.Get[bool](prefs, config.MenuReadoutSetting) {
 		return false
 	}
 	// An empty setting leaves the special readout path disabled
@@ -72,33 +72,32 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	return false
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values) {
+func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, onPresetQueued func()) bool {
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
+	inPreset := onPresetQueued != nil
 	if !session.Connected() {
+		s.traceLevel("WARN", "TTS", "Menu readout blocked: SimConnect disconnected")
 		log("SYS", "SimConnect handshake required to read the GSX menu")
-		return
+		return false
 	}
-	// Couatl can still be replacing the panel after a selection.
+	if !s.menuReaderReady() {
+		return false
+	}
+	// Couatl can still be replacing the panel after a selection
 	if since := time.Since(s.menuActivity); since < 4*time.Second {
-		timer := time.NewTimer(4*time.Second - since)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return
+		if err := session.Sleep(ctx, 4*time.Second-since); err != nil {
+			return false
 		}
 	}
-	m, _ := models.Lookup("kokoro")
-	if !m.Ready(s.dir) {
-		log("ERR", "Kokoro menu-reader model is unavailable. Download it under Behavior in Settings")
-		return
-	}
-	select {
-	// Reserve the reader through synthesis so repeated requests don't pile up
-	case s.speaking <- struct{}{}:
-	default:
-		log("SYS", "GSX menu readout is already in progress")
-		return
+	if !inPreset {
+		select {
+		// Reserve the reader through synthesis so repeated standalone requests don't pile up
+		case s.speaking <- struct{}{}:
+		default:
+			s.trace("TTS", "Menu readout already in progress")
+			log("SYS", "GSX menu readout is already in progress")
+			return false
+		}
 	}
 	// Reuse the menu if it is already populated Open a temporary one only when needed
 	options := session.ReadMenu().Options
@@ -107,32 +106,83 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		// Release the menu opened for readout before starting the slower speech work
 		_ = session.Release(ctx)
 		if err != nil {
-			<-s.speaking
+			if !inPreset {
+				<-s.speaking
+			}
+			s.traceFailure("TTS", "Could not open the menu for readout", err)
 			log("ERR", err.Error())
-			return
+			return false
 		}
 		options = menu.Options
 	}
 	text := formatReadout(options)
+	if inPreset {
+		// Queue through the same window thread as the neighboring service acknowledgments
+		s.async(func() {
+			if config.Get[bool](s.cfg, config.MenuReadoutSetting) &&
+				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true}, false) {
+				onPresetQueued()
+			}
+		})
+		return true
+	}
 	// Synthesizing speech is slower than GSX polling, so give the simulator queue back now
 	go func() {
 		defer func() { <-s.speaking }()
-		if err := s.reader.Load(s.ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
-			log("ERR", "GSX menu readout failed: "+err.Error())
-			return
+		if pcm, rate := s.synthesizeReadout(s.ctx, text, len(options)); len(pcm) > 0 {
+			// Queue readout audio behind waiting priority crew cues
+			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
 		}
-		pcm, rate, err := s.reader.Synthesize(s.ctx, text)
-		if err != nil {
-			log("ERR", "GSX menu readout failed: "+err.Error())
-			return
-		}
-		log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud (%s)", len(options), s.reader.Runtime()))
-		// Queue readout audio behind waiting priority crew cues
-		s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
 	}()
+	return true
+}
+
+func (s *state) menuReaderReady() bool {
+	m, _ := models.Lookup("kokoro")
+	if m.Ready(s.dir) {
+		return true
+	}
+	s.traceLevel("WARN", "TTS", "Menu readout blocked: Kokoro model unavailable")
+	s.async(func() {
+		s.log("ERR", "Kokoro menu-reader model is unavailable. Open Settings to download or repair it")
+	})
+	return false
+}
+
+func (s *state) synthesizeReadout(ctx context.Context, text string, entries int) ([]byte, int) {
+	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
+	m, _ := models.Lookup("kokoro")
+	start := time.Now()
+	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
+		s.traceFailure("TTS", "Could not load the Kokoro worker", err)
+		log("ERR", "GSX menu readout failed: "+err.Error())
+		return nil, 0
+	}
+	pcm, rate, err := s.reader.Synthesize(ctx, text)
+	if err != nil {
+		s.traceFailure("TTS", "Could not synthesize the menu readout", err)
+		log("ERR", "GSX menu readout failed: "+err.Error())
+		return nil, 0
+	}
+	engine := s.reader.Runtime()
+	log("GSX", fmt.Sprintf("Reading %d GSX menu entries aloud (%s)", entries, engine))
+	if engine != "CPU" && engine != "CUDA" {
+		engine = "unknown"
+	}
+	s.trace("TTS", fmt.Sprintf("Synthesized %d menu entries in %s on %s", entries, time.Since(start).Round(time.Millisecond), engine))
+	return pcm, rate
 }
 
 func (s *state) output(ctx context.Context, next playback) error {
+	if next.readout != "" {
+		if !s.menuReaderReady() {
+			return nil
+		}
+		next.pcm, next.rate = s.synthesizeReadout(ctx, next.readout, next.readoutEntries)
+		if len(next.pcm) == 0 || ctx.Err() != nil {
+			return nil
+		}
+	}
 	if !next.dry && next.cue != "error" {
 		defer s.muteCrew(ctx, next.prefs)()
 	}
@@ -149,11 +199,18 @@ func (s *state) output(ctx context.Context, next playback) error {
 	}
 	pcm := bytes.Clone(next.pcm)
 	mixRadio(pcm, gain, static, next.rate, channels)
-	s.trace("AUDIO", fmt.Sprintf("Playing %d bytes at %d Hz with %d channel(s)", len(pcm), next.rate, channels))
+	if s.debugEnabled.Load() {
+		seconds := float64(len(pcm)) / float64(2*next.rate*channels)
+		detail := fmt.Sprintf("Playing %.2fs of audio at %d Hz, %d channel(s)", seconds, next.rate, channels)
+		if next.crewAccent != "" {
+			detail += " | crew accent=" + debugCrewAccent(next.prefs, next.crewAccent)
+		}
+		s.trace("AUDIO", detail)
+	}
 	return playPCMBuffer(ctx, config.Get[string](next.prefs, "output_device_name"), config.Get[string](next.prefs, "output_device_id"), pcm, next.rate, channels, false)
 }
 
-// Match the legacy RMS gain limits without turning silence into noise.
+// Match the legacy RMS gain limits without turning silence into noise
 func normalizationGain(pcm []byte) float64 {
 	var sum float64
 	for i := 0; i+1 < len(pcm); i += 2 {

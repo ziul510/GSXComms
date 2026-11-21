@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -31,6 +32,39 @@ func TestPortableSettingsNormalizeSavedValues(t *testing.T) {
 	}
 }
 
+func TestPortableSettingsKeepCustomPresetServices(t *testing.T) {
+	dir := t.TempDir()
+	values := Defaults()
+	values.Put(MenuReadoutSetting, true)
+	values.Put("presets", []Preset{{
+		Name: "Turnaround", Codeword: "turnaround", Enabled: true,
+		Services: []string{"gpu", " read menu ", "Custom:  Cabin Check  ", "JETWAY", "Custom: cabin check", "Custom: "},
+	}})
+	if err := Save(dir, values); err != nil {
+		t.Fatal(err)
+	}
+	values, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presets := Get[[]Preset](values, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", ReadMenuAction, "Custom: Cabin Check", "JETWAY"}) {
+		t.Fatalf("unexpected presets: %+v", presets)
+	}
+	values.Put(MenuReadoutSetting, false)
+	if err := Save(dir, values); err != nil {
+		t.Fatal(err)
+	}
+	values, err = Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presets = Get[[]Preset](values, "presets")
+	if len(presets) != 1 || !slices.Equal(presets[0].Services, []string{"GPU", "Custom: Cabin Check", "JETWAY"}) {
+		t.Fatalf("disabled readout remained in loaded presets: %+v", presets)
+	}
+}
+
 func TestPortableSettingsKeepExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	values := Defaults()
@@ -38,7 +72,7 @@ func TestPortableSettingsKeepExistingFile(t *testing.T) {
 	if err := Save(dir, values); err != nil {
 		t.Fatal(err)
 	}
-	// If another instance finishes first, the exclusive publish keeps its file.
+	// If another instance finishes first, the exclusive publish keeps its file
 	path := filepath.Join(dir, SettingsFile)
 	if err := writeAtomic(path, defaultJSON, moveNew); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected exclusive publish to reject an existing file: %v", err)
@@ -84,6 +118,23 @@ func TestMigrateDownloadFlags(t *testing.T) {
 	}
 	if packs := Get[[]string](values, "installed_packs"); len(packs) != 1 || packs[0] != "custom" {
 		t.Fatal("saved accent pack selection was lost")
+	}
+}
+
+func TestBroaderModeMigratesEitherLegacyOption(t *testing.T) {
+	for _, tc := range []struct {
+		settings string
+		enabled  bool
+	}{
+		{`{"enable_menu_matching":true,"enable_gsx_menu_text_correction":false}`, true},
+		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":true}`, true},
+		{`{"enable_menu_matching":false,"enable_gsx_menu_text_correction":false}`, false},
+		{`{"enable_menu_matching":false}`, false},
+	} {
+		v, err := decode([]byte(tc.settings))
+		if err != nil || v["enable_gsx_menu_text_correction"] != nil || Get[bool](v, "enable_menu_matching") != tc.enabled {
+			t.Errorf("migrating %s: expected Broader Mode enabled=%t, got %v (%v)", tc.settings, tc.enabled, v, err)
+		}
 	}
 }
 

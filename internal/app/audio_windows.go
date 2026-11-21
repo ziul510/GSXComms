@@ -47,7 +47,7 @@ func audioDevices(input bool) []audioDevice {
 }
 
 func waveEndpointID(message *windows.LazyProc, device uintptr) string {
-	// WinMM returns the Core Audio endpoint ID as a UTF-16 string
+	// The endpoint ID buffer holds UTF16 code units
 	const queryID, querySize = 0x0800 + 17, 0x0800 + 18
 	var size uint32
 	if err := mmCall(message, device, querySize, uintptr(unsafe.Pointer(&size)), 0); err != nil || size < 2 || size > 8192 || size%2 != 0 {
@@ -115,20 +115,29 @@ type waveHeader struct {
 	next, reserved   uintptr
 }
 
+type waveError struct {
+	operation string
+	code      uintptr
+}
+
+func (err waveError) Error() string { return fmt.Sprintf("%s failed (%d)", err.operation, err.code) }
+
 //go:uintptrescapes
 func mmCall(proc *windows.LazyProc, args ...uintptr) error {
 	// WinMM APIs report MMRESULT directly Zero is success
 	if result, _, _ := proc.Call(args...); result != 0 {
-		return fmt.Errorf("%s failed (%d)", proc.Name, result)
+		return waveError{proc.Name, result}
 	}
 	return nil
 }
+
+var errMicUnavailable = errors.New("selected microphone is unavailable")
 
 func openCaptureDevice(name, endpoint string, candidates []audioDevice, allowFallback bool, open func(uintptr) error) error {
 	id := matchAudioDevice(name, endpoint, candidates, allowFallback)
 	// WAVE_MAPPER is safe for cloud capture only when the settings select it
 	if !allowFallback && id == defaultWaveDevice && !defaultAudioSelection(name, endpoint) {
-		return errors.New("selected microphone is unavailable")
+		return errMicUnavailable
 	}
 	err := open(id)
 	if err == nil || id == defaultWaveDevice {
@@ -288,10 +297,13 @@ func playPCMBuffer(ctx context.Context, device, endpoint string, pcm []byte, rat
 	if err := mmCall(mm.NewProc("waveOutWrite"), handle, ptr, hs); err != nil {
 		return err
 	}
-	for h.flags&1 == 0 {
-		// Return the queued buffer before the deferred unprepare and unpin
-		if ctx.Err() != nil {
+	defer func() {
+		if h.flags&1 == 0 {
 			_ = mmCall(mm.NewProc("waveOutReset"), handle)
+		}
+	}()
+	for h.flags&1 == 0 {
+		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		status, err := windows.WaitForSingleObject(event, 25)

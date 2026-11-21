@@ -33,14 +33,14 @@ func main() {
 	console(ctx, session)
 }
 
-// Leave the current transport in place until the health loop closes it.
+// Leave the current transport in place until the health loop closes it
 func connect(ctx context.Context, s *gsx.Session) {
 	if !s.Connected() {
 		s.Sim, _ = gsx.Connect(ctx)
 	}
 }
 
-// Both console modes must drop dead transports before connect can try again.
+// Both console modes must drop dead transports before connect can try again
 func pollConnection(ctx context.Context, s *gsx.Session, dial func(context.Context, *gsx.Session), failures *int) {
 	if !s.Connected() {
 		dial(ctx, s)
@@ -50,7 +50,7 @@ func pollConnection(ctx context.Context, s *gsx.Session, dial func(context.Conte
 	health, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	_, _, err := s.Status(health)
-	// A missing speed value can occur while SimConnect is still healthy.
+	// A missing speed value can occur while SimConnect is still healthy
 	if err == nil || errors.Is(err, gsx.ErrSpeedUnavailable) {
 		*failures = 0
 		return
@@ -115,7 +115,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			case line == "GET_MENU":
 				menu := s.ReadMenu()
 				msg(map[string]any{"status": "ok", "title": menu.Title, "options": menu.Options, "active": menu.Active, "remote_active": s.RemoteActive()})
-			// IPC clients supply the zero-based index expected by the transport
+			// IPC uses the original GSX slot index
 			case strings.HasPrefix(line, "SELECT:"):
 				n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "SELECT:")))
 				if err != nil {
@@ -171,13 +171,13 @@ func console(ctx context.Context, s *gsx.Session) {
 				_ = s.Toggle(ctx)
 			case k == '0':
 				_ = s.Release(ctx)
-			// Console keys are one-based GSX takes zero-based choices
+			// Subtract one to convert console keys to GSX slots
 			case k >= '1' && k <= '9':
 				_ = s.Choose(ctx, int(k-'1'))
 			}
 		}
 		next := ""
-		// Use ownership to clear stale rows after an idle release or disconnect.
+		// Use ownership to clear stale rows after an idle release or disconnect
 		if s.RemoteActive() && time.Since(last) >= 5*time.Second {
 			_ = s.Release(ctx)
 		}

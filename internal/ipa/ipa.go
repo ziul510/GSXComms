@@ -118,7 +118,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 			return value, nil
 		}
 	}
-	// Expand mixed-case or hyphenated words only once to avoid repeatedly splitting fragments
+	// Expand mixed case or hyphenated words only once to avoid repeatedly splitting fragments
 	if expand {
 		var expanded strings.Builder
 		for i, c := range word {
@@ -153,7 +153,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 			c = unicode.ToLower(c)
 		}
 		if id, ok := p.Text.Tokens[string(c)]; ok {
-			// The exported graph takes the checkpoint's repeated-character input
+			// The exported graph takes the checkpoint's repeated character input
 			for range p.Text.Repeated {
 				ids = append(ids, id)
 			}
@@ -197,7 +197,7 @@ func (p *Phonemizer) word(word string, expand bool) (string, error) {
 		}
 	}
 	value := result.String()
-	// Bound cache growth over a long-running worker session
+	// Keep the worker cache bounded
 	if len(p.cache) >= 4096 {
 		clear(p.cache)
 	}

@@ -24,7 +24,7 @@ var (
 	iVolume      = guid("{87CE5498-68D6-44E5-9215-6DA47EF883D8}")
 )
 
-// A malformed built-in COM identifier means the backend cannot run
+// An invalid COM identifier is a source error
 func guid(s string) windows.GUID {
 	g, err := windows.GUIDFromString(s)
 	if err != nil {
@@ -50,7 +50,7 @@ func (p *com) invoke(index int, args ...uintptr) error {
 	return nil
 }
 func (p *com) release() {
-	// Slot 2 is IUnknown.Release and drops the reference owned by the caller
+	// Slot 2 releases the caller's interface reference
 	if p != nil {
 		_ = p.invoke(2)
 	}
@@ -61,7 +61,7 @@ func (p *com) query(id *windows.GUID) (result *com, err error) {
 	return
 }
 func (p *com) str(index int) string {
-	// String getters return COM-allocated UTF-16 that must be copied and freed
+	// Copy the UTF16 string before freeing the COM buffer
 	var value *uint16
 	if p.invoke(index, uintptr(unsafe.Pointer(&value))) != nil || value == nil {
 		return ""
@@ -128,7 +128,7 @@ func (windowsAudio) Visit(fn func(audioSession) error) error {
 	}
 	defer e.release()
 	var endpoints *com
-	// Enumerate active render endpoints so sessions on non-default speakers are included
+	// Enumerate active render endpoints so sessions on other speakers are included
 	if err := e.invoke(3, 0, 1, uintptr(unsafe.Pointer(&endpoints))); err != nil {
 		return err
 	}
@@ -151,13 +151,13 @@ func (windowsAudio) Visit(fn func(audioSession) error) error {
 }
 
 func visitEndpoint(endpoint *com, fn func(audioSession) error) error {
-	// IMMDevice.GetId supplies the endpoint component of the journal identity
+	// Use the device ID as part of the journal identity
 	id := endpoint.str(5)
 	if id == "" {
 		return nil
 	}
 	var manager, enumerator *com
-	// IMMDevice.Activate opens IAudioSessionManager2 for this endpoint
+	// Open the session manager for this endpoint
 	if err := endpoint.invoke(3, uintptr(unsafe.Pointer(&iManager)), 23, 0, uintptr(unsafe.Pointer(&manager))); err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func visitSession(control *com, endpoint string, fn func(audioSession) error) er
 	if err != nil || start == 0 {
 		return nil
 	}
-	// ISimpleAudioVolume gives per-session mute access without changing endpoint volume
+	// Mute only this session through ISimpleAudioVolume
 	volume, err := control.query(&iVolume)
 	if err != nil {
 		return nil
@@ -231,7 +231,7 @@ func visitSession(control *com, endpoint string, fn func(audioSession) error) er
 
 func Run(dir string, hold func() error) error {
 	path := filepath.Join(dir, "gsx-mute.json")
-	// Portable copies still mute the same audio sessions, so share one mutex.
+	// Portable copies still mute the same audio sessions, so share one mutex
 	const name = `Local\GSXCommsGo.Mute`
 	mutex, err := windows.CreateMutex(nil, false, windows.StringToUTF16Ptr(name))
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
@@ -251,7 +251,7 @@ func Run(dir string, hold func() error) error {
 	}
 	defer windows.ReleaseMutex(mutex)
 	api := windowsAudio{}
-	// Recovery-only mode replays the journal without claiming a new mute
+	// Recovery mode replays the journal without claiming a new mute
 	if hold == nil {
 		return restore(path, api)
 	}

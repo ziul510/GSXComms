@@ -7,33 +7,38 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
 func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
-	// Reopening can overlap the previous editor's pending write.
+	// Reopening can overlap the previous editor's pending write
 	entries := config.Get[[]config.Preset](s.settingsDraft(), "presets")
 	form := config.Preset{Enabled: true}
 	selected, expanded := -1, -1
 	editing, saving := false, false
 	message := ""
+	const custom = "Custom"
 	available := config.Services[0]
+	customText := ""
 	startNew := func() {
 		selected, form, message = -1, config.Preset{Enabled: true}, ""
+		customText = ""
 		editing = true
 	}
 	var window *gui.Window
-	persist := func(updated []config.Preset) {
+	persist := func(updated []config.Preset, afterSave func()) {
 		saving, message = true, ""
 		s.saveSetting("presets", updated, func(err error) {
 			saving = false
 			if err != nil {
 				message = err.Error()
 			} else {
-				entries = updated
-				selected, expanded, editing = -1, -1, false
+				entries = config.Get[[]config.Preset](s.cfg, "presets")
+				expanded = -1
+				afterSave()
 				if !parent.CloseRequested() {
 					parent.InvalidateLayout()
 				}
@@ -43,9 +48,18 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			}
 		})
 	}
+	finishEdit := func() { selected, editing = -1, false }
 	save := func() {
+		if !editing || saving {
+			return
+		}
 		// Check duplicates against every other draft entry before inserting or replacing one
-		value, err := config.ValidatePreset(form, entries, selected)
+		value := form
+		if !config.Get[bool](s.settingsDraft(), config.MenuReadoutSetting) {
+			value.Services = slices.Clone(form.Services)
+			value.RemoveReadMenu()
+		}
+		value, err := config.ValidatePreset(value, entries, selected)
 		if err != nil {
 			message = err.Error()
 			return
@@ -56,14 +70,51 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		} else {
 			updated = append(updated, value)
 		}
-		persist(updated)
+		persist(updated, finishEdit)
+	}
+	deletePreset := func(index int, name string) {
+		window.NativeConfirmDialog(gui.NativeConfirmDialogCfg{
+			Title: "Delete preset?", Body: "Delete " + name + "?", Level: gui.AlertWarning,
+			OnDone: func(result gui.NativeAlertResult, _ *gui.Window) {
+				if result.Status != gui.DialogOK || saving || index >= len(entries) || entries[index].Name != name {
+					return
+				}
+				persist(slices.Delete(slices.Clone(entries), index, index+1), func() {
+					// Keep another preset's edit open and track its new index
+					switch {
+					case selected == index:
+						finishEdit()
+					case selected > index:
+						selected--
+					}
+				})
+			},
+		})
+	}
+	s.presetReadoutChanged = func() {
+		entries = config.Get[[]config.Preset](s.cfg, "presets")
+		if !config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+			form.RemoveReadMenu()
+			if available == config.ReadMenuAction {
+				available = config.Services[0]
+			}
+		}
+		if window != nil && !window.CloseRequested() {
+			window.InvalidateLayout()
+		}
 	}
 	var closeDialog func()
-	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, onClose, func(w *gui.Window) gui.View {
+	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, func() {
+		s.presetReadoutChanged = nil
+		onClose()
+	}, func(w *gui.Window) gui.View {
 		window = w
 		var body []gui.View
 		for i, p := range entries {
 			id := strconv.Itoa(i)
+			current := func() bool {
+				return !saving && i < len(entries) && entries[i].Name == p.Name
+			}
 			count := "1 service"
 			if len(p.Services) != 1 {
 				count = fmt.Sprintf("%d services", len(p.Services))
@@ -78,6 +129,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				action = "Collapse"
 			}
 			entry := buttonConfig("preset-"+id, action+" "+p.Name, 0, false, saving, func() {
+				if !current() {
+					return
+				}
 				if expanded == i {
 					expanded = -1
 				} else {
@@ -88,19 +142,33 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			entry.Padding = gui.PadVH(10, 12)
 			entry.A11YCfg.A11YLabel = action + " " + p.Name
 			entry.Content = []gui.View{wrapped(p.Name+" | "+p.Codeword+" | "+count, 13, color)}
-			rows := []gui.View{gui.Button(entry)}
+			rows := []gui.View{gui.Row(gui.ContainerCfg{
+				Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(4), VAlign: gui.VAlignMiddle,
+				Content: []gui.View{
+					gui.Button(entry),
+					modelButton("delete-preset-"+id, "Delete", 68, saving, func() {
+						if current() {
+							deletePreset(i, p.Name)
+						}
+					}),
+				},
+			})}
 			if expanded == i {
 				for index, service := range p.Services {
 					rows = append(rows, wrapped(fmt.Sprintf("%d. %s", index+1, service), 13, color))
 				}
 				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving, func() {
-					selected, form, message, editing = i, p, "", true
-					form.Services = slices.Clone(p.Services)
+					if !current() {
+						return
+					}
+					selected, form, message, editing = i, entries[i], "", true
+					form.Services = slices.Clone(form.Services)
+					customText = ""
 				}))
 			}
 			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(8), 5, rows...)))
 		}
-		// Show a first-preset action only while there is no editor to fill in
+		// Show a preset creation action only while there is no editor to fill in
 		if len(entries) == 0 && !editing {
 			create := buttonConfig("create-preset", "Create a preset", 160, true, false, startNew)
 			create.Height = 36
@@ -110,6 +178,11 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			}))
 		}
 		if editing {
+			choices := slices.Clone(config.Services)
+			if config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+				choices = append(choices, config.ReadMenuAction)
+			}
+			choices = append(choices, custom)
 			title := "New preset"
 			if selected >= 0 {
 				title = "Edit preset"
@@ -118,31 +191,68 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				bold(title, 14, ink),
 				formInput(gui.InputCfg{ID: "preset-name", Label: "Preset name", Text: form.Name, OnTextChanged: func(v string, _ gui.EventCtx) { form.Name = v }}),
 				formInput(gui.InputCfg{ID: "preset-trigger", Label: "Codeword", Text: form.Codeword, OnTextChanged: func(v string, _ gui.EventCtx) { form.Codeword = v }}),
-				toggleControl("preset-enabled", "Enabled", form.Enabled, func(ctx gui.EventCtx) {
+				toggleControl("preset-enabled", "Enabled", controlTextSize, form.Enabled, func(ctx gui.EventCtx) {
 					form.Enabled = !form.Enabled
 					ctx.Consume()
 					ctx.Window.InvalidateLayout()
 				}),
-				formSelect(gui.SelectCfg{ID: "preset-service", Label: "Services", Selected: []string{available}, Items: config.Services, OnSelect: func(v []string, ctx gui.EventCtx) {
+				formSelect(gui.SelectCfg{ID: "preset-service", Label: "Services", Selected: []string{available}, Items: choices, OnSelect: func(v []string, ctx gui.EventCtx) {
 					if len(v) > 0 {
 						available = v[0]
+						ctx.Window.InvalidateLayout()
 					}
 					ctx.Consume()
 				}}),
-				button("add-service", "Add service", 0, false, false, func() {
-					if !slices.Contains(form.Services, available) {
-						form.Services = append(form.Services, available)
-					}
-				}),
 			}
+			if available == custom {
+				editor = append(editor, formInput(gui.InputCfg{
+					ID: "preset-custom-text", Label: "GSX menu text", Text: customText,
+					Placeholder:   "Enter all or part of a menu option",
+					OnTextChanged: func(v string, _ gui.EventCtx) { customText = v },
+				}))
+			}
+			editor = append(editor, button("add-service", "Add service", 0, false, false, func() {
+				service := available
+				if available == custom {
+					text := strings.TrimSpace(customText)
+					if text == "" {
+						message = "Enter GSX menu text"
+						return
+					}
+					service = config.CustomServicePrefix + " " + text
+				}
+				if !slices.ContainsFunc(form.Services, func(other string) bool { return strings.EqualFold(other, service) }) {
+					form.Services = append(form.Services, service)
+					message = ""
+					if available == custom {
+						customText = ""
+					}
+				}
+			}))
 			// The order shown here is the order GSX will receive the services
 			for i, service := range form.Services {
 				id := strconv.Itoa(i)
+				// A settings save can remove readout steps before this window redraws
+				current := func() bool {
+					return editing && i < len(form.Services) && form.Services[i] == service
+				}
 				editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle, Content: []gui.View{
-					wrapped(service, 13, ink), spacer(),
-					button("up-"+id, "Up", 0, false, i == 0, func() { form.Services[i], form.Services[i-1] = form.Services[i-1], form.Services[i] }),
-					button("down-"+id, "Down", 0, false, i+1 == len(form.Services), func() { form.Services[i], form.Services[i+1] = form.Services[i+1], form.Services[i] }),
-					button("remove-"+id, "Remove", 0, false, false, func() { form.Services = slices.Delete(form.Services, i, i+1) }),
+					wrapped(fmt.Sprintf("%d. %s", i+1, service), 13, ink), spacer(),
+					button("up-"+id, "Up", 0, false, i == 0, func() {
+						if i > 0 && current() {
+							form.Services[i], form.Services[i-1] = form.Services[i-1], form.Services[i]
+						}
+					}),
+					button("down-"+id, "Down", 0, false, i+1 == len(form.Services), func() {
+						if i+1 < len(form.Services) && current() {
+							form.Services[i], form.Services[i+1] = form.Services[i+1], form.Services[i]
+						}
+					}),
+					button("remove-"+id, "Remove", 0, false, false, func() {
+						if current() {
+							form.Services = slices.Delete(form.Services, i, i+1)
+						}
+					}),
 				}}))
 			}
 			if message != "" {
@@ -152,15 +262,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			// Deletion is available only when the form refers to an existing preset
 			if selected >= 0 {
 				actions = append(actions, button("delete", "Delete", 0, false, saving, func() {
-					index := selected
-					w.NativeConfirmDialog(gui.NativeConfirmDialogCfg{
-						Title: "Delete preset?", Body: "Delete " + entries[index].Name + "?", Level: gui.AlertWarning,
-						OnDone: func(result gui.NativeAlertResult, _ *gui.Window) {
-							if result.Status == gui.DialogOK && !saving && index == selected {
-								persist(slices.Delete(slices.Clone(entries), index, index+1))
-							}
-						},
-					})
+					if editing && !saving && selected >= 0 && selected < len(entries) {
+						deletePreset(selected, entries[selected].Name)
+					}
 				}))
 			}
 			actions = append(actions, spacer(), button("cancel-edit", "Cancel", 0, false, saving, func() { editing = false }),
@@ -170,6 +274,8 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			editorCard.ColorBorder = accent
 			// Insert below the selected row, or at the top when creating a preset
 			body = slices.Insert(body, selected+1, gui.Column(editorCard))
+		} else if message != "" {
+			body = append(body, wrapped(message, 11, red))
 		}
 		newPreset := buttonConfig("new", "+ New", 96, true, saving, func() {
 			startNew()

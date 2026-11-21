@@ -14,11 +14,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Runs on every PR, including Dependabot's. Fails on disallowed/unknown licenses
-  # and posts an informational diff against the committed baseline.
   license-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -29,178 +27,63 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      - name: Install go-licenses
-        shell: bash
+      - name: Set up Rust
+        shell: pwsh
+        run: rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Check release notices against the reviewed inventory
+        shell: pwsh
         run: |
-          set -euo pipefail
-          GOROOT="$(go env GOROOT)"
-          echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
-          echo "$GOROOT/bin" >> "$GITHUB_PATH"
-          export GOROOT
-          export PATH="$GOROOT/bin:$PATH"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-licenses/v2@v2.0.1
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          $notices = Join-Path $env:RUNNER_TEMP 'THIRD_PARTY_NOTICES'
+          $modules = Join-Path $env:RUNNER_TEMP 'licenses.csv'
+          & ./scripts/notices.ps1 -Output $notices -ModuleReport $modules
 
-      - name: Check licenses and diff against baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-          IGNORE_ARGS=()
-          while IFS= read -r mod; do
-            [ -n "$mod" ] && IGNORE_ARGS+=(--ignore "$mod")
-          done < <(go list -m)
+          # Git returns 1 for a content difference
+          $PSNativeCommandUseErrorActionPreference = $false
+          $pairs = @{
+            'THIRD_PARTY_NOTICES' = $notices
+            'third_party/licenses.csv' = $modules
+          }
+          foreach ($path in ($pairs.Keys | Sort-Object)) {
+            if (!(Test-Path -LiteralPath $path)) {
+              "The next run on main will create $path." >> $env:GITHUB_STEP_SUMMARY
+              continue
+            }
+            $diff = git diff --no-index --ignore-cr-at-eol -- $path $pairs[$path]
+            if ($LASTEXITCODE -gt 1) { throw "Could not compare $path" }
+            if ($LASTEXITCODE -eq 1) {
+              @("## Changes in $path", '~~~diff') + $diff + '~~~' >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
 
-          # Fail on forbidden or unknown licenses (add ,restricted or ,reciprocal to tighten policy).
-          check_status=0
-          if ! go-licenses check ./... "${IGNORE_ARGS[@]}" --disallowed_types=forbidden,unknown 2> "$RUNNER_TEMP/check.err"; then
-            check_status=$?
-          fi
-          cat "$RUNNER_TEMP/check.err" >&2
-
-          printf '%s' '{{ range . }}{{ .Name }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$RUNNER_TEMP/report.tpl"
-          report_status=0
-          if ! go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$RUNNER_TEMP/report.tpl" > "$RUNNER_TEMP/licenses-raw.csv" 2> "$RUNNER_TEMP/report.err"; then
-            report_status=$?
-            cat "$RUNNER_TEMP/report.err" >&2
-          fi
-
-          if [ "$report_status" -eq 0 ]; then
-            LC_ALL=C sort "$RUNNER_TEMP/licenses-raw.csv" > "$RUNNER_TEMP/licenses-now.csv"
-            if [ ! -f third_party/licenses.csv ]; then
-              {
-                echo "## License baseline missing"
-                echo
-                echo "\`third_party/licenses.csv\` does not exist yet. Run this workflow manually on \`main\` (or merge this PR so the workflow opens a PR with the initial baseline and notices)."
-              } >> "$GITHUB_STEP_SUMMARY"
-            elif ! diff -u third_party/licenses.csv "$RUNNER_TEMP/licenses-now.csv" > "$RUNNER_TEMP/licenses.diff"; then
-              {
-                echo "## License changes detected (informational)"
-                echo
-                echo "Review before merging. Lines starting with \`-\` are the baseline, \`+\` lines are this PR."
-                echo "Baseline and \`THIRD_PARTY_NOTICES\` will be regenerated via an automated PR after merge."
-                echo '```diff'
-                cat "$RUNNER_TEMP/licenses.diff"
-                echo '```'
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "No license changes compared to baseline." >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            echo "::error::Failed to generate license report. See job log and step summary for details."
-            {
-              echo
-              echo "## Failed to generate license report"
-              echo '```'
-              cat "$RUNNER_TEMP/report.err"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ "$check_status" -ne 0 ]; then
-            echo "::error::Disallowed or unknown dependency license(s) detected. See job log and step summary for details."
-            {
-              echo
-              echo "## Disallowed or unknown licenses detected"
-              echo '```'
-              cat "$RUNNER_TEMP/check.err"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit "$check_status"
-          fi
-
-          if [ "$report_status" -ne 0 ]; then
-            exit "$report_status"
-          fi
-
-  # Runs on pushes to main and on manual runs.
-  # Rebuilds the baseline and notices file and opens a PR if anything changed.
-  # Note: go-licenses resolves dependencies for the runner OS/arch (linux/amd64).
-  # If you distribute macOS or Windows binaries, run per target GOOS/GOARCH.
   regenerate:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      - name: Install go-licenses
-        shell: bash
+      - name: Set up Rust
+        shell: pwsh
+        run: rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Regenerate release notices and module report
+        shell: pwsh
         run: |
-          set -euo pipefail
-          GOROOT="$(go env GOROOT)"
-          echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
-          echo "$GOROOT/bin" >> "$GITHUB_PATH"
-          export GOROOT
-          export PATH="$GOROOT/bin:$PATH"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-licenses/v2@v2.0.1
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
-      - name: Regenerate baseline and notices
-        shell: bash
-        run: |
-          set -euo pipefail
-          IGNORE_ARGS=()
-          while IFS= read -r mod; do
-            [ -n "$mod" ] && IGNORE_ARGS+=(--ignore "$mod")
-          done < <(go list -m)
-
-          SAVE_DIR="$RUNNER_TEMP/licenses"
-          mkdir -p third_party
-
-          printf '%s' '{{ range . }}{{ .Name }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$RUNNER_TEMP/report.tpl"
-          go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$RUNNER_TEMP/report.tpl" \
-            | LC_ALL=C sort > third_party/licenses.csv
-          go-licenses save ./... "${IGNORE_ARGS[@]}" --save_path="$SAVE_DIR" --force
-
-          {
-            echo "THIRD-PARTY SOFTWARE NOTICES"
-            echo
-            echo "This software includes the third-party Go modules listed below, used under their licenses."
-            while IFS=, read -r module license; do
-              [ -n "$module" ] || continue
-              echo
-              echo "================================================================"
-              echo "$module"
-              echo "License: $license"
-              echo "================================================================"
-              if [ ! -d "$SAVE_DIR/$module" ]; then
-                echo "::error::No saved license directory found for $module at $SAVE_DIR/$module (license: $license). If no license file exists in the module, resolve or ignore it before regenerating." >&2
-                exit 1
-              fi
-              mapfile -d '' -t files < <(
-                find -L "$SAVE_DIR/$module" -maxdepth 1 -type f ! -iname '*.go' \
-                  \( -iname 'license*' -o -iname 'licence*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'patents*' -o -iname 'unlicense*' -o -iname 'unlicence*' \) \
-                  -print0 | LC_ALL=C sort -z
-              )
-              if [ ${#files[@]} -eq 0 ]; then
-                mapfile -d '' -t files < <(
-                  find -L "$SAVE_DIR/$module" -maxdepth 1 -type f ! -iname '*.go' -iname 'readme*' -print0 | LC_ALL=C sort -z
-                )
-              fi
-              if [ ${#files[@]} -eq 0 ]; then
-                echo "::error::No license or notice files found for $module in $SAVE_DIR/$module" >&2
-                exit 1
-              fi
-              for f in "${files[@]}"; do
-                echo "--- $(basename "$f") ---"
-                cat "$f"
-                echo
-              done
-            done < third_party/licenses.csv
-          } > THIRD_PARTY_NOTICES
-
+          New-Item -ItemType Directory -Force third_party | Out-Null
+          & ./scripts/notices.ps1 -ModuleReport third_party/licenses.csv
       - name: Create pull request if changed
         uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           commit-message: "chore: update third-party notices"
           title: "chore: update third-party notices"
           body: |
-            Automated update of `third_party/licenses.csv` and `THIRD_PARTY_NOTICES` by the Third-party notices workflow.
+            Regenerate the Windows release notices and Go module report from the reviewed inventory.
           branch: chore/update-third-party-notices
           add-paths: |
             THIRD_PARTY_NOTICES

@@ -24,7 +24,7 @@ func main() {
 }
 
 func appDirectory(override string) (string, error) {
-	// An explicit override keeps test and developer runs isolated.
+	// An explicit override keeps test and developer runs isolated
 	if override != "" {
 		return filepath.Abs(override)
 	}
@@ -32,6 +32,6 @@ func appDirectory(override string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Use the executable path because shortcuts can change the working directory.
+	// Use the executable path because shortcuts can change the working directory
 	return filepath.Dir(exe), nil
 }

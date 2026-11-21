@@ -31,7 +31,7 @@ type helperReply struct {
 	Fatal bool     `json:"fatal"`
 }
 
-// Serialize individual exchanges so telemetry can run between menu operations.
+// Serialize individual exchanges so telemetry can run between menu operations
 type helperTransport struct {
 	gate chan struct{}
 	cmd  *exec.Cmd
@@ -48,7 +48,7 @@ func Connect(ctx context.Context) (Transport, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve the helper beside the executable so the ZIP can launch from any working directory.
+	// Resolve the helper beside the executable so the ZIP can launch from any working directory
 	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
 	return connectHelper(ctx, cmd)
 }
@@ -111,7 +111,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		}
 	}
 	if req != nil {
-		// Bound stalled pipe writes and reads even when the console supplies no deadline.
+		// Bound stalled pipe writes and reads even when the console supplies no deadline
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Second)
 		defer cancel()
@@ -133,9 +133,13 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		sent <- result{reply: reply, err: err}
 	}()
 	fail := func(err error) (helperReply, error) {
-		// A lost reply can mean the simulator already processed the write.
 		t.stop()
-		if req != nil && req.Op == "set" {
+		// A failed initial handshake has no live connection to lose
+		if req == nil {
+			return helperReply{}, err
+		}
+		// A lost reply can mean the simulator already processed the write
+		if req.Op == "set" {
 			err = errors.Join(errWriteUncertain, err)
 		}
 		return helperReply{}, errors.Join(ErrDisconnected, err)

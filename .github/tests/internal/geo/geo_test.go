@@ -6,6 +6,7 @@ package geo
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestAirportLocations(t *testing.T) {
 		{55.949, -3.364, "GB", "Scottish"}, {48.3538, 11.7861, "DE", "German"}, {35.5494, 139.7798, "JP", "Japanese"},
 	} {
 		p, err := Nearest(test.lat, test.lon)
-		if err != nil || p.Country != test.cc || Accent(p, Overrides(t.TempDir()), "American", "") != test.accent {
+		if err != nil || p.Country != test.cc || !slices.Contains(AccentCandidates(p, nil), test.accent) {
 			t.Errorf("lookup = %#v, %v", p, err)
 		}
 	}
@@ -36,11 +37,13 @@ func TestLocalOverrideByCountryNameAndCode(t *testing.T) {
 	}{
 		{Position{Country: "DE"}, "French"},
 		{Position{Country: "CA"}, "British"},
-		// A local country override takes precedence over the stock regional accent.
+		// A local country override takes precedence over the stock regional accent
 		{Position{Country: "GB", Region: "Scotland"}, "Irish"},
 	} {
-		if got := Accent(sample.pos, overrides, "American", ""); got != sample.want {
-			t.Errorf("%v: got %q, want %q", sample.pos, got, sample.want)
+		candidates := AccentCandidates(sample.pos, overrides)
+		first := slices.IndexFunc(candidates, func(name string) bool { return name != "" })
+		if first < 0 || candidates[first] != sample.want {
+			t.Errorf("%v: candidates %q, want %q first", sample.pos, candidates, sample.want)
 		}
 	}
 }

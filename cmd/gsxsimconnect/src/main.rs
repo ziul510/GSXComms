@@ -3,12 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 use simconnect::{
-    SimConnect,
+    OpenError, SimConnect,
     proto::{
         codec::PacketReader,
         enums::{DataRequestFlags, DataSetFlags, DataType, Period, RecvId},
         recv::{parse_exception, parse_sim_object_data},
     },
+    transport::{self, DEFAULT_PIPE_NAME, PREPAR3D_PIPE_NAMES, Transport},
 };
 use std::{
     collections::HashMap,
@@ -121,8 +122,7 @@ async fn wait_for_reply(
 ) -> Reply {
     let result = timeout(wait, async {
         loop {
-            // A late response can arrive during the next request. Match reads by both IDs
-            // and match exceptions by their original SimConnect send ID.
+            // Match late reads by request and definition IDs and exceptions by send ID
             match messages.recv().await {
                 Some(Message::Value(id, def, value))
                     if Some(id) == request_id && def == definition =>
@@ -152,7 +152,7 @@ async fn wait_for_reply(
     match result {
         Ok(reply) => reply,
         Err(_) if request_id.is_some() => error("SimConnect read timed out", false),
-        // The wire protocol only acknowledges failed writes, so allow a short exception window.
+        // The wire protocol only acknowledges failed writes, so allow a short exception window
         Err(_) => Reply::default(),
     }
 }
@@ -181,7 +181,7 @@ async fn request(
     let (definition, registered) = match definitions.get(name) {
         Some(ids) => *ids,
         None => {
-            // Keep a variable's definition and the registration send ID for this connection.
+            // Keep a variable's definition and the registration send ID for this connection
             let definition = definitions.len() as u32 + 1;
             match sim
                 .add_to_data_definition(definition, name, Some(unit), DataType::Float64, 0.0, -1)
@@ -246,14 +246,50 @@ async fn request(
     }
 }
 
+async fn open_simconnect() -> Result<SimConnect, String> {
+    const APP_NAME: &str = "GSXComms";
+    match SimConnect::open_local(APP_NAME).await {
+        Ok(sim) => return Ok(sim),
+        Err(OpenError::Io(err)) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    // An MSFS configuration can expose a different SimConnect pipe
+    let mut failure =
+        "No local SimConnect pipe is available. Start Microsoft Flight Simulator and try again."
+            .to_owned();
+    for pipe in transport::scan_for_pipe_names("SimConnect") {
+        if pipe.eq_ignore_ascii_case(DEFAULT_PIPE_NAME)
+            || PREPAR3D_PIPE_NAMES
+                .iter()
+                .any(|name| pipe.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let open = SimConnect::open_with(APP_NAME, || async {
+            transport::connect_pipe(&pipe)
+                .await
+                .map(|client| Box::new(client) as Box<dyn Transport>)
+        });
+        // A stale endpoint must leave time to try the next one
+        match timeout(Duration::from_secs(1), open).await {
+            Ok(Ok(sim)) => return Ok(sim),
+            Ok(Err(OpenError::Io(err))) if err.kind() == io::ErrorKind::NotFound => {}
+            Ok(Err(err)) => failure = format!("Could not open a local SimConnect pipe: {err}"),
+            Err(_) => failure = "Local SimConnect handshake timed out.".to_owned(),
+        }
+    }
+    Err(failure)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
-    let sim = match SimConnect::open_local("GSXComms").await {
+    let sim = match open_simconnect().await {
         Ok(sim) => Arc::new(sim),
-        Err(reason) => return send_reply(error(reason.to_string(), true)),
+        Err(reason) => return send_reply(error(reason, true)),
     };
     send_reply(Reply::default())?;
-    // Read the parent's pipe off the async runtime so a quiet pipe cannot block SimConnect.
+    // Read the parent pipe on its own thread to keep SimConnect responsive
     let (tx, mut input) = mpsc::channel(1);
     std::thread::spawn(move || {
         for line in io::stdin().lock().lines().map_while(Result::ok) {
@@ -266,7 +302,7 @@ async fn main() -> io::Result<()> {
     tokio::spawn(receive(Arc::clone(&sim), tx));
     let mut definitions = HashMap::new();
     let mut next_id = 0u32;
-    // The parent submits one request at a time. EOF or a fatal reply ends this connection.
+    // End the connection on EOF or a fatal reply
     while let Some(line) = input.recv().await {
         let reply = match serde_json::from_str(&line) {
             Ok(req) => request(req, &sim, &mut definitions, &mut next_id, &mut messages).await,

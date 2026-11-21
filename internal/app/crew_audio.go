@@ -17,14 +17,16 @@ import (
 )
 
 type playback struct {
-	prefs                 config.Values
-	pcm                   []byte
-	rate                  int
-	cue, option           string
-	voice                 string
-	location              *geo.Position
-	priority, stateChange bool
-	dry                   bool
+	prefs             config.Values
+	pcm               []byte
+	rate              int
+	cue, option       string
+	voice, crewAccent string
+	readout           string
+	readoutEntries    int
+	location          *geo.Position
+	priority, ordered bool
+	dry               bool
 }
 
 func (s *state) randomizeVoice() {
@@ -37,21 +39,17 @@ func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
 }
 
 func (s *state) enqueueCue(prefs config.Values, name, option string, priority, stateChange bool) {
-	next := s.settingsDraft()
-	forced := config.Get[string](next, "force_accent")
 	prefs = prefs.Copy()
-	prefs.Put("force_accent", forced)
-	queued := s.queueAudio(playback{
-		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(), stateChange: stateChange,
-	}, priority)
-	// Consume the accent only when the interaction actually enters playback.
-	if queued && forced != "" && forced != "Disabled" {
-		next.Put("force_accent", "Disabled")
-		s.save(next, nil)
+	// Use the latest saved accent settings even if the command started before the save
+	for _, key := range []string{"force_accent", "default_accent", "installed_packs"} {
+		prefs[key] = s.cfg[key]
 	}
+	s.queueAudio(playback{
+		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(), ordered: stateChange,
+	}, priority)
 }
 
-func (p playback) protected() bool { return p.priority || p.stateChange }
+func (p playback) protected() bool { return p.priority || p.ordered }
 
 func (s *state) queueAudio(request playback, interrupt bool) bool {
 	s.audioMu.Lock()
@@ -70,9 +68,10 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 			i++
 		}
 		s.audioQueue = slices.Insert(s.audioQueue, i, request)
-	} else if request.stateChange || len(s.audioQueue) < 16 {
+	} else if len(s.audioQueue) < 16 || request.ordered && request.readout == "" {
 		s.audioQueue = append(s.audioQueue, request)
 	} else {
+		s.traceLevel("WARN", "AUDIO", "Playback skipped because the queue is full")
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 		return false
 	}
@@ -106,19 +105,19 @@ func (s *state) playbackLoop() {
 		s.audioMu.Unlock()
 
 		if next.cue != "" {
-			next.pcm, next.rate = s.regionalCue(next)
+			next.pcm, next.rate, next.crewAccent = s.regionalCue(next)
 		}
 		if ctx.Err() == nil {
 			if next.cue != "" && len(next.pcm) == 0 {
 				if missing != next.cue {
 					message := "No installed crew recording for " + next.cue
 					s.async(func() { s.log("AUDIO", message) })
-					s.trace("AUDIO", "No installed crew recording matched the cue")
+					s.traceLevel("WARN", "AUDIO", "No installed crew recording matched the cue")
 				}
 				missing = next.cue
 			} else if err := s.output(ctx, next); err != nil && ctx.Err() == nil {
 				s.async(func() { s.log("AUDIO", err.Error()) })
-				s.traceFailure("AUDIO", "Windows audio playback failed")
+				s.traceFailure("AUDIO", "Windows audio playback failed", err)
 			}
 		}
 		cancel()
@@ -136,7 +135,7 @@ func (s *state) resetServices() {
 	clear(s.services)
 }
 
-// Service state is inferred from successful selections, just as in the legacy app.
+// Service state is inferred from successful selections, just as in the legacy app
 func (s *state) acknowledge(prefs config.Values, service, selected string, voice bool) {
 	if slices.Contains(statefulServices, service) {
 		s.servicesMu.Lock()
@@ -162,7 +161,7 @@ func (s *state) acknowledge(prefs config.Values, service, selected string, voice
 	}
 }
 
-// Python v4.1 uses this order for GPU, jetway, and stairs
+// Match the legacy transition order for GPU, jetway, and stairs
 var serviceTransitions = []struct {
 	words  []string
 	target string
@@ -193,7 +192,7 @@ type crewMute struct {
 	timer   *time.Timer
 }
 
-// Commands and their audio can overlap. Keep one watchdog until both finish and the grace period expires.
+// Hold the watchdog through overlapping commands and audio plus the grace period
 func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	if !config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice") || ctx.Err() != nil {
 		return func() {}
@@ -208,6 +207,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	if m.release == nil {
 		release, err := startMute(ctx, s.dir)
 		if err != nil {
+			s.traceFailure("AUDIO", "Could not mute Couatl/GSX audio", err)
 			s.async(func() { s.log("AUDIO", "Could not mute Couatl/GSX audio") })
 			return func() {}
 		}
@@ -223,7 +223,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 			timer = time.AfterFunc(3950*time.Millisecond, func() {
 				m.Lock()
 				defer m.Unlock()
-				// A newer speech window may have replaced this timer while it waited for the lock.
+				// A newer speech window may have replaced this timer while it waited for the lock
 				if m.timer == timer {
 					m.stop()
 				}
@@ -233,7 +233,7 @@ func (s *state) muteCrew(ctx context.Context, prefs config.Values) func() {
 	}
 }
 
-// The caller holds the mute lock when stopping the watchdog.
+// The caller holds the mute lock when stopping the watchdog
 func (m *crewMute) stop() {
 	if m.timer != nil {
 		m.timer.Stop()

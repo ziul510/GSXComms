@@ -61,7 +61,7 @@ sequence = torch.zeros((1, 256), dtype=torch.long)
 ids = prep.text_tokenizer("jetway", "en_us")
 sequence[0, :len(ids)] = torch.tensor(ids)
 torch.set_num_threads(2)
-# Export a self-contained graph that can load from the installed worker directory
+# Export a standalone graph that can load from the installed worker directory
 torch.onnx.export(
     Graph(model).eval(), (sequence,), str(output_path / "phonemizer.onnx"),
     input_names=["sequence"], output_names=["tokens"], opset_version=17,

@@ -14,10 +14,10 @@ if ($packs.Count -ne 8) { throw 'Expected all eight regional accent packs' }
 foreach ($step in 1..5) {
     if (!(Test-Path -LiteralPath "tutorial/step$step.png" -PathType Leaf)) { throw "Missing tutorial/step$step.png" }
 }
-# List runtime files explicitly so stale build outputs cannot enter a release.
+# List runtime files explicitly so stale build outputs cannot enter a release
 $files = @(
     Get-Item -LiteralPath 'LICENSE', 'build/THIRD_PARTY_NOTICES'
-    Get-Item -LiteralPath 'build/GSXComms.exe', 'build/gsxsimconnect.exe', 'build/gsxmute.exe'
+    Get-Item -LiteralPath 'build/GSXComms.exe', 'build/gsxsimconnect.exe', 'build/gsxmute.exe', 'build/gsxdebug.exe'
     Get-Item -LiteralPath 'build/workers/sherpa/gsxspeech.exe', 'build/workers/sherpa/sherpa-onnx-c-api.dll', 'build/workers/sherpa/onnxruntime.dll'
     Get-Item -LiteralPath 'build/workers/kokoro/gsxspeech.exe', 'build/workers/kokoro/onnxruntime.dll', 'build/workers/kokoro/phonemizer.onnx', 'build/workers/kokoro/phonemizer.json'
     $packs

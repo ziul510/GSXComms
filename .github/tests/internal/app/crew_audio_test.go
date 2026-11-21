@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"slices"
 	"testing"
+
+	"github.com/go-gui-org/go-gui/gui"
 )
 
 func TestCrewServiceTransitions(t *testing.T) {
@@ -45,10 +47,17 @@ func TestCrewLoudnessGain(t *testing.T) {
 
 func TestProtectedAudioSurvivesOverflowAndInterruption(t *testing.T) {
 	s := &state{ctx: t.Context()}
-	for range 16 {
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{})
+	if !s.queueAudio(playback{readout: "readout fixture", ordered: true}, false) {
+		t.Fatal("readout was rejected with space in the queue")
+	}
+	for range 15 {
 		s.queueAudio(playback{cue: "normal"}, false)
 	}
-	if !s.queueAudio(playback{cue: "gpu", stateChange: true}, false) ||
+	if s.queueAudio(playback{readout: "overflow", ordered: true}, false) {
+		t.Fatal("readout exceeded queue capacity")
+	}
+	if !s.queueAudio(playback{cue: "gpu", ordered: true}, false) ||
 		!s.queueAudio(playback{cue: "error 1"}, true) ||
 		!s.queueAudio(playback{cue: "error 2"}, true) {
 		t.Fatal("protected cue was rejected")
@@ -57,7 +66,7 @@ func TestProtectedAudioSurvivesOverflowAndInterruption(t *testing.T) {
 	for _, request := range s.audioQueue {
 		cues = append(cues, request.cue)
 	}
-	if !slices.Equal(cues, []string{"error 1", "error 2", "gpu"}) {
+	if !slices.Equal(cues, []string{"error 1", "error 2", "", "gpu"}) || s.audioQueue[2].readout != "readout fixture" {
 		t.Fatalf("wrong protected playback order: %v", cues)
 	}
 }

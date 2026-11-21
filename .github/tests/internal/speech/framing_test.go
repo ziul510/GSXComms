@@ -16,7 +16,7 @@ import (
 func TestProtocol(t *testing.T) {
 	f := Frame{Version: Version, ID: 5, Op: "transcribe", SampleRate: 16000, PCM: []byte{0, 128, 0, 0}}
 	var stream bytes.Buffer
-	// Round-trip a frame containing binary audio as well as metadata
+	// Round trip a frame containing binary audio as well as metadata
 	if err := Write(&stream, f); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSilenceGate(t *testing.T) {
 	}
 }
 
-func TestWorkerRequiresExplicitRetryAfterRepeatedFailures(t *testing.T) {
+func TestWorkerWaitsBeforeRetryingRepeatedFailures(t *testing.T) {
 	w := NewWorker("missing-test-worker")
 	if err := w.Load(t.Context(), "model", nil, nil); err == nil || w.failures != 1 {
 		t.Fatalf("first launch: failures=%d err=%v", w.failures, err)
@@ -55,10 +55,13 @@ func TestWorkerRequiresExplicitRetryAfterRepeatedFailures(t *testing.T) {
 	if err := w.Load(t.Context(), "model", nil, nil); err == nil || w.failures != 2 {
 		t.Fatalf("second launch: failures=%d err=%v", w.failures, err)
 	}
-	// Elapsed time alone can't clear the explicit reload requirement
-	w.failed = time.Now().Add(-2 * time.Minute)
+	w.failed = time.Now().Add(-2 * time.Second)
 	if err := w.start(t.Context()); err == nil || w.failures != 2 {
 		t.Fatalf("unexpected automatic retry: failures=%d err=%v", w.failures, err)
+	}
+	w.failed = time.Now().Add(-2 * retryWindow)
+	if err := w.start(t.Context()); err == nil || w.failures != 1 {
+		t.Fatalf("retry window left failures=%d err=%v", w.failures, err)
 	}
 	w.Reset()
 	if w.failures != 0 || !w.failed.IsZero() {

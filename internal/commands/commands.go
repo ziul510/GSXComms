@@ -69,7 +69,7 @@ type Vocabulary struct {
 }
 
 func Load(dir string) (Vocabulary, error) {
-	// Surface read errors so a broken local vocabulary override is visible.
+	// Surface read errors so a broken local vocabulary override is visible
 	raw, err := os.ReadFile(filepath.Join(dir, "words.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		raw, err = assets.Files.ReadFile("words.json")
@@ -241,8 +241,7 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 	for _, match := range re.FindAllStringIndex(text, -1) {
 		left, _ := utf8.DecodeLastRuneInString(text[:match[0]])
 		right, _ := utf8.DecodeRuneInString(text[match[1]:])
-		// A match bordered by Unicode word characters is part of another word
-		// A hyphen can also protect the suffix when applying service bias variants
+		// Keep Unicode word boundaries and leave bias variants after a hyphen alone
 		if word(left) || word(right) || (noHyphen && left == '-') {
 			continue
 		}
@@ -258,6 +257,35 @@ func replaceWhole(text string, re *regexp.Regexp, noHyphen bool, replace func(st
 }
 
 var aground = regexp.MustCompile("(?i)aground")
+
+// Match whole phrases to keep ordinary words and identifiers intact
+var localCorrections = []struct {
+	pattern   *regexp.Regexp
+	canonical string
+}{
+	{regexp.MustCompile(`(?i)(?:(?:cock\s+pitch|cock\s*pit|clock\s+pit)\s+(?:to|two|too|a)\s+(?:the\s+)?|clock\s+picture\s+)ground`), "cockpit to ground"},
+	{regexp.MustCompile(`(?i)ground\s+powder`), "ground power"},
+	{regexp.MustCompile(`(?i)(?:g[.\s-]+p[.\s-]+u|gee\s+pee\s+you)`), "GPU"},
+	{regexp.MustCompile(`(?i)jet[\s-]+way`), "jetway"},
+	{regexp.MustCompile(`(?i)jet\s+breach`), "jet bridge"},
+	{regexp.MustCompile(`(?i)air\s+(?:stares|stainers)`), "air stairs"},
+	{regexp.MustCompile(`(?i)(?:fuel\s+track|fool\s+truck)`), "fuel truck"},
+	{regexp.MustCompile(`(?i)de[\s-]+sing`), "deicing"},
+	{regexp.MustCompile(`(?i)de[\s-]+boarding`), "deboarding"},
+	{regexp.MustCompile(`(?i)laboratory\s+truck`), "lavatory truck"},
+	{regexp.MustCompile(`(?i)laboratory\s+service`), "lavatory service"},
+}
+
+var localRequest = regexp.MustCompile(`(?i)^(\s*(?:(?:cockpit to ground|ground)[\s,.:;!?]+)?(?:please[\s,]+)?)(?:x(?:-|\s+)?ray|re[\s-]+quest)($|[^\p{L}\p{N}_])`)
+
+// CorrectLocalTranscript repairs known Parakeet and Orukeet mishearings
+func CorrectLocalTranscript(text string) string {
+	for _, correction := range localCorrections {
+		text = replaceWhole(text, correction.pattern, false, func(string) string { return correction.canonical })
+	}
+	// Correct only the opening request phrase so NATO gate names stay intact
+	return localRequest.ReplaceAllString(text, "${1}request${2}")
+}
 
 // Fix common transcript errors and NATO words before applying service bias rules
 func (v Vocabulary) Normalize(text string) string {
@@ -276,10 +304,10 @@ type Action struct {
 }
 
 func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatching bool) Action {
-	// Normalization may rewrite a preset codeword, so try the original words too
-	for _, candidate := range []string{text, raw} {
+	// Prefer the original codeword when correction matches a different preset
+	for _, candidate := range []string{raw, text} {
 		for _, p := range presets {
-			if p.Enabled && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
+			if p.Enabled && len(p.Services) > 0 && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
 				return Action{Kind: "preset", Preset: p.Name, Services: slices.Clone(p.Services)}
 			}
 		}
@@ -325,7 +353,7 @@ func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatchin
 	}
 }
 
-// Normalize common compounds before matching commands or menu options.
+// Normalize common compounds before matching commands or menu options
 var (
 	deice    = regexp.MustCompile(`\b(de|anti)[\s_-]+ic`)
 	pushback = regexp.MustCompile(`\bpush[\s_-]+back\b`)
@@ -364,7 +392,7 @@ func stem(w string) string {
 	return strings.TrimRight(w, "e")
 }
 
-// ratio uses the same longest contiguous matching-block ratio as difflib
+// Score matching blocks with the same ratio as difflib
 func ratio(left, right string) float64 {
 	a, b := []rune(left), []rune(right)
 	if len(a)+len(b) == 0 {
@@ -374,7 +402,7 @@ func ratio(left, right string) float64 {
 	for j, char := range b {
 		positions[char] = append(positions[char], j)
 	}
-	// Mirror difflib's frequent-character cutoff on longer inputs
+	// Mirror difflib's frequent character cutoff on longer inputs
 	if len(b) >= 200 {
 		limit := len(b)/100 + 1
 		for char, idx := range positions {
@@ -383,7 +411,7 @@ func ratio(left, right string) float64 {
 			}
 		}
 	}
-	// Find the longest contiguous match, then repeat on the text to either side
+	// Repeat the longest match search on each side of the matching block
 	var count func(int, int, int, int) int
 	count = func(al, ah, bl, bh int) int {
 		bestI, bestJ, size := al, bl, 0
@@ -501,7 +529,7 @@ func score(text, option string, index int) int {
 		}
 	}
 	n += len(covered) * 40 / len(b)
-	// Give explicit numbered choices a strong bonus using whole-number tokens
+	// Give explicit numbered choices a strong bonus using whole number tokens
 	for _, prefix := range []string{"option ", "number ", "choice "} {
 		if phrase(prefix+strconv.Itoa(index+1), x) {
 			return n + 200
@@ -512,6 +540,12 @@ func score(text, option string, index int) int {
 
 // Apply the minimum score and keep the earlier option when scores tie
 func Match(text string, options []string) (index, points int) {
+	if index, explicit := ExplicitNumber(text); explicit {
+		if index >= 0 && index < len(options) {
+			return index, max(200, score(text, options[index], index))
+		}
+		return -1, 0
+	}
 	index = -1
 	for i, option := range options {
 		if n := score(text, option, i); n >= 25 && n > points {
@@ -519,6 +553,26 @@ func Match(text string, options []string) (index, points int) {
 		}
 	}
 	return
+}
+
+func ExplicitNumber(text string) (int, bool) {
+	words := strings.Fields(strings.ToLower(text))
+	if len(words) != 2 || !slices.Contains([]string{"option", "number", "choice"}, strings.TrimSuffix(words[0], ":")) {
+		return -1, false
+	}
+	number := strings.TrimRight(words[1], ".,!?")
+	if digit := language.Numbers[number]; digit != "" {
+		number = digit
+	}
+	digits := strings.TrimPrefix(number, "-")
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return -1, false
+	}
+	index, err := strconv.Atoi(number)
+	if err != nil || index < 1 || index > 9 {
+		return -1, true
+	}
+	return index - 1, true
 }
 
 func CorrectMenu(text string, options []string) (string, float64) {
@@ -552,7 +606,7 @@ func CorrectMenu(text string, options []string) (string, float64) {
 	return best, bestRatio
 }
 
-// Recognize standalone selections and convert menu labels to zero-based slots
+// Subtract one from standalone menu numbers
 func Number(text string) (int, bool) {
 	text = strings.TrimRight(strings.TrimSpace(strings.ToLower(text)), ".,!?")
 	if len(text) == 1 && text[0] >= '1' && text[0] <= '9' {
@@ -562,18 +616,7 @@ func Number(text string) (int, bool) {
 	return index, index >= 0
 }
 
-// Voxtral gets service names and keywords in the prompt it uses for transcription
-func (v Vocabulary) HotwordTable() string {
-	var lines []string
-	for _, e := range v.entries {
-		if len(e.Keywords) > 0 {
-			lines = append(lines, e.Name+": "+strings.Join(e.Keywords, ", "))
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-// The GSX session uses these custom labels before trying built-in aliases
+// Return the configured service aliases
 func (v Vocabulary) Keywords(service string) []string {
 	for _, e := range v.entries {
 		if e.Name == service {

@@ -39,6 +39,7 @@ var accents = func() []string {
 	for _, pack := range packs {
 		names = append(names, pack.accents...)
 	}
+	slices.Sort(names)
 	return names
 }()
 
@@ -52,7 +53,7 @@ func assetDir(name string) string {
 	return name
 }
 
-func (s *state) openAccents() {
+func (s *state) openAccents(onSaved func()) {
 	if s.accentOpen {
 		return
 	}
@@ -63,7 +64,12 @@ func (s *state) openAccents() {
 		cancel()
 		s.accentOpen = false
 	}, accentSetupView(ctx, s.accentsDir, filepath.Join(s.dir, "Accents"), s.settingsDraft(), func(enabled []string, fallback string, then func(error)) {
-		s.save(accentPreferences(s.settingsDraft(), enabled, fallback), then)
+		s.save(accentPreferences(s.settingsDraft(), enabled, fallback), func(err error) {
+			if err == nil && onSaved != nil {
+				onSaved()
+			}
+			then(err)
+		})
 	}, func(*gui.Window) { closeDialog() }))
 }
 
@@ -78,12 +84,36 @@ func accentPreferences(prefs config.Values, enabled []string, fallback string) c
 	return prefs
 }
 
+// Recover setup from complete recordings when the saved completion flag is missing
+func restoreAccentSetup(recordings string, prefs config.Values) bool {
+	enabled := config.Get[[]string](prefs, "installed_packs")
+	var installed, options []string
+	for _, pack := range packs {
+		if (len(enabled) == 0 || slices.Contains(enabled, pack.name)) && legacyAccentPack(recordings, pack.name, pack.accents) {
+			installed = append(installed, pack.name)
+			options = append(options, pack.accents...)
+		}
+	}
+	if len(installed) == 0 {
+		return false
+	}
+	fallback := config.Get[string](prefs, "default_accent")
+	if len(enabled) == 0 {
+		enabled = installed
+		if !slices.Contains(options, fallback) {
+			fallback = slices.Min(options)
+		}
+	}
+	accentPreferences(prefs, enabled, fallback)
+	return true
+}
+
 func accentSetupView(ctx context.Context, archives, recordings string, prefs config.Values, save func([]string, string, func(error)), complete func(*gui.Window)) gui.ViewFunc {
 	enabled := config.Get[[]string](prefs, "installed_packs")
 	fallback := config.Get[string](prefs, "default_accent")
 	available, selected := map[string]bool{}, map[string]bool{}
 	for _, pack := range packs {
-		extracted := accentPackInstalled(recordings, pack.name) || legacyAccentPack(recordings, pack.name, pack.accents)
+		extracted := legacyAccentPack(recordings, pack.name, pack.accents)
 		if extracted {
 			available[pack.name] = true
 		} else if archive, err := zip.OpenReader(filepath.Join(archives, pack.name+".zip")); err == nil {
@@ -93,9 +123,11 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 		selected[pack.name] = available[pack.name] && (slices.Contains(enabled, pack.name) ||
 			(extracted && !config.Get[bool](prefs, "accent_setup_complete")))
 	}
+	var installed []string
 	var saving bool
 	var message string
 	return func(w *gui.Window) gui.View {
+		locked := saving || len(installed) > 0
 		var body []gui.View
 		var options []string
 		for _, pack := range packs {
@@ -106,47 +138,78 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 			if !available[pack.name] {
 				details += " · Archive unavailable"
 			}
-			check := gui.Checkbox(gui.ToggleCfg{
+			check := gui.ToggleCfg{
 				ID: "pack-" + pack.name, Label: pack.name, Selected: selected[pack.name],
-				Disabled: saving || !available[pack.name], Padding: gui.NoPadding, Size: gui.SomeF(20),
+				Disabled: locked || !available[pack.name], Padding: gui.NoPadding, Size: gui.SomeF(20),
 				TextStyleLabel: labelStyle(15, ink).Bold(), ColorSelect: accent,
 				OnClick: func(ctx gui.EventCtx) {
 					ctx.Consume()
 					selected[pack.name] = !selected[pack.name]
 					w.InvalidateLayout()
 				},
-			})
-			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(12), 6, check, wrapped(details, 13, muted))))
-		}
-		slices.Sort(options)
-		// If the selected packs exclude the old default, offer the first available accent.
-		defaultAccent := fallback
-		if len(options) > 0 {
-			if !slices.Contains(options, defaultAccent) {
-				defaultAccent = options[0]
 			}
-			body = append(body, settingsField("Default accent", formSelect(gui.SelectCfg{
-				ID: "wizard-default-accent", Items: options, Selected: []string{defaultAccent},
-				OnSelect: func(values []string, ctx gui.EventCtx) {
-					if len(values) > 0 {
-						fallback = values[0]
-					}
-					ctx.Consume()
-					w.InvalidateLayout()
-				},
-			})))
+			if locked && check.Selected {
+				// Keep the checkmark legible after the selection locks
+				check.ColorSelect = accentHover
+				check.TextStyle = gui.CurrentTheme().TextStyleDisabled.Bold()
+				check.TextStyle.Color = ink
+			}
+			body = append(body, gui.Column(outlinedCard(card, gui.PadAll(12), 6, gui.Checkbox(check), wrapped(details, 13, muted))))
 		}
 		header := []gui.View{
 			bold("Accent Setup", 24, ink),
 			wrapped("Choose which regional voice packs to install. Recordings generated with ElevenLabs.", 14, muted),
 			gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(8), Content: []gui.View{
-				button("select-all", "Select All", 0, false, saving || len(available) == 0, func() {
+				button("select-all", "Select All", 0, false, locked || len(available) == 0, func() {
 					for name := range available {
 						selected[name] = true
 					}
 				}),
-				button("deselect-all", "Deselect All", 0, false, saving, func() { clear(selected) }),
+				button("deselect-all", "Deselect All", 0, false, locked, func() { clear(selected) }),
 			}}),
+		}
+		if len(installed) > 0 {
+			slices.Sort(options)
+			defaultAccent := fallback
+			if !slices.Contains(options, defaultAccent) {
+				defaultAccent = options[0]
+			}
+			if message != "" {
+				header = append(header, wrapped(message, 13, muted))
+			}
+			finish := buttonConfig("continue-accents", "Continue", 140, true, saving, func() {
+				saving, message = true, "Saving selection…"
+				// Both settings writers may finish off the accent window thread
+				save(installed, defaultAccent, func(err error) {
+					w.QueueCommand(func(w *gui.Window) {
+						if w.CloseRequested() || ctx.Err() != nil {
+							return
+						}
+						if err == nil {
+							complete(w)
+							return
+						}
+						saving, message = false, err.Error()
+						w.InvalidateLayout()
+					})
+				})
+			})
+			finish.Colors = gui.ColorSet{Base: green, Hover: gui.Hex(0x46df82)}
+			return page("accent-packs", header, body, []gui.View{
+				text("Default accent", 13, ink),
+				formSelect(gui.SelectCfg{
+					ID: "wizard-default-accent", Items: options, Selected: []string{defaultAccent},
+					A11YCfg: gui.A11YCfg{A11YLabel: "Default accent"}, MinWidth: 150, MaxWidth: 150, Disabled: saving,
+					OnSelect: func(values []string, ctx gui.EventCtx) {
+						if len(values) > 0 {
+							fallback = values[0]
+						}
+						ctx.Consume()
+						w.InvalidateLayout()
+					},
+				}),
+				spacer(), gui.Button(finish),
+			})
 		}
 		return page("accent-packs", header, body, []gui.View{
 			wrapped(message, 13, muted), spacer(), button("save-accents", "Save", 100, true, saving || len(options) == 0, func() {
@@ -157,34 +220,19 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 					}
 				}
 				saving, message = true, "Installing selected packs…"
-				done := func(err error) {
-					if err == nil {
-						complete(w)
-					} else {
-						saving, message = false, err.Error()
-						w.InvalidateLayout()
-					}
-				}
 				go func() {
 					err := installAccentPacks(ctx, archives, recordings, enabled)
 					w.QueueCommand(func(w *gui.Window) {
 						if w.CloseRequested() || ctx.Err() != nil {
 							return
 						}
+						saving, message = false, ""
 						if err != nil {
-							done(err)
-							return
+							message = err.Error()
+						} else {
+							installed = enabled
 						}
-						saving, message = true, "Saving selection…"
 						w.InvalidateLayout()
-						// The first-run writer and Settings writer finish on different goroutines.
-						save(enabled, defaultAccent, func(err error) {
-							w.QueueCommand(func(w *gui.Window) {
-								if !w.CloseRequested() && ctx.Err() == nil {
-									done(err)
-								}
-							})
-						})
 					})
 				}()
 			}),
@@ -192,7 +240,7 @@ func accentSetupView(ctx context.Context, archives, recordings string, prefs con
 	}
 }
 
-func (s *state) accentCue(dir string, enabled []string, accentName, service, option, voice string) ([]byte, int) {
+func (s *state) accentCue(dir, pack, accentName, service, option, voice string) ([]byte, int) {
 	folder, action := service, ""
 	switch service {
 	case "greeting":
@@ -212,17 +260,10 @@ func (s *state) accentCue(dir string, enabled []string, accentName, service, opt
 			}
 		}
 	}
-	for _, pack := range packs {
-		if !slices.Contains(enabled, pack.name) || !slices.ContainsFunc(pack.accents, func(name string) bool {
-			return strings.EqualFold(name, accentName)
-		}) {
-			continue
-		}
-		clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
-		for _, relative := range []string{pack.name, "Extracted", ""} {
-			if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
-				return pcm, rate
-			}
+	clip := strings.ToLower(filepath.Join(accentName, folder, voice+action+"11.ai.mp3"))
+	for _, relative := range []string{pack, "Extracted", ""} {
+		if pcm, rate := s.loadClip(filepath.Join(dir, relative, clip)); len(pcm) > 0 {
+			return pcm, rate
 		}
 	}
 	return nil, 0
@@ -285,35 +326,49 @@ func (s *state) loadClip(path string) ([]byte, int) {
 	return pcm, rate
 }
 
-func (s *state) regionalCue(next playback) ([]byte, int) {
-	enabled := config.Get[[]string](next.prefs, "installed_packs")
-	if len(enabled) == 0 {
-		return nil, 0
+func installedCrewAccent(enabled []string, candidate string) (packName, accentName string) {
+	for _, pack := range packs {
+		if !slices.Contains(enabled, pack.name) {
+			continue
+		}
+		for _, name := range pack.accents {
+			if strings.EqualFold(name, candidate) {
+				return pack.name, name
+			}
+		}
 	}
+	return "", ""
+}
+
+// Share the candidate order between playback and the debug location summary
+func crewAccentCandidates(prefs config.Values, location *geo.Position, overrides map[string]string) []string {
 	var pos geo.Position
-	if next.location != nil {
-		pos = *next.location
+	if location != nil {
+		pos = *location
 	}
-	fallback := config.Get[string](next.prefs, "default_accent")
-	forced := config.Get[string](next.prefs, "force_accent")
-	names := []string{}
-	if forced != "Disabled" {
+	var names []string
+	if forced := config.Get[string](prefs, "force_accent"); forced != "Disabled" {
 		names = append(names, forced)
 	}
-	names = append(names, geo.AccentCandidates(pos, geo.Overrides(s.dir))...)
-	names = append(names, fallback)
-	// Resolve a real clip, since a configured accent can belong to a disabled or missing pack.
-	installed := slices.Clone(accents)
-	slices.Sort(installed)
-	names = append(names, installed...)
+	names = append(names, geo.AccentCandidates(pos, overrides)...)
+	names = append(names, config.Get[string](prefs, "default_accent"))
+	return append(names, accents...)
+}
+
+func (s *state) regionalCue(next playback) ([]byte, int, string) {
+	enabled := config.Get[[]string](next.prefs, "installed_packs")
+	if len(enabled) == 0 {
+		return nil, 0, ""
+	}
 	recordings := filepath.Join(s.dir, "Accents")
-	for _, name := range names {
+	for _, candidate := range crewAccentCandidates(next.prefs, next.location, geo.Overrides(s.dir)) {
+		pack, name := installedCrewAccent(enabled, candidate)
 		if name == "" {
 			continue
 		}
-		if pcm, rate := s.accentCue(recordings, enabled, name, next.cue, next.option, next.voice); len(pcm) > 0 {
-			return pcm, rate
+		if pcm, rate := s.accentCue(recordings, pack, name, next.cue, next.option, next.voice); len(pcm) > 0 {
+			return pcm, rate, name
 		}
 	}
-	return nil, 0
+	return nil, 0, ""
 }
