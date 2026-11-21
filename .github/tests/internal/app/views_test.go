@@ -20,6 +20,33 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
 )
 
+func TestMainMinimizeToTray(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tray       *gui.SystemTrayHandle
+		restore    bool
+		wantHidden bool
+	}{
+		{name: "tray enabled", tray: &gui.SystemTrayHandle{}, wantHidden: true},
+		{name: "tray unavailable"},
+		{name: "restored before hide", tray: &gui.SystemTrayHandle{}, restore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dialogClosed := false
+			s := &state{tray: tc.tray, dialogs: map[uint64]func(){1: func() { dialogClosed = true }}}
+			w := gui.NewTestWindow(t, gui.WindowCfg{OnEvent: s.mainWindowEvent})
+			gui.DispatchWindowOccluded(w, true)
+			if tc.restore {
+				gui.DispatchWindowOccluded(w, false)
+			}
+			w.FrameFn()
+			if hidden := !w.IsVisible(); hidden != tc.wantHidden || dialogClosed != tc.wantHidden {
+				t.Fatalf("window hidden=%t, dialog closed=%t, want both %t", hidden, dialogClosed, tc.wantHidden)
+			}
+		})
+	}
+}
+
 func TestMainControlsFitAtMinimumWidth(t *testing.T) {
 	s := &state{cfg: config.Defaults(), ptt: "Idle"}
 	// Include the optional command field in the minimum-width layout check

@@ -33,7 +33,7 @@ type keyboardMsg struct {
 	private        uint32
 }
 
-func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func(uintptr)) {
+func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	// The message pump has to run on the thread that owns the keyboard hook
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -76,18 +76,6 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool), minimize func
 	handle, _, _ := set.Call(13, callback, uintptr(module), 0)
 	if handle != 0 {
 		defer unhook.Call(handle)
-	}
-	// The same message pump can receive minimize notifications for this process.
-	const minimizeStart = 0x0016
-	minimized := windows.NewCallback(func(_, _, hwnd, objectID, childID, _, _ uintptr) uintptr {
-		if hwnd != 0 && objectID == 0 && childID == 0 {
-			minimize(hwnd)
-		}
-		return 0
-	})
-	hook, _, _ := user.NewProc("SetWinEventHook").Call(minimizeStart, minimizeStart, 0, minimized, uintptr(os.Getpid()), 0, 0)
-	if hook != 0 {
-		defer user.NewProc("UnhookWinEvent").Call(hook)
 	}
 	// Wake GetMessage on cancellation so the hook can be removed on its owning thread
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x0012, 0, 0) }()

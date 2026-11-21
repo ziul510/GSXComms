@@ -175,7 +175,7 @@ func Run(dir string) {
 			s.setTopmost()
 			// Load the active PTT key before the keyboard hook starts listening
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
-			go listenKeyboard(ctx, s.keyboardEvent, s.minimizeToTray)
+			go listenKeyboard(ctx, s.keyboardEvent)
 			go s.pollController(ctx)
 			go s.listenHID(ctx)
 			if config.Get[bool](s.cfg, "start_minimized") {
@@ -188,6 +188,7 @@ func Run(dir string) {
 				s.toggleConnect()
 			}
 		},
+		OnEvent:        s.mainWindowEvent,
 		OnCloseRequest: func(w *gui.Window) { s.quit() },
 	})
 	// Request a dark caption before the backend shows the window
@@ -289,18 +290,20 @@ func (s *state) configureTray() {
 	s.tray = tray
 }
 
-func (s *state) minimizeToTray(hwnd uintptr) {
-	if hwnd != windowByTitle("GSXComms") {
+func (s *state) mainWindowEvent(e *gui.Event, w *gui.Window) {
+	// On Windows go-gui reports minimization as occlusion
+	if e.Type != gui.EventVisibilityChanged || !w.IsOccluded() {
 		return
 	}
-	s.async(func() {
-		if s.tray == nil {
+	// Hide after Windows finishes handling the minimize message
+	w.QueueCommand(func(w *gui.Window) {
+		if s.tray == nil || !w.IsOccluded() || !w.IsVisible() {
 			return
 		}
 		for _, closeDialog := range s.dialogs {
 			closeDialog()
 		}
-		s.main.Hide()
+		w.Hide()
 	})
 }
 
