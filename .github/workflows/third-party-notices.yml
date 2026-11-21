@@ -18,7 +18,7 @@ jobs:
   # and reports both license changes and version bumps against third_party/licenses.csv.
   license-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -33,13 +33,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GOROOT="$(go env GOROOT)"
-          echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
-          echo "$GOROOT/bin" >> "$GITHUB_PATH"
-          export GOROOT
-          export PATH="$GOROOT/bin:$PATH"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-licenses/v2@v2.0.1
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          GOROOT_WIN="$(go env GOROOT | tr -d '\r')"
+          GOROOT_POSIX="$(cygpath -u "$GOROOT_WIN")"
+          TEMP_POSIX="$(cygpath -u "$RUNNER_TEMP")"
+          BIN_WIN="$(cygpath -w "$TEMP_POSIX/bin")"
+          mkdir -p "$TEMP_POSIX/bin"
+          echo "GOROOT=$GOROOT_WIN" >> "$GITHUB_ENV"
+          echo "$GOROOT_WIN\\bin" >> "$GITHUB_PATH"
+          echo "$BIN_WIN" >> "$GITHUB_PATH"
+          export GOROOT="$GOROOT_WIN"
+          export PATH="$GOROOT_POSIX/bin:$PATH"
+          GOBIN="$BIN_WIN" go install github.com/google/go-licenses/v2@v2.0.1
 
       - name: Check Go licenses and diff against baseline
         shell: bash
@@ -48,32 +52,33 @@ jobs:
           export GOOS=windows
           export GOARCH=amd64
           export CGO_ENABLED=1
+          TEMP_POSIX="$(cygpath -u "$RUNNER_TEMP")"
 
           IGNORE_ARGS=()
           while IFS= read -r mod; do
             [ -n "$mod" ] && IGNORE_ARGS+=(--ignore "$mod")
-          done < <(go list -m)
+          done < <(go list -m | tr -d '\r')
 
           # Blocks forbidden, restricted (GPL/LGPL), and unknown licenses.
           # Remove ,restricted if weak-copyleft licenses should not fail the check.
           check_status=0
-          if ! go-licenses check ./... "${IGNORE_ARGS[@]}" --disallowed_types=forbidden,restricted,unknown 2> "$RUNNER_TEMP/check.err"; then
+          if ! go-licenses check ./... "${IGNORE_ARGS[@]}" --disallowed_types=forbidden,restricted,unknown 2> "$TEMP_POSIX/check.err"; then
             check_status=$?
           fi
-          cat "$RUNNER_TEMP/check.err" >&2
+          cat "$TEMP_POSIX/check.err" >&2
 
-          printf '%s' '{{ range . }}{{ .Name }},{{ .Version }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$RUNNER_TEMP/report.tpl"
+          printf '%s' '{{ range . }}{{ .Name }},{{ .Version }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$TEMP_POSIX/report.tpl"
           report_status=0
-          if ! go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$RUNNER_TEMP/report.tpl" > "$RUNNER_TEMP/licenses-body.csv" 2> "$RUNNER_TEMP/report.err"; then
+          if ! go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$(cygpath -w "$TEMP_POSIX/report.tpl")" 2> "$TEMP_POSIX/report.err" | tr -d '\r' > "$TEMP_POSIX/licenses-body.csv"; then
             report_status=$?
-            cat "$RUNNER_TEMP/report.err" >&2
+            cat "$TEMP_POSIX/report.err" >&2
           fi
 
           if [ "$report_status" -eq 0 ]; then
             {
               echo "Module,Version,License"
-              LC_ALL=C sort "$RUNNER_TEMP/licenses-body.csv"
-            } > "$RUNNER_TEMP/licenses-now.csv"
+              LC_ALL=C sort "$TEMP_POSIX/licenses-body.csv"
+            } > "$TEMP_POSIX/licenses-now.csv"
 
             if [ ! -f third_party/licenses.csv ]; then
               {
@@ -82,20 +87,20 @@ jobs:
                 echo "\`third_party/licenses.csv\` does not exist yet. Run this workflow manually on \`main\` (or merge this PR so the workflow opens a PR with the initial baseline and Go notices)."
               } >> "$GITHUB_STEP_SUMMARY"
             else
-              tr -d '\r' < third_party/licenses.csv > "$RUNNER_TEMP/licenses-base.csv"
+              tr -d '\r' < third_party/licenses.csv > "$TEMP_POSIX/licenses-base.csv"
 
               awk -F, 'NR>1 { if (NF>=3) { mod=$1; line=$0; sub(/^[^,]*,[^,]*,/, "", line); print mod "," line } else if (NF==2) { print $1 "," $2 } }' \
-                "$RUNNER_TEMP/licenses-base.csv" | LC_ALL=C sort > "$RUNNER_TEMP/base-lic.csv"
+                "$TEMP_POSIX/licenses-base.csv" | LC_ALL=C sort > "$TEMP_POSIX/base-lic.csv"
               awk -F, 'NR>1 { if (NF>=3) { mod=$1; line=$0; sub(/^[^,]*,[^,]*,/, "", line); print mod "," line } else if (NF==2) { print $1 "," $2 } }' \
-                "$RUNNER_TEMP/licenses-now.csv" | LC_ALL=C sort > "$RUNNER_TEMP/now-lic.csv"
+                "$TEMP_POSIX/licenses-now.csv" | LC_ALL=C sort > "$TEMP_POSIX/now-lic.csv"
 
-              if ! diff -u "$RUNNER_TEMP/base-lic.csv" "$RUNNER_TEMP/now-lic.csv" > "$RUNNER_TEMP/lic-only.diff"; then
+              if ! diff -u "$TEMP_POSIX/base-lic.csv" "$TEMP_POSIX/now-lic.csv" > "$TEMP_POSIX/lic-only.diff"; then
                 {
                   echo "## Go dependency or license changes detected"
                   echo
                   echo "A Go dependency was added, removed, or changed license compared to \`third_party/licenses.csv\`."
                   echo '```diff'
-                  cat "$RUNNER_TEMP/lic-only.diff"
+                  cat "$TEMP_POSIX/lic-only.diff"
                   echo '```'
                 } >> "$GITHUB_STEP_SUMMARY"
               else
@@ -106,13 +111,13 @@ jobs:
                 } >> "$GITHUB_STEP_SUMMARY"
               fi
 
-              if ! diff -u "$RUNNER_TEMP/licenses-base.csv" "$RUNNER_TEMP/licenses-now.csv" > "$RUNNER_TEMP/licenses.diff"; then
+              if ! diff -u "$TEMP_POSIX/licenses-base.csv" "$TEMP_POSIX/licenses-now.csv" > "$TEMP_POSIX/licenses.diff"; then
                 {
                   echo
                   echo "### Go dependency version / baseline diff (informational)"
                   echo "Baseline (\`third_party/licenses.csv\`) and the Go section of \`THIRD_PARTY_NOTICES\` will be updated automatically via PR after merge to \`main\`."
                   echo '```diff'
-                  cat "$RUNNER_TEMP/licenses.diff"
+                  cat "$TEMP_POSIX/licenses.diff"
                   echo '```'
                 } >> "$GITHUB_STEP_SUMMARY"
               fi
@@ -123,7 +128,7 @@ jobs:
               echo
               echo "## Failed to generate Go license report"
               echo '```'
-              cat "$RUNNER_TEMP/report.err"
+              cat "$TEMP_POSIX/report.err"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -134,7 +139,7 @@ jobs:
               echo
               echo "## Disallowed or unknown Go licenses detected"
               echo '```'
-              cat "$RUNNER_TEMP/check.err"
+              cat "$TEMP_POSIX/check.err"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             exit "$check_status"
@@ -149,7 +154,7 @@ jobs:
   # THIRD_PARTY_NOTICES, leaving non-Go, model, asset, and Rust sections intact.
   regenerate:
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: write
@@ -163,13 +168,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GOROOT="$(go env GOROOT)"
-          echo "GOROOT=$GOROOT" >> "$GITHUB_ENV"
-          echo "$GOROOT/bin" >> "$GITHUB_PATH"
-          export GOROOT
-          export PATH="$GOROOT/bin:$PATH"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-licenses/v2@v2.0.1
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          GOROOT_WIN="$(go env GOROOT | tr -d '\r')"
+          GOROOT_POSIX="$(cygpath -u "$GOROOT_WIN")"
+          TEMP_POSIX="$(cygpath -u "$RUNNER_TEMP")"
+          BIN_WIN="$(cygpath -w "$TEMP_POSIX/bin")"
+          mkdir -p "$TEMP_POSIX/bin"
+          echo "GOROOT=$GOROOT_WIN" >> "$GITHUB_ENV"
+          echo "$GOROOT_WIN\\bin" >> "$GITHUB_PATH"
+          echo "$BIN_WIN" >> "$GITHUB_PATH"
+          export GOROOT="$GOROOT_WIN"
+          export PATH="$GOROOT_POSIX/bin:$PATH"
+          GOBIN="$BIN_WIN" go install github.com/google/go-licenses/v2@v2.0.1
 
       - name: Regenerate Go baseline and update THIRD_PARTY_NOTICES
         shell: bash
@@ -178,6 +187,7 @@ jobs:
           export GOOS=windows
           export GOARCH=amd64
           export CGO_ENABLED=1
+          TEMP_POSIX="$(cygpath -u "$RUNNER_TEMP")"
 
           if [ ! -f THIRD_PARTY_NOTICES ]; then
             echo "::error::THIRD_PARTY_NOTICES not found at repository root." >&2
@@ -187,21 +197,22 @@ jobs:
           IGNORE_ARGS=()
           while IFS= read -r mod; do
             [ -n "$mod" ] && IGNORE_ARGS+=(--ignore "$mod")
-          done < <(go list -m)
+          done < <(go list -m | tr -d '\r')
 
-          SAVE_DIR="$RUNNER_TEMP/licenses"
+          SAVE_DIR_POSIX="$TEMP_POSIX/licenses"
+          SAVE_DIR_WIN="$(cygpath -w "$SAVE_DIR_POSIX")"
           mkdir -p third_party
 
-          printf '%s' '{{ range . }}{{ .Name }},{{ .Version }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$RUNNER_TEMP/report.tpl"
-          go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$RUNNER_TEMP/report.tpl" \
-            | LC_ALL=C sort > "$RUNNER_TEMP/licenses-body.csv"
+          printf '%s' '{{ range . }}{{ .Name }},{{ .Version }},{{ .LicenseName }}{{ "\n" }}{{ end }}' > "$TEMP_POSIX/report.tpl"
+          go-licenses report ./... "${IGNORE_ARGS[@]}" --template "$(cygpath -w "$TEMP_POSIX/report.tpl")" \
+            | tr -d '\r' | LC_ALL=C sort > "$TEMP_POSIX/licenses-body.csv"
 
           {
             echo "Module,Version,License"
-            cat "$RUNNER_TEMP/licenses-body.csv"
+            cat "$TEMP_POSIX/licenses-body.csv"
           } > third_party/licenses.csv
 
-          go-licenses save ./... "${IGNORE_ARGS[@]}" --save_path="$SAVE_DIR" --force
+          go-licenses save ./... "${IGNORE_ARGS[@]}" --save_path="$SAVE_DIR_WIN" --force
 
           {
             echo "=== BEGIN GO MODULES ==="
@@ -218,22 +229,22 @@ jobs:
               else
                 echo "========== $module ($license) =========="
               fi
-              if [ ! -d "$SAVE_DIR/$module" ]; then
-                echo "::error::No saved license directory found for $module at $SAVE_DIR/$module (license: $license)." >&2
+              if [ ! -d "$SAVE_DIR_POSIX/$module" ]; then
+                echo "::error::No saved license directory found for $module at $SAVE_DIR_POSIX/$module (license: $license)." >&2
                 exit 1
               fi
               mapfile -d '' -t files < <(
-                find -L "$SAVE_DIR/$module" -maxdepth 1 -type f ! -iname '*.go' \
+                find -L "$SAVE_DIR_POSIX/$module" -maxdepth 1 -type f ! -iname '*.go' \
                   \( -iname 'license*' -o -iname 'licence*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'patents*' -o -iname 'unlicense*' -o -iname 'unlicence*' \) \
                   -print0 | LC_ALL=C sort -z
               )
               if [ ${#files[@]} -eq 0 ]; then
                 mapfile -d '' -t files < <(
-                  find -L "$SAVE_DIR/$module" -maxdepth 1 -type f ! -iname '*.go' -iname 'readme*' -print0 | LC_ALL=C sort -z
+                  find -L "$SAVE_DIR_POSIX/$module" -maxdepth 1 -type f ! -iname '*.go' -iname 'readme*' -print0 | LC_ALL=C sort -z
                 )
               fi
               if [ ${#files[@]} -eq 0 ]; then
-                echo "::error::No license or notice files found for $module in $SAVE_DIR/$module" >&2
+                echo "::error::No license or notice files found for $module in $SAVE_DIR_POSIX/$module" >&2
                 exit 1
               fi
               f_idx=0
@@ -250,25 +261,38 @@ jobs:
 
               # Preserve embedded SIL OFL-1.1 font notice inside chroma/v2
               if [ "$module" = "github.com/alecthomas/chroma/v2" ]; then
-                chroma_dir="$(go list -m -f '{{.Dir}}' github.com/alecthomas/chroma/v2 2>/dev/null || true)"
-                font_file="$chroma_dir/formatters/svg/font_liberation_mono.go"
-                if [ -f "$font_file" ]; then
-                  echo
-                  echo "// formatters/svg/font_liberation_mono.go"
-                  echo
-                  awk '
-                    /^package / { exit }
-                    NR == 1 && /^\/\*/ { sub(/^\/\*/, ""); if ($0 == "") next }
-                    /\*\/$/ { sub(/\*\/$/, ""); if ($0 != "") print; next }
-                    { print }
-                  ' "$font_file"
+                chroma_dir="$(go list -m -f '{{.Dir}}' github.com/alecthomas/chroma/v2 2>/dev/null | tr -d '\r' || true)"
+                if [ -n "$chroma_dir" ]; then
+                  chroma_dir_posix="$(cygpath -u "$chroma_dir")"
+                  font_file="$chroma_dir_posix/formatters/svg/font_liberation_mono.go"
+                  if [ -f "$font_file" ]; then
+                    echo
+                    echo "// formatters/svg/font_liberation_mono.go"
+                    echo
+                    awk '
+                      /^package / { exit }
+                      NR == 1 && /^\/\*/ { sub(/^\/\*/, ""); if ($0 == "") next }
+                      /\*\/$/ { sub(/\*\/$/, ""); if ($0 != "") print; next }
+                      { print }
+                    ' "$font_file"
+                  fi
                 fi
               fi
-            done < "$RUNNER_TEMP/licenses-body.csv"
+            done < "$TEMP_POSIX/licenses-body.csv"
             echo "=== END GO MODULES ==="
-          } > "$RUNNER_TEMP/go-notices.txt"
+          } > "$TEMP_POSIX/go-notices.txt"
 
-          python3 - "$RUNNER_TEMP/go-notices.txt" <<'PY'
+          PY_CMD=""
+          if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>/dev/null; then
+            PY_CMD="python3"
+          elif command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>/dev/null; then
+            PY_CMD="python"
+          else
+            echo "::error::Python 3 is required on the runner to update THIRD_PARTY_NOTICES." >&2
+            exit 1
+          fi
+
+          "$PY_CMD" - "$TEMP_POSIX/go-notices.txt" <<'PY'
           from pathlib import Path
           import sys
 
