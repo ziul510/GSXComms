@@ -13,6 +13,18 @@ updates:
     commit-message:
       prefix: "deps"
 
+  # Rust SimConnect helper
+  - package-ecosystem: "cargo"
+    directory: "/cmd/gsxsimconnect"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "13:00"
+      timezone: "Etc/GMT+4"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
