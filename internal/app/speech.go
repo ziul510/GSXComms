@@ -91,6 +91,9 @@ func (s *state) record(down bool) {
 		defer stop()
 		if volume := config.Get[float64](prefs, "volume_static"); volume > 0 && config.Get[bool](prefs, "enable_static") {
 			go func() {
+				if !waitForPTTStatic(capctx) {
+					return
+				}
 				pcm := make([]byte, len(radioStatic())*2)
 				mixRadio(pcm, 0, volume, staticRate, 1)
 				_ = playPCMBuffer(capctx, config.Get[string](prefs, "output_device_name"), config.Get[string](prefs, "output_device_id"), pcm, staticRate, 1, true)
@@ -166,6 +169,18 @@ func (s *state) record(down bool) {
 			s.submit(transcript)
 		})
 	}()
+}
+
+func waitForPTTStatic(ctx context.Context) bool {
+	timer := time.NewTimer(150 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		// A release can arrive before the goroutine handles the timer
+		return ctx.Err() == nil
+	}
 }
 
 func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
