@@ -828,4 +828,71 @@ func TestPresetSummaryExpandsIntoExistingEditor(t *testing.T) {
 	if _, visible := window.TestRender(nil).FindByID("presets-scroll:preset-name"); !visible {
 		t.Fatal("expanded summary did not open the existing editor")
 	}
+	if err := window.TestClick("presets-scroll:down-0"); err != nil {
+		t.Fatal(err)
+	}
+	window.TestRender(nil)
+	var numbered []string
+	for _, cmd := range window.Renderers() {
+		if cmd.Kind == gui.RenderText && (cmd.Text == "1. JETWAY" || cmd.Text == "2. GPU") {
+			numbered = append(numbered, cmd.Text)
+		}
+	}
+	if !slices.Equal(numbered, []string{"1. JETWAY", "2. GPU"}) {
+		t.Fatalf("editor did not renumber reordered services: %v", numbered)
+	}
+}
+
+type presetConfirmPlatform struct {
+	gui.NativePlatform
+	status gui.NativeDialogStatus
+	body   string
+}
+
+func (*presetConfirmPlatform) TitlebarDark(bool)                                {}
+func (*presetConfirmPlatform) SetSystemAppearanceCallback(func(gui.Appearance)) {}
+func (*presetConfirmPlatform) A11yDestroy()                                     {}
+
+func (p *presetConfirmPlatform) ShowConfirmDialog(_, body string, _ gui.NativeAlertLevel) gui.NativeAlertResult {
+	p.body = body
+	return gui.NativeAlertResult{Status: p.status}
+}
+
+func TestPresetCardDeleteRequiresConfirmation(t *testing.T) {
+	s := &state{host: gui.NewApp(), cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Arrival", Codeword: "arrival", Services: []string{"GPU"}},
+		{Name: "Departure", Codeword: "departure", Services: []string{"JETWAY"}},
+	})
+	parent := gui.NewTestWindow(t, gui.WindowCfg{})
+	s.openPresets(parent, func() {})
+	window := gui.NewTestWindow(t, <-s.host.PendingOpen())
+	platform := &presetConfirmPlatform{status: gui.DialogCancel}
+	window.SetNativePlatform(platform)
+	layout := window.TestRender(nil)
+	const deleteID = "presets-scroll:delete-preset-0"
+	card, hasCard := layout.FindByID("presets-scroll:preset-0")
+	deleteButton, hasDelete := layout.FindByID(deleteID)
+	if !hasCard || !hasDelete || deleteButton.Shape.X < card.Shape.X+card.Shape.Width {
+		t.Fatal("Delete button does not sit to the right of the collapsed preset")
+	}
+	if err := window.TestClick(deleteID); err != nil {
+		t.Fatal(err)
+	}
+	if platform.body != "Delete Arrival?" || len(s.saves) != 0 {
+		t.Fatalf("canceling %q queued %d writes", platform.body, len(s.saves))
+	}
+	platform.status = gui.DialogOK
+	if err := window.TestClick(deleteID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case request := <-s.saves:
+		s.finishSave(request, nil)
+	default:
+		t.Fatal("confirming preset deletion did not queue a save")
+	}
+	if presets := config.Get[[]config.Preset](s.cfg, "presets"); len(presets) != 1 || presets[0].Name != "Departure" {
+		t.Fatalf("unexpected presets: %+v", presets)
+	}
 }

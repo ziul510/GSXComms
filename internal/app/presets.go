@@ -30,7 +30,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		editing = true
 	}
 	var window *gui.Window
-	persist := func(updated []config.Preset) {
+	persist := func(updated []config.Preset, afterSave func()) {
 		saving, message = true, ""
 		s.saveSetting("presets", updated, func(err error) {
 			saving = false
@@ -38,7 +38,8 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				message = err.Error()
 			} else {
 				entries = updated
-				selected, expanded, editing = -1, -1, false
+				expanded = -1
+				afterSave()
 				if !parent.CloseRequested() {
 					parent.InvalidateLayout()
 				}
@@ -48,6 +49,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			}
 		})
 	}
+	finishEdit := func() { selected, editing = -1, false }
 	save := func() {
 		// Check duplicates against every other draft entry before inserting or replacing one
 		value, err := config.ValidatePreset(form, entries, selected)
@@ -61,7 +63,26 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		} else {
 			updated = append(updated, value)
 		}
-		persist(updated)
+		persist(updated, finishEdit)
+	}
+	deletePreset := func(index int, name string) {
+		window.NativeConfirmDialog(gui.NativeConfirmDialogCfg{
+			Title: "Delete preset?", Body: "Delete " + name + "?", Level: gui.AlertWarning,
+			OnDone: func(result gui.NativeAlertResult, _ *gui.Window) {
+				if result.Status != gui.DialogOK || saving || index >= len(entries) || entries[index].Name != name {
+					return
+				}
+				persist(slices.Delete(slices.Clone(entries), index, index+1), func() {
+					// Keep another preset's edit open and track its new index
+					switch {
+					case selected == index:
+						finishEdit()
+					case selected > index:
+						selected--
+					}
+				})
+			},
+		})
 	}
 	var closeDialog func()
 	closeDialog = s.dialog(gui.WindowCfg{Title: "Preset Manager", Width: 560, Height: 680, MinWidth: 520, MinHeight: 560}, onClose, func(w *gui.Window) gui.View {
@@ -93,7 +114,13 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			entry.Padding = gui.PadVH(10, 12)
 			entry.A11YCfg.A11YLabel = action + " " + p.Name
 			entry.Content = []gui.View{wrapped(p.Name+" | "+p.Codeword+" | "+count, 13, color)}
-			rows := []gui.View{gui.Button(entry)}
+			rows := []gui.View{gui.Row(gui.ContainerCfg{
+				Sizing: gui.FillFit, Padding: gui.NoPadding, SizeBorder: gui.NoBorder, Spacing: gui.SpacingPx(4), VAlign: gui.VAlignMiddle,
+				Content: []gui.View{
+					gui.Button(entry),
+					modelButton("delete-preset-"+id, "Delete", 68, saving, func() { deletePreset(i, p.Name) }),
+				},
+			})}
 			if expanded == i {
 				for index, service := range p.Services {
 					rows = append(rows, wrapped(fmt.Sprintf("%d. %s", index+1, service), 13, color))
@@ -166,7 +193,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			for i, service := range form.Services {
 				id := strconv.Itoa(i)
 				editor = append(editor, gui.Row(gui.ContainerCfg{Sizing: gui.FillFit, Padding: gui.NoPadding, Spacing: gui.SpacingPx(8), SizeBorder: gui.NoBorder, VAlign: gui.VAlignMiddle, Content: []gui.View{
-					wrapped(service, 13, ink), spacer(),
+					wrapped(fmt.Sprintf("%d. %s", i+1, service), 13, ink), spacer(),
 					button("up-"+id, "Up", 0, false, i == 0, func() { form.Services[i], form.Services[i-1] = form.Services[i-1], form.Services[i] }),
 					button("down-"+id, "Down", 0, false, i+1 == len(form.Services), func() { form.Services[i], form.Services[i+1] = form.Services[i+1], form.Services[i] }),
 					button("remove-"+id, "Remove", 0, false, false, func() { form.Services = slices.Delete(form.Services, i, i+1) }),
@@ -179,15 +206,7 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			// Deletion is available only when the form refers to an existing preset
 			if selected >= 0 {
 				actions = append(actions, button("delete", "Delete", 0, false, saving, func() {
-					index := selected
-					w.NativeConfirmDialog(gui.NativeConfirmDialogCfg{
-						Title: "Delete preset?", Body: "Delete " + entries[index].Name + "?", Level: gui.AlertWarning,
-						OnDone: func(result gui.NativeAlertResult, _ *gui.Window) {
-							if result.Status == gui.DialogOK && !saving && index == selected {
-								persist(slices.Delete(slices.Clone(entries), index, index+1))
-							}
-						},
-					})
+					deletePreset(selected, entries[selected].Name)
 				}))
 			}
 			actions = append(actions, spacer(), button("cancel-edit", "Cancel", 0, false, saving, func() { editing = false }),
@@ -197,6 +216,8 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 			editorCard.ColorBorder = accent
 			// Insert below the selected row, or at the top when creating a preset
 			body = slices.Insert(body, selected+1, gui.Column(editorCard))
+		} else if message != "" {
+			body = append(body, wrapped(message, 11, red))
 		}
 		newPreset := buttonConfig("new", "+ New", 96, true, saving, func() {
 			startNew()
