@@ -459,10 +459,10 @@ func (s *state) openSettings() {
 			return setup.mistralPage(s, w)
 		}
 		var body []gui.View
-		// Give each group a consistent heading and short explanation in the scrolling body
+		// Let section cards grow when subtitles wrap
 		section := func(name, description string) {
 			body = append(body, gui.Column(outlinedCard(card, gui.PadVH(12, 11), 4,
-				labelRow(bold(name, 17, ink), 26), labelRow(wrapped(description, 11, muted), 26))))
+				bold(name, 15, ink), wrapped(description, 13, muted))))
 		}
 		// Control changes update the draft immediately Disk writes wait for Save
 		toggle := func(key, label string) {
