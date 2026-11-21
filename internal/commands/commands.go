@@ -304,8 +304,8 @@ type Action struct {
 }
 
 func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatching bool) Action {
-	// Normalization may rewrite a preset codeword, so try the original words too
-	for _, candidate := range []string{text, raw} {
+	// Prefer the original codeword when correction matches a different preset
+	for _, candidate := range []string{raw, text} {
 		for _, p := range presets {
 			if p.Enabled && len(p.Services) > 0 && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
 				return Action{Kind: "preset", Preset: p.Name, Services: slices.Clone(p.Services)}

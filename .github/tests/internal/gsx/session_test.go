@@ -246,8 +246,8 @@ func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 }
 
 func TestMenuKeepsLabelsThatStartWithNumbers(t *testing.T) {
-	page := ParseMenu("Fuel\n10,000 lbs\n180\n[3] Close")
-	want := []string{"10,000 lbs", "180", "Close"}
+	page := ParseMenu("Fuel\n10,000 lbs\n180\n[3] Close\n4.Back\n5)GSX Choice\n2.5 NM\n1-2")
+	want := []string{"10,000 lbs", "180", "Close", "Back", "GSX Choice", "2.5 NM", "1-2"}
 	if !reflect.DeepEqual(page.Options, want) {
 		t.Fatalf("options = %v, want %v", page.Options, want)
 	}

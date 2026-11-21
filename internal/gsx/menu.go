@@ -61,7 +61,7 @@ type Menu struct {
 var (
 	br        = regexp.MustCompile(`(?i)<br\s*/?>`)
 	tag       = regexp.MustCompile(`<[^>]+>`)
-	numbering = regexp.MustCompile(`^(?:\[\d+\]\s*|\d+[).:-](?:\s+|$))`)
+	numbering = regexp.MustCompile(`^(?:\[\d+\]\s*|\d+[).:-](?:\s+|$)|[1-9][).:](\pL))`)
 )
 
 func ParseMenu(raw string) Menu {
@@ -80,7 +80,7 @@ func ParseMenu(raw string) Menu {
 			continue
 		}
 		// Use panel order for selection indices since labels can already carry numbers
-		item := strings.TrimSpace(numbering.ReplaceAllString(line, ""))
+		item := strings.TrimSpace(numbering.ReplaceAllString(line, "${1}"))
 		if item != "" && !strings.EqualFold(item, menu.Title) {
 			menu.Options = append(menu.Options, item)
 		}

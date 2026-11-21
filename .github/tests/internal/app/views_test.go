@@ -626,10 +626,13 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	s.cfg.Put("simulation_mode", true)
 	s.cfg.Put("auto_select_operator", false)
 	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
-	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "ground powder", Enabled: true, Services: []string{"JETWAY"}}})
+	s.cfg.Put("presets", []config.Preset{
+		{Name: "Fuel", Codeword: "ground power", Enabled: true, Services: []string{"REFUELING"}},
+		{Name: "Ramp", Codeword: "ground powder", Enabled: true, Services: []string{"JETWAY"}},
+	})
 	transport := &menuChoices{}
 	session := gsx.New(transport, t.TempDir())
-	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGround Power\nJetway") }
+	session.ReadMenu = func() gsx.Menu { return gsx.ParseMenu("Ramp\nGround Power\nJetway\nRefuel") }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	s.submitCommand("ground powder", true)
@@ -716,10 +719,14 @@ func TestNumberSelectionUsesNormalizedText(t *testing.T) {
 	session := gsx.New(transport, t.TempDir())
 	session.ReadMenu = func() gsx.Menu { return page }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	s.submit("won")
-	(<-s.jobs)(s.ctx, session)
-	if !slices.Equal(transport.selected, []int{0}) {
-		t.Fatalf("normalized number selected %v", transport.selected)
+	s.cfg.Put("enable_menu_matching", false)
+	for _, input := range []string{"won", "option one"} {
+		transport.selected = nil
+		s.submit(input)
+		(<-s.jobs)(s.ctx, session)
+		if !slices.Equal(transport.selected, []int{0}) {
+			t.Fatalf("%q selected %v", input, transport.selected)
+		}
 	}
 }
 

@@ -848,7 +848,8 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		s.trace("CMD", fmt.Sprintf("Route=%s, services=%d", action.Kind, len(action.Services)))
 		explicitIndex, explicitNumber := commands.ExplicitNumber(text)
-		if action.Kind == "menu" && explicitNumber && explicitIndex >= 0 && overlay {
+		// Select a visible slot by number even with Broader Mode disabled
+		if overlay && explicitNumber && explicitIndex >= 0 && action.Kind != "preset" {
 			log("CMD", input)
 			s.selectNumber(ctx, session, page, explicitIndex, prefs)
 			return
