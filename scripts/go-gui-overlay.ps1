@@ -6,10 +6,10 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
 $version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
 # Stop if the selected module differs from the source these patches target
-if ($version -ne 'v0.96.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.96.0' }
+if ($version -ne 'v0.98.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.98.0' }
 # Patch a local copy so other builds can keep using the upstream module cache
 $destination = Join-Path $PWD 'build/go-gui-win32'
-$copy = Join-Path $destination 'module'
+$copy = Join-Path $destination "module-$version"
 New-Item -ItemType Directory -Force $copy | Out-Null
 if (!(Test-Path -LiteralPath (Join-Path $copy 'go.mod'))) {
     Copy-Item -Path (Join-Path $module '*') -Destination $copy -Recurse -Force
