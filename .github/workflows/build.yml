@@ -1,0 +1,87 @@
+name: Build Windows release
+
+# A published tag attaches release assets A manual run produces downloadable workflow artifacts
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    # The release job needs write access to attach assets
+    permissions:
+      contents: write
+    env:
+      PACKAGE_NAME: GSXComms-${{ github.event.release.tag_name || 'manual' }}-x64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Set up Rust
+        shell: pwsh
+        run: rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Check source
+        shell: pwsh
+        run: |
+          # Vet both native speech workers along with the GUI and sidecars
+          $env:CGO_ENABLED = '1'
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
+          $unformatted = gofmt -l .
+          if ($LASTEXITCODE -ne 0 -or $unformatted) { throw "Go formatting check failed: $unformatted" }
+      - name: Prepare build tools and phonemizer
+        shell: pwsh
+        run: |
+          # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes
+          $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
+          $packages = $export.buildDependencies
+          # The phonemizer export uses CPU PyTorch on the runner
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==$($packages.torch)"
+          if ($LASTEXITCODE -ne 0) { throw 'PyTorch install failed' }
+          python -m pip install "deep-phonemizer==$($packages['deep-phonemizer'])" "onnx==$($packages.onnx)"
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer tool install failed' }
+          # Download the checkpoint for the pinned phonemizer assets
+          $checkpoint = Join-Path $env:RUNNER_TEMP 'best_model.pt'
+          Invoke-WebRequest $export.checkpoint -OutFile $checkpoint
+          if ((Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash -ne $export.checkpointSHA256) {
+            throw 'Phonemizer checkpoint checksum mismatch'
+          }
+          python scripts/export-phonemizer.py $checkpoint build/phonemizer
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer export failed' }
+      - name: Build and package
+        shell: pwsh
+        run: |
+          & ./scripts/build.ps1 -PhonemizerDir build/phonemizer
+          & ./scripts/package.ps1 -PackageName $env:PACKAGE_NAME
+      - name: Upload manual build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: dist/release/${{ env.PACKAGE_NAME }}.zip
+          if-no-files-found: error
+          compression-level: 0
+      - name: Attach files to published release
+        if: github.event_name == 'release'
+        shell: pwsh
+        # The CLI needs a token because checkout leaves no credentials behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Allow a release workflow retry to replace incomplete uploads
+          gh release upload --clobber -- "$env:RELEASE_TAG" "dist/release/$env:PACKAGE_NAME.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }

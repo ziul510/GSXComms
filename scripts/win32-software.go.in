@@ -1,0 +1,107 @@
+//go:build windows
+
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package gl
+
+import (
+	"log"
+	"os"
+	"unsafe"
+
+	"github.com/go-gui-org/go-gui/gui"
+	gogl "github.com/go-gui-org/go-gui/gui/backend/internal/glbind"
+	"github.com/go-gui-org/go-gui/gui/backend/soft"
+	"golang.org/x/sys/windows"
+)
+
+var stretchDIBits = windows.NewLazySystemDLL("gdi32.dll").NewProc("StretchDIBits")
+
+// Match the native BITMAPINFOHEADER fields used by StretchDIBits
+type dibHeader struct {
+	size                   uint32
+	width, height          int32
+	planes, depth          uint16
+	compression, imageSize uint32
+	xDensity, yDensity     int32
+	colors, usedColors     uint32
+}
+
+func (b *Backend) win32Renderer(w *gui.Window) error {
+	// Both rendering paths need the current scale and physical client size
+	b.dpiScale = windowScale(b.plat.hwnd)
+	b.physW, b.physH = clientSize(b.plat.hwnd)
+	b.initCaches(w.Config)
+	// Honor the software renderer override before loading WGL
+	if os.Getenv("GOGUI_RENDERER") == "soft" {
+		return b.win32Software(w)
+	}
+
+	// Prefer the native GL renderer when initialization succeeds
+	context, err := createContextFunc(b.plat.hdc)
+	if err == nil {
+		b.plat.hglrc = context
+		applyVSync(w.Config.VSyncOff, wglSetSwapInterval, w.DebugWindowVSync, "wglSwapIntervalEXT")
+		err = gogl.InitWithProcAddrFunc(glProc)
+		if err == nil {
+			err = b.initGLResources(w)
+			if err == nil {
+				return nil
+			}
+			b.destroyGLResources()
+		}
+		// Detach the failed GL context before switching the window to GDI
+		wglMakeCurrent(0, 0)
+		wglDeleteContext(context)
+		b.plat.hglrc = 0
+	}
+	log.Printf("go-gui: software renderer selected: %v", err)
+	return b.win32Software(w)
+}
+
+func (b *Backend) win32Software(w *gui.Window) error {
+	// Prepare software drawing and disable shaders for this window
+	if err := soft.PrepareDisplay(w, b.dpiScale); err != nil {
+		return err
+	}
+	w.BackingScale = b.dpiScale
+	w.SetNativePlatform(&nativePlatform{b: b})
+	gui.SetWindowRendersShaders(w, false)
+
+	var pixels []byte
+	last := dibHeader{size: 40, planes: 1, depth: 32}
+	// WM_PAINT passes nil to blit the last frame
+	b.softwarePresent = func(w *gui.Window) {
+		if w != nil {
+			img, err := soft.RenderDisplay(w, b.dpiScale)
+			if err != nil {
+				log.Printf("go-gui: software render: %v", err)
+				return
+			}
+			last.width = int32(img.Rect.Dx())
+			// A negative DIB height keeps the top row first
+			last.height = -int32(img.Rect.Dy())
+			if cap(pixels) < len(img.Pix) {
+				pixels = make([]byte, len(img.Pix))
+			} else {
+				pixels = pixels[:len(img.Pix)]
+			}
+			// GDI needs blue and red in the opposite byte order from the software image
+			for i := 0; i+3 < len(pixels); i += 4 {
+				pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = img.Pix[i+2], img.Pix[i+1], img.Pix[i], 255
+			}
+		}
+		// Skip presentation before the first frame or when the client area has no size
+		if len(pixels) == 0 || b.physW <= 0 || b.physH <= 0 {
+			return
+		}
+		// Scale the cached image to the current physical client area
+		stretchDIBits.Call(b.plat.hdc, 0, 0, uintptr(b.physW), uintptr(b.physH),
+			0, 0, uintptr(last.width), uintptr(-last.height), uintptr(unsafe.Pointer(&pixels[0])),
+			uintptr(unsafe.Pointer(&last)), 0, 0x00CC0020)
+	}
+	// Release the software painter's resources when the native window closes
+	b.softwareRelease = func() { soft.Release(w) }
+	return nil
+}

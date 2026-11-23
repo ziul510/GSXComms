@@ -1,0 +1,61 @@
+# Copyright 2026 ziul510
+# SPDX-License-Identifier: Apache-2.0
+name: Windows checks
+on: [push, pull_request]
+
+# The check job needs checkout access but does not publish artifacts to the repository
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # Secret scanning covers the commit history
+          fetch-depth: 0
+          # Later build and scan steps run without repository credentials stored in Git
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
+        with:
+          go-version-file: go.mod
+      - name: Secret scan
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'gitleaks-8.28.0.zip'
+          Invoke-WebRequest 'https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_windows_x64.zip' -OutFile $zip
+          if ((Get-FileHash $zip).Hash -ne 'DA6458E8864AF553807DE1C46A7A8EAC0880BD6B99BA56288E87E86A45AF884F') {
+            throw 'Gitleaks checksum mismatch'
+          }
+          $tools = Join-Path $env:RUNNER_TEMP 'gsxcomms-tools'
+          Expand-Archive -LiteralPath $zip -DestinationPath $tools
+          # Report findings without printing matched secret values
+          & (Join-Path $tools 'gitleaks.exe') git --redact .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Vet and build
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '1'
+          # Enable CGO first so the checks include both native worker commands
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -File .github/tests/run.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The portable build compiles the main app without CGO
+          $env:CGO_ENABLED = '0'
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Compile the patched renderer used by the portable build
+          $modfile = & scripts/go-gui-overlay.ps1
+          go build -modfile $modfile ./...
+      - name: Check SimConnect helper
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.98.0 fmt --check --manifest-path cmd/gsxsimconnect/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.98.0 test --locked --manifest-path cmd/gsxsimconnect/Cargo.toml --target x86_64-pc-windows-msvc --target-dir build/rust

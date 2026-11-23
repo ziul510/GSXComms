@@ -1,0 +1,279 @@
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"math/rand/v2"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ziul510/GSXCommsGo/internal/config"
+	"github.com/ziul510/GSXCommsGo/internal/geo"
+)
+
+type playback struct {
+	prefs             config.Values
+	pcm               []byte
+	rate              int
+	cue, option       string
+	voice, crewAccent string
+	readout           string
+	readoutEntries    int
+	location          *geo.Position
+	priority, ordered bool
+	dry               bool
+}
+
+func (s *state) randomizeVoice() {
+	s.crewVoice = []string{"female", "male"}[rand.IntN(2)]
+	s.log("SYS", "Crew voice selected: "+s.crewVoice)
+}
+
+func (s *state) cue(prefs config.Values, name, option string, interrupt bool) {
+	s.enqueueCue(prefs, name, option, interrupt, false)
+}
+
+func (s *state) enqueueCue(prefs config.Values, name, option string, priority, stateChange bool) {
+	prefs = prefs.Copy()
+	// Use the latest saved accent settings even if the command started before the save
+	for _, key := range []string{"force_accent", "fallback_accent", "installed_packs"} {
+		prefs[key] = s.cfg[key]
+	}
+	s.queueAudio(playback{
+		prefs: prefs, cue: strings.ToLower(name), option: option, voice: s.crewVoice, location: s.location.Load(), ordered: stateChange,
+	}, priority)
+}
+
+func (p playback) protected() bool { return p.priority || p.ordered }
+
+func (s *state) queueAudio(request playback, interrupt bool) bool {
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
+	if s.ctx.Err() != nil {
+		return false
+	}
+	request.priority = interrupt
+	if interrupt {
+		if s.audioCancel != nil {
+			s.audioCancel()
+		}
+		s.audioQueue = slices.DeleteFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+		i := 0
+		for i < len(s.audioQueue) && s.audioQueue[i].priority {
+			i++
+		}
+		// Keep interrupts in arrival order and place them ahead of preset audio.
+		s.audioQueue = slices.Insert(s.audioQueue, i, request)
+	} else if len(s.audioQueue) < 16 || request.ordered && request.readout == "" {
+		s.audioQueue = append(s.audioQueue, request)
+	} else {
+		s.traceLevel("WARN", "AUDIO", "Playback skipped because the queue is full")
+		s.async(func() { s.log("AUDIO", "Playback queue is full") })
+		return false
+	}
+	select {
+	case s.audioWake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *state) playbackLoop() {
+	var missing string
+	for s.ctx.Err() == nil {
+		s.audioMu.Lock()
+		if len(s.audioQueue) == 0 {
+			s.audioMu.Unlock()
+			select {
+			case <-s.audioWake:
+			case <-s.ctx.Done():
+				return
+			}
+			continue
+		}
+		next := s.audioQueue[0]
+		s.audioQueue[0] = playback{}
+		s.audioQueue = s.audioQueue[1:]
+		ctx, cancel := context.WithCancel(s.ctx)
+		// Only expose a cancel function for playback that an interrupt may cut short.
+		if !next.protected() {
+			s.audioCancel = cancel
+		}
+		s.audioMu.Unlock()
+
+		if next.cue != "" {
+			next.pcm, next.rate, next.crewAccent = s.regionalCue(next)
+		}
+		if ctx.Err() == nil {
+			if next.cue != "" && len(next.pcm) == 0 {
+				// Suppress repeated warnings for the same missing cue.
+				if missing != next.cue {
+					message := "No installed crew recording for " + next.cue
+					s.async(func() { s.log("AUDIO", message) })
+					s.traceLevel("WARN", "AUDIO", "No installed crew recording matched the cue")
+				}
+				missing = next.cue
+			} else if err := s.output(ctx, next); err != nil && ctx.Err() == nil {
+				s.async(func() { s.log("AUDIO", err.Error()) })
+				s.traceFailure("AUDIO", "Windows audio playback failed", err)
+			}
+		}
+		cancel()
+		s.audioMu.Lock()
+		s.audioCancel = nil
+		s.audioMu.Unlock()
+	}
+}
+
+var statefulServices = []string{"GPU", "JETWAY", "STAIRS"}
+
+func (s *state) resetServices() {
+	s.servicesMu.Lock()
+	defer s.servicesMu.Unlock()
+	clear(s.services)
+}
+
+// Service state is inferred from successful selections, just as in the legacy app
+func (s *state) acknowledge(prefs config.Values, service, selected string, voice bool) {
+	if slices.Contains(statefulServices, service) {
+		s.servicesMu.Lock()
+		defer s.servicesMu.Unlock()
+		was := s.services[service]
+		now, known := serviceConnected(was, selected)
+		// Skip the cue if the label cannot tell us that the service changed state.
+		if !known || now == was {
+			return
+		}
+		s.services[service] = now
+		action := "disconnect"
+		if now {
+			action = "connect"
+		}
+		s.async(func() {
+			s.log("GSX", fmt.Sprintf("%s %sing", service, action))
+			if voice {
+				s.enqueueCue(prefs, service, action, false, true)
+			}
+		})
+	} else if voice && service != "" {
+		s.async(func() { s.cue(prefs, service, "", false) })
+	}
+}
+
+// Match the legacy transition order for GPU, jetway, and stairs
+var serviceTransitions = []struct {
+	words  []string
+	target string
+}{
+	{[]string{"disconnect", "remove", "retract", "undock", "completed", "stop", "close", "release", "dismiss", "free"}, "disconnect"},
+	{[]string{"operate"}, "toggle"},
+	{[]string{"request", "connect", "call", "open"}, "connect"},
+}
+
+func serviceConnected(was bool, selected string) (connected, known bool) {
+	selected = strings.Join(strings.FieldsFunc(strings.ToLower(selected), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}), " ")
+	// Check disconnect terms before connect terms because the labels can contain both.
+	for _, transition := range serviceTransitions {
+		for _, word := range transition.words {
+			if strings.Contains(selected, word) {
+				return transition.target == "connect" || transition.target == "toggle" && !was, true
+			}
+		}
+	}
+	return was, false
+}
+
+type crewMute struct {
+	sync.Mutex
+	active int
+	window *muteWindow
+	timer  *time.Timer
+	until  time.Time
+}
+
+type muteWindow struct {
+	ready  chan struct{}
+	cancel context.CancelFunc
+}
+
+// Hold the watchdog through overlapping commands and audio plus the grace period
+func (s *state) muteCrew(ctx context.Context, prefs config.Values, grace time.Duration) (<-chan struct{}, func()) {
+	if !config.Get[bool](prefs, "mute_gsx_audio_during_crew_voice") || ctx.Err() != nil {
+		return nil, func() {}
+	}
+	return s.crewMute.hold(s.ctx, grace, s.runMute)
+}
+
+// Start the watchdog off the menu and playback paths
+func (m *crewMute) hold(ctx context.Context, grace time.Duration, run func(context.Context, func())) (<-chan struct{}, func()) {
+	m.Lock()
+	defer m.Unlock()
+	if ctx.Err() != nil {
+		return nil, func() {}
+	}
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
+	if m.window == nil {
+		watchCtx, cancel := context.WithCancel(ctx)
+		window := &muteWindow{ready: make(chan struct{}), cancel: cancel}
+		m.window = window
+		go func() {
+			defer cancel()
+			ready := sync.OnceFunc(func() { close(window.ready) })
+			run(watchCtx, ready)
+			ready()
+			m.Lock()
+			defer m.Unlock()
+			// A failed watchdog can be retried by the next hold
+			if m.window == window {
+				m.stop()
+			}
+		}()
+	}
+	m.active++
+	return m.window.ready, func() {
+		m.Lock()
+		defer m.Unlock()
+		m.active--
+		// A playback release must preserve any later command deadline.
+		until := time.Now().Add(grace)
+		if until.After(m.until) {
+			m.until = until
+		}
+		// Restore audio only after both the active holds and their grace periods end.
+		if m.active == 0 && m.window != nil {
+			var timer *time.Timer
+			timer = time.AfterFunc(time.Until(m.until), func() {
+				m.Lock()
+				defer m.Unlock()
+				// A newer speech window may have replaced this timer while it waited for the lock
+				if m.timer == timer {
+					m.stop()
+				}
+			})
+			m.timer = timer
+		}
+	}
+}
+
+// The caller holds the mute lock when stopping the watchdog
+func (m *crewMute) stop() {
+	m.until = time.Time{}
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
+	if m.window != nil {
+		m.window.cancel()
+		m.window = nil
+	}
+}

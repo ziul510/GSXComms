@@ -1,0 +1,14 @@
+{
+  "checkpoint": "https://huggingface.co/openphonemizer/ckpt/resolve/c949f6bc5d3c4a8f3d9babf221b49d8145eced0b/best_model.pt",
+  "checkpointSHA256": "5bc24893f458b8d7ee7cf18011e6b38be3453e3c83eda291c1296d153423cdb4",
+  "buildDependencies": {
+    "Python": "3.12",
+    "torch": "2.15.0+cpu",
+    "deep-phonemizer": "0.0.19",
+    "onnx": "1.23.2"
+  },
+  "files": {
+    "phonemizer.onnx": "357a23a3df9f5d79f36395b8326670a23065927810fdaf15867069268c4659f9",
+    "phonemizer.json": "49fd2769f51a31d49f0d3b8f4183de9e8f45102cc4c5cf66477cb889a8802f3c"
+  }
+}

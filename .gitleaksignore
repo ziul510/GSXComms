@@ -1,0 +1,5 @@
+# Windows Credential Manager lookup name in the historical commit
+35a68713cf73aacd218cf9c377c99d6ce30a7e78:internal/config/platform_windows.go:generic-api-key:36
+
+# Windows Credential Manager lookup name in the current source
+internal/config/platform_windows.go:generic-api-key:44
