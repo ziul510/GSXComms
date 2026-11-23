@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -59,7 +61,7 @@ type uncertainWrite struct {
 
 func (f *uncertainWrite) Set(context.Context, string, float64) error {
 	f.attempts++
-	return errWriteUncertain
+	return ErrWriteUncertain
 }
 
 func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
@@ -70,7 +72,7 @@ func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
 	// A lost reply leaves the selection unconfirmed, so the UI should get no callback.
 	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
 	session.AfterSelection = func() { t.Error("uncertain write triggered selection callback") }
-	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, errWriteUncertain) || transport.attempts != 1 {
+	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, ErrWriteUncertain) || transport.attempts != 1 {
 		t.Fatalf("choice error = %v, attempts = %d", err, transport.attempts)
 	}
 }
@@ -382,5 +384,33 @@ func TestIdleRefreshSnapshotsBeforeRelease(t *testing.T) {
 	if len(f.writes) < 4 || f.writes[0] != (operation{MenuOpen, 0}) ||
 		f.writes[len(f.writes)-2] != (operation{MenuOpen, 0}) {
 		t.Fatalf("expected close, reopen, then close: %+v", f.writes)
+	}
+}
+
+func TestFreshOpenRejectsPreviousPanel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	const panel = "Ramp\nJetway"
+	if err := os.WriteFile(path, []byte(panel), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, dir)
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	if _, err := s.Execute(t.Context(), "jetway", "JETWAY", []string{"jetway"}, false); !errors.Is(err, ErrMenuInactive) {
+		t.Fatalf("unchanged panel: %v", err)
+	}
+	for _, write := range sim.writes {
+		if write.key == MenuChoice {
+			t.Fatal("sent a choice from the stale file")
+		}
+	}
+	// Couatl can rewrite an identical menu for a different open request.
+	rewritten := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WaitMenu(t.Context()); err != nil {
+		t.Fatalf("identical but newer panel: %v", err)
 	}
 }

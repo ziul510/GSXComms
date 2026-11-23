@@ -71,7 +71,7 @@ func (p *com) str(index int) string {
 	return windows.UTF16PtrToString(value)
 }
 
-type windowsAudio struct{}
+type windowsAudio struct{ notifications *sessionNotifications }
 
 func process(pid uint32) (start uint64, name string, err error) {
 	if pid == 0 {
@@ -113,7 +113,7 @@ func (windowsAudio) Alive(id identity) bool {
 	return start == id.ProcessStarted
 }
 
-func (windowsAudio) Visit(fn func(audioSession) error) error {
+func (audio windowsAudio) Visit(fn func(audioSession) error) (result error) {
 	runtime.LockOSThread()
 	// Keep this goroutine on the same thread until COM cleanup has run.
 	defer runtime.UnlockOSThread()
@@ -124,6 +124,10 @@ func (windowsAudio) Visit(fn func(audioSession) error) error {
 	}
 	// Register COM cleanup before acquiring interfaces so their releases run first.
 	defer ole.NewProc("CoUninitialize").Call()
+	if audio.notifications != nil {
+		// Process callback references even if device enumeration fails during hotplug.
+		defer func() { result = errors.Join(result, audio.notifications.drain(fn)) }()
+	}
 	var e *com
 	hr, _, _ = ole.NewProc("CoCreateInstance").Call(uintptr(unsafe.Pointer(&clEnumerator)), 0, 23, uintptr(unsafe.Pointer(&iEnumerator)), uintptr(unsafe.Pointer(&e)))
 	if int32(hr) < 0 {
@@ -148,13 +152,13 @@ func (windowsAudio) Visit(fn func(audioSession) error) error {
 			continue
 		}
 		// One bad endpoint should leave the other devices eligible for recovery
-		failures = errors.Join(failures, visitEndpoint(endpoint, fn))
+		failures = errors.Join(failures, visitEndpoint(endpoint, audio.notifications, fn))
 		endpoint.release()
 	}
 	return failures
 }
 
-func visitEndpoint(endpoint *com, fn func(audioSession) error) error {
+func visitEndpoint(endpoint *com, notifications *sessionNotifications, fn func(audioSession) error) error {
 	// Use the device ID as part of the journal identity
 	id := endpoint.str(5)
 	if id == "" {
@@ -166,6 +170,10 @@ func visitEndpoint(endpoint *com, fn func(audioSession) error) error {
 		return err
 	}
 	defer manager.release()
+	var failures error
+	if notifications != nil {
+		failures = notifications.register(manager, id)
+	}
 	// Get a snapshot of this endpoint's audio sessions
 	if err := manager.invoke(5, uintptr(unsafe.Pointer(&enumerator))); err != nil {
 		return err
@@ -175,7 +183,6 @@ func visitEndpoint(endpoint *com, fn func(audioSession) error) error {
 	if err := enumerator.invoke(3, uintptr(unsafe.Pointer(&count))); err != nil {
 		return err
 	}
-	var failures error
 	for i := int32(0); i < count; i++ {
 		var control *com
 		// The session enumerator gives each control its own COM reference
@@ -269,6 +276,8 @@ func Run(dir string, done <-chan struct{}, ready func() error, report func(error
 	}
 	// An abandoned mutex still gives this thread ownership so it can recover the journal
 	if rc == uint32(windows.WAIT_TIMEOUT) && done == nil {
+		// A live mute owns the journal, so recovery has nothing to report yet.
+		status("busy")
 		return nil
 	}
 	if rc != windows.WAIT_OBJECT_0 && rc != windows.WAIT_ABANDONED {
@@ -289,13 +298,31 @@ func Run(dir string, done <-chan struct{}, ready func() error, report func(error
 	if err := restore(path, api); err != nil {
 		report(err)
 	}
-	return errors.Join(muteUntilEOF(path, api, done, ready, report, status), restore(path, api))
+	// Keep COM initialized across scans so notifications reach the watchdog thread.
+	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 0)
+	if int32(hr) < 0 {
+		return fmt.Errorf("Core Audio initialization failed (0x%08x)", uint32(hr))
+	}
+	defer ole.NewProc("CoUninitialize").Call()
+	notifications := &sessionNotifications{
+		pending: make(chan notifiedSession, 64), wake: make(chan struct{}, 1),
+		managers: make(map[string]sessionRegistration), held: make(map[identity]notifiedSession),
+	}
+	defer notifications.releaseHeld()
+	watchedAudio := windowsAudio{notifications}
+	watchErr := muteUntilEOF(path, watchedAudio, done, ready, report, status)
+	stopErr := notifications.stop()
+	return errors.Join(watchErr, stopErr, restore(path, watchedAudio))
 }
 
 // Rescan while held because GSX can open its audio session after the first menu action
 func muteUntilEOF(path string, api backend, done <-chan struct{}, ready func() error, report func(error), status func(string)) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	var wake <-chan struct{}
+	if audio, ok := api.(windowsAudio); ok && audio.notifications != nil {
+		wake = audio.notifications.wake
+	}
 	var matched bool
 	var lastError string
 	var scanErr error
@@ -328,6 +355,7 @@ func muteUntilEOF(path string, api backend, done <-chan struct{}, ready func() e
 		case <-done:
 			// Stop before the next scan, even if the ticker is also ready
 		case <-ticker.C:
+		case <-wake:
 		}
 	}
 }

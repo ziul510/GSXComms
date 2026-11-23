@@ -13,9 +13,6 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 25
-    # The release job needs write access to attach assets
-    permissions:
-      contents: write
     env:
       PACKAGE_NAME: GSXComms-${{ github.event.release.tag_name || 'manual' }}-x64
     steps:
@@ -46,12 +43,11 @@ jobs:
         run: |
           # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes
           $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
-          $packages = $export.buildDependencies
-          # The phonemizer export uses CPU PyTorch on the runner
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==$($packages.torch)"
-          if ($LASTEXITCODE -ne 0) { throw 'PyTorch install failed' }
-          python -m pip install "deep-phonemizer==$($packages['deep-phonemizer'])" "onnx==$($packages.onnx)"
-          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer tool install failed' }
+          # Build the pinned source distribution with its verified local backend.
+          python -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer build dependency install failed' }
+          python -m pip install --require-hashes --no-build-isolation -r docs/phonemizer-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer dependency install failed' }
           # Download the checkpoint for the pinned phonemizer assets
           $checkpoint = Join-Path $env:RUNNER_TEMP 'best_model.pt'
           Invoke-WebRequest $export.checkpoint -OutFile $checkpoint
@@ -65,23 +61,28 @@ jobs:
         run: |
           & ./scripts/build.ps1 -PhonemizerDir build/phonemizer
           & ./scripts/package.ps1 -PackageName $env:PACKAGE_NAME
-      - name: Upload manual build
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload Windows ZIP
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ${{ env.PACKAGE_NAME }}
           path: dist/release/${{ env.PACKAGE_NAME }}.zip
           if-no-files-found: error
           compression-level: 0
-      - name: Attach files to published release
-        if: github.event_name == 'release'
-        shell: pwsh
-        # The CLI needs a token because checkout leaves no credentials behind
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PACKAGE_NAME: GSXComms-${{ github.event.release.tag_name }}-x64
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+      - name: Attach ZIP to published release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          # Allow a release workflow retry to replace incomplete uploads
-          gh release upload --clobber -- "$env:RELEASE_TAG" "dist/release/$env:PACKAGE_NAME.zip"
-          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
+        run: gh release upload --clobber -- "$RELEASE_TAG" "$PACKAGE_NAME.zip"

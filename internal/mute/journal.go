@@ -139,7 +139,7 @@ func restore(path string, api backend) error {
 	err = api.Visit(func(s audioSession) error {
 		// Restore only an exact identity match A similarly named session may be unrelated
 		for _, entry := range records {
-			if entry.ID == s.ID {
+			if entry.ID == s.ID && !restored[entry.ID] {
 				// One failed restore should leave the other sessions eligible for recovery
 				if err := s.Set(entry.WasMuted); err != nil {
 					failures = errors.Join(failures, err)

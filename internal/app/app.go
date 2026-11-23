@@ -51,6 +51,8 @@ type state struct {
 	clipCache                                        []cachedClip
 	audioMu                                          sync.Mutex
 	audioCancel                                      context.CancelFunc
+	readoutGeneration                                atomic.Uint64
+	keyboardUnavailable                              bool
 	crewMute                                         crewMute
 	saves                                            chan *saveRequest
 	pendingSave                                      *saveRequest
@@ -63,7 +65,7 @@ type state struct {
 	reader                                           *speech.Worker
 	speaking                                         chan struct{}
 	pttHeld, processing, savingKey, settingUpMistral bool
-	recording                                        context.CancelFunc
+	recording                                        context.CancelCauseFunc
 	recognizer                                       *speech.Worker
 	sttMu                                            sync.Mutex
 	speechReady                                      bool
@@ -140,8 +142,6 @@ func Run(dir string) {
 	// Keep all local audio on one playback loop so it can share the mute watchdog
 	go s.playbackLoop()
 	defer s.reader.Reset()
-	// Start checking for a Couatl mute left by an earlier process
-	go s.restoreMute(ctx)
 	defer s.recognizer.Reset()
 	// Closing a settings dialog should leave the main application running
 	s.host.ExitMode = gui.ExitOnMainClose
@@ -175,13 +175,31 @@ func Run(dir string) {
 			w.SetView(mainView)
 			// Start background work after the main window can accept UI callbacks
 			go s.simulator()
+			// Recovery can report its status once the window is available.
+			go s.restoreMute(ctx)
 			s.prepareSpeech(true, false)
 			s.configureTray()
 			s.setTopmost()
 			stopDialogPlacement = installDialogPlacement()
 			// Load the active PTT key before the keyboard hook starts listening
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
-			go listenKeyboard(ctx, s.keyboardEvent)
+			go func() {
+				if err := listenKeyboard(ctx, s.keyboardEvent); err != nil {
+					s.async(func() {
+						s.keyboardUnavailable = true
+						if config.Get[config.Binding](s.cfg, "ptt_bind").Type == "key" {
+							s.pttHeld = false
+							// Losing the hook is not a user release, so discard the capture.
+							if s.recording != nil {
+								s.recording(err)
+							}
+						}
+						s.traceFailure("PTT", "Keyboard hook stopped", err)
+						s.log("ERR", "Keyboard push-to-talk unavailable. Restart GSXComms or bind a controller button.")
+						s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+					})
+				}
+			}()
 			go s.pollController(ctx)
 			go s.listenHID(ctx)
 			if config.Get[bool](s.cfg, "start_minimized") {
@@ -471,7 +489,7 @@ func (s *state) simulator() {
 				s.async(s.retryConnection)
 				continue
 			}
-			menu := session.ReadMenu()
+			menu := session.CurrentMenu()
 			if session.RemoteActive() {
 				if len(menu.Options) > 0 && !menu.Same(lastMenu) {
 					lastMenu, s.menuActivity = menu, time.Now()
@@ -496,8 +514,8 @@ func (s *state) simulator() {
 				case s.menuWatch && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
 					ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-					if err := session.Open(ctx); err == nil {
-						menu = session.ReadMenu()
+					if page, err := session.OpenMenuPage(ctx); err == nil {
+						menu = page
 					}
 					cancel()
 				}
@@ -734,7 +752,7 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 		return
 	}
 	s.menuActivity = time.Now()
-	current := session.ReadMenu()
+	current := session.CurrentMenu()
 	var err error
 	if !session.RemoteActive() || len(current.Options) == 0 {
 		current, err = session.OpenMenuPage(ctx)
@@ -743,7 +761,7 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 		// Select against the page the user saw because reopening can return different choices.
 		err = session.ChooseOn(ctx, page, index)
 		if err != nil {
-			current = session.ReadMenu()
+			current = session.CurrentMenu()
 		}
 	}
 	if err != nil {
@@ -824,6 +842,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 	}
 	// Snapshot window state before handing the request to the simulator loop
 	prefs := s.cfg.Copy()
+	readoutGeneration := s.readoutGeneration.Load()
 	page, overlay := s.menu, s.overlay
 	s.publishTransmissionPolicy()
 	fail := func(reason string) {
@@ -846,7 +865,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		if readoutMatches(prefs, text, raw) {
 			s.trace("CMD", "Routed command to menu readout")
 			s.async(func() { s.log("CMD", "GSX menu readout requested") })
-			s.sayMenu(ctx, session, prefs, nil)
+			s.sayMenu(ctx, session, prefs, readoutGeneration, nil)
 			return
 		}
 		gate := func() error {
@@ -900,7 +919,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		corrected := false
 		// Apply menu correction only after routing known commands
 		if action.Kind == "menu" && !explicitNumber && session.Connected() {
-			page := session.ReadMenu()
+			page := session.CurrentMenu()
 			opened := len(page.Options) == 0
 			if opened {
 				page, _ = session.OpenMenuPage(ctx)
@@ -927,6 +946,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		}
 		auto := config.Get[bool](prefs, "auto_select_operator")
 		queuedReadouts := 0
+		seen := map[string]bool{}
 		execute := func(service string) bool {
 			// Each preset service gets its own deadline even if earlier ones ran long
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
@@ -936,7 +956,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				return false
 			}
 			if action.Kind == "preset" && service == config.ReadMenuAction {
-				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, func() {
+				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, readoutGeneration, func() {
 					queuedReadouts++
 				})
 			}
@@ -973,8 +993,12 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				return false
 			}
 			if err != nil {
+				// An unconfirmed write can already have taken effect, so skip preset duplicates.
+				if errors.Is(err, gsx.ErrWriteUncertain) {
+					seen[service] = true
+				}
 				if errors.Is(err, gsx.ErrMenuChanged) {
-					page := session.ReadMenu()
+					page := session.CurrentMenu()
 					s.async(func() {
 						if s.overlay {
 							s.menu = page
@@ -991,8 +1015,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		case "preset":
 			log("PRESET", fmt.Sprintf("Preset %q triggered", action.Preset))
 			done, readouts := 0, 0
-			// A duplicate preset entry may retry a failed service but won't repeat a successful one
-			seen := map[string]bool{}
+			// Only a definite failure is eligible for a duplicate entry's retry.
 			for _, service := range action.Services {
 				if s.ctx.Err() != nil {
 					return

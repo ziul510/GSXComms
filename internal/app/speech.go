@@ -18,6 +18,8 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/speech"
 )
 
+var errPTTReleaseTimeout = errors.New("PTT release timed out")
+
 // Share PTT readiness between the status row and the microphone gate
 func (s *state) pttAvailable() bool {
 	return s.pttBlock() == ""
@@ -53,7 +55,7 @@ func (s *state) record(down bool) {
 		s.pttHeld = false
 		s.heldHIDPath = ""
 		if s.recording != nil {
-			s.recording()
+			s.recording(nil)
 		}
 		return
 	}
@@ -88,21 +90,24 @@ func (s *state) record(down bool) {
 			return
 		}
 	}
-	capctx, stop := context.WithCancel(s.ctx)
+	capctx, stop := context.WithCancelCause(s.ctx)
 	s.recording = stop
 	s.ptt = "LISTENING"
 	s.trace("PTT", fmt.Sprintf("Capture started | provider=%s, local mic fallback=%t", debugProvider(provider), localSpeech))
 	go func() {
-		defer stop()
+		defer stop(nil)
+		// Stop the listening cue when capture ends, even while PTT is still held.
+		staticCtx, stopStatic := context.WithCancel(capctx)
+		defer stopStatic()
 		if volume := config.Get[float64](prefs, "volume_static"); volume > 0 && config.Get[bool](prefs, "enable_static") {
 			go func() {
 				// Delay the static cue so a quick tap stays quiet.
-				if !waitForPTTStatic(capctx) {
+				if !waitForPTTStatic(staticCtx) {
 					return
 				}
 				pcm := make([]byte, len(radioStatic())*2)
 				mixRadio(pcm, 0, volume, staticRate, 1)
-				_ = playPCMBuffer(capctx, config.Get[string](prefs, "output_device_name"), config.Get[string](prefs, "output_device_id"), pcm, staticRate, 1, true)
+				_ = playPCMBuffer(staticCtx, config.Get[string](prefs, "output_device_name"), config.Get[string](prefs, "output_device_id"), pcm, staticRate, 1, true)
 			}()
 		}
 		// Voxtral uploads audio, so a missing or busy named mic must stop capture
@@ -115,17 +120,28 @@ func (s *state) record(down bool) {
 					s.main.Toast(gui.ToastCfg{Title: message})
 				})
 			})
+		stopStatic()
 		if captureErr == nil && capctx.Err() == nil {
 			s.trace("PTT", "Recording cap reached. Waiting for release")
 			// A full recording still waits for release so held PTT cannot transmit twice
-			s.async(func() { s.log("SYS", "Recording cap reached. Release PTT to transmit") })
-			<-capctx.Done()
+			s.async(func() {
+				s.ptt = "RELEASE PTT"
+				s.log("SYS", "Recording cap reached. Release PTT to transmit")
+			})
+			// Discard a capped clip if the release event never arrives.
+			timer := time.NewTimer(15 * time.Second)
+			select {
+			case <-capctx.Done():
+			case <-timer.C:
+				stop(errPTTReleaseTimeout)
+			}
+			timer.Stop()
 		}
 		if s.ctx.Err() != nil {
 			return
 		}
 		// Skip recognition for empty, quiet, or failed captures
-		usable := captureErr == nil && speech.Usable(pcm)
+		usable := captureErr == nil && context.Cause(capctx) == context.Canceled && speech.Usable(pcm)
 		audioSeconds := float64(len(pcm)) / 32000 // 16 kHz mono PCM16
 		if captureErr != nil {
 			s.traceFailure("AUDIO", "Microphone capture failed", captureErr)
@@ -139,6 +155,8 @@ func (s *state) record(down bool) {
 			s.ptt = "Idle"
 			if captureErr != nil {
 				s.log("ERR", captureErr.Error())
+			} else if errors.Is(context.Cause(capctx), errPTTReleaseTimeout) {
+				s.log("SYS", "PTT release timed out. The recording was discarded.")
 			}
 			if usable {
 				s.ptt = "PROCESSING"
@@ -220,7 +238,9 @@ func (s *state) transcribe(prefs config.Values, pcm []byte) (string, error) {
 func (s *state) loadRecognizer(ctx context.Context, model models.Model, vocab commands.Vocabulary) error {
 	terms := vocab.Hotwords()
 	signature := fmt.Sprintf("%s:%x", model.Revision, sha256.Sum256([]byte(strings.Join(terms, "\n"))))
-	return s.recognizer.Load(ctx, signature, model.Paths(s.dir), terms)
+	return s.recognizer.Load(ctx, signature, model.Paths(s.dir), terms, func(ctx context.Context) error {
+		return model.Verify(ctx, s.dir)
+	})
 }
 
 func downloadModel(ctx context.Context, model models.Model, dir string, progress func(int64, int64)) error {

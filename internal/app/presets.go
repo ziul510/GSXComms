@@ -159,8 +159,9 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 				for index, service := range p.Services {
 					rows = append(rows, wrapped(fmt.Sprintf("%d. %s", index+1, service), 13, color))
 				}
-				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving, func() {
-					if !current() {
+				// Keep another edit from replacing an unfinished preset draft.
+				rows = append(rows, button("edit-preset-"+id, "Edit", 0, false, saving || editing, func() {
+					if editing || !current() {
 						return
 					}
 					selected, form, message, editing = i, entries[i], "", true
@@ -280,7 +281,8 @@ func (s *state) openPresets(parent *gui.Window, onClose func()) func() {
 		} else if message != "" {
 			body = append(body, wrapped(message, 11, red))
 		}
-		newPreset := buttonConfig("new", "+ New", 96, true, saving, func() {
+		// Finish or cancel the current edit before starting another preset.
+		newPreset := buttonConfig("new", "+ New", 96, true, saving || editing, func() {
 			startNew()
 			w.ScrollVerticalTo("presets-scroll", 0)
 		})

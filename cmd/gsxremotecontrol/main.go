@@ -115,7 +115,7 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 			case line == "CLOSE_MENU":
 				msg(map[string]any{"status": "ok", "menu_closed": s.Release(ctx) == nil})
 			case line == "GET_MENU":
-				menu := s.ReadMenu()
+				menu := s.CurrentMenu()
 				msg(map[string]any{"status": "ok", "title": menu.Title, "options": menu.Options, "active": menu.Active, "remote_active": s.RemoteActive()})
 			// IPC uses the original GSX slot index
 			case strings.HasPrefix(line, "SELECT:"):
@@ -186,7 +186,7 @@ func console(ctx context.Context, s *gsx.Session) {
 		}
 		if s.RemoteActive() {
 			var b strings.Builder
-			for i, op := range s.ReadMenu().Options {
+			for i, op := range s.CurrentMenu().Options {
 				fmt.Fprintf(&b, "%d. %s\n", i+1, op)
 			}
 			next = b.String()

@@ -115,6 +115,8 @@ func mainView(w *gui.Window) gui.View {
 	switch {
 	case s.ptt == "LISTENING":
 		pttStatus, pttColor = "LISTENING", accent
+	case s.ptt == "RELEASE PTT":
+		pttStatus, pttColor = s.ptt, orange
 	case s.ptt == "PROCESSING":
 		pttStatus, pttColor = "PROCESSING", orange
 	case !bound || !s.pttAvailable():
@@ -384,9 +386,17 @@ func (s *state) mergeSettings(base, draft config.Values) config.Values {
 	next := s.settingsDraft()
 	// Keep newer saves for fields this dialog didn't edit
 	for name, value := range draft {
-		if !bytes.Equal(base[name], value) {
-			next[name] = bytes.Clone(value)
+		if bytes.Equal(base[name], value) {
+			continue
 		}
+		if name == "fallback_accent" {
+			// A pending wizard save can remove a draft accent before its callback runs.
+			enabled := config.Get[[]string](next, "installed_packs")
+			if _, valid := installedCrewAccent(enabled, config.Get[string](draft, name)); len(enabled) > 0 && valid == "" {
+				continue
+			}
+		}
+		next[name] = bytes.Clone(value)
 	}
 	return next
 }
@@ -629,7 +639,10 @@ func (s *state) openSettings() {
 					return
 				}
 				const key = "fallback_accent"
-				if bytes.Equal(base[key], draft[key]) {
+				enabled := config.Get[[]string](s.cfg, "installed_packs")
+				_, valid := installedCrewAccent(enabled, config.Get[string](draft, key))
+				// A removed pack invalidates the draft fallback even if Settings edited it.
+				if bytes.Equal(base[key], draft[key]) || valid == "" {
 					draft[key] = bytes.Clone(s.cfg[key])
 				}
 				base[key] = bytes.Clone(s.cfg[key])

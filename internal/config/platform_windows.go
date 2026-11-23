@@ -5,12 +5,49 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// LockSettings allows one app to write a settings directory at a time.
+func LockSettings(dir string) (func(), error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	path, err := windows.UTF16PtrFromString(filepath.Join(dir, ".gsxcomms.lock"))
+	if err != nil {
+		return nil, err
+	}
+	// An exclusive handle also releases the lock if the app crashes.
+	handle, err := windows.CreateFile(path, windows.GENERIC_WRITE|windows.DELETE, 0, nil, windows.OPEN_ALWAYS, windows.FILE_FLAG_DELETE_ON_CLOSE, 0)
+	if errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return nil, fmt.Errorf("could not lock settings in %s. Check whether GSXComms is already open or the directory is writable: %w", dir, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = windows.CloseHandle(handle) }, nil
+}
+
+// Protect malformed legacy settings for recovery by the current Windows user.
+func protectSettingsBackup(data []byte) ([]byte, error) {
+	if uint64(len(data)) > uint64(^uint32(0)) {
+		return nil, errors.New("settings backup is too large")
+	}
+	input := windows.DataBlob{Size: uint32(len(data)), Data: unsafe.SliceData(data)}
+	var output windows.DataBlob
+	if err := windows.CryptProtectData(&input, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &output); err != nil {
+		return nil, err
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(output.Data)))
+	return append([]byte(nil), unsafe.Slice(output.Data, int(output.Size))...), nil
+}
 
 func Replace(source, destination string) error {
 	return moveFile(source, destination, windows.MOVEFILE_REPLACE_EXISTING)

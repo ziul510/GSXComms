@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -56,6 +57,7 @@ type Menu struct {
 	Title   string   `json:"title"`
 	Options []string `json:"options"`
 	Active  bool     `json:"active"`
+	source  os.FileInfo
 }
 
 var (
@@ -103,6 +105,7 @@ type Session struct {
 	BeforeChoice   func() error
 	Sleep          func(context.Context, time.Duration) error
 	remote         bool
+	pendingMenu    *Menu
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -114,41 +117,73 @@ func New(sim Transport, panel string) *Session {
 	var cached Menu
 	var reported string
 	s.ReadMenu = func() Menu {
-		read := func() ([]byte, bool) {
-			data, err := os.ReadFile(path)
+		read := func() ([]byte, os.FileInfo) {
+			// Capture metadata from the same file handle as the menu bytes.
+			file, err := os.Open(path)
+			if err == nil {
+				defer file.Close()
+				var data []byte
+				data, err = io.ReadAll(file)
+				if err == nil {
+					var info os.FileInfo
+					info, err = file.Stat()
+					if err == nil {
+						reported = ""
+						return data, info
+					}
+				}
+			}
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) && err.Error() != reported && s.OnReadError != nil {
 					reported = err.Error()
 					s.OnReadError(err)
 				}
-				return nil, false
 			}
-			reported = ""
-			return data, true
+			return nil, nil
 		}
-		data, ok := read()
-		if !ok || len(data) == 0 {
+		data, source := read()
+		if source == nil || len(data) == 0 {
 			return empty
 		}
-		if bytes.Equal(last, data) {
+		if bytes.Equal(last, data) && sameSource(cached.source, source) {
 			return cached
 		}
 		// Couatl can replace the panel while it is still being written
 		for range 2 {
 			time.Sleep(10 * time.Millisecond)
-			next, ok := read()
-			if !ok || len(next) == 0 {
+			next, nextSource := read()
+			if nextSource == nil || len(next) == 0 {
 				return empty
 			}
-			if bytes.Equal(data, next) {
+			if bytes.Equal(data, next) && sameSource(source, nextSource) {
 				last, cached = next, ParseMenu(strings.ToValidUTF8(string(next), ""))
+				cached.source = nextSource
 				return cached
 			}
-			data = next
+			data, source = next, nextSource
 		}
-		return empty
+		// Keep the latest file identity even if a write kept the content unstable.
+		unstable := empty
+		unstable.source = source
+		return unstable
 	}
 	return s
+}
+
+// Compare both the file identity and its last write time to detect an identical rewrite.
+func sameSource(a, b os.FileInfo) bool {
+	return a != nil && b != nil && a.ModTime().Equal(b.ModTime()) && os.SameFile(a, b)
+}
+
+// CurrentMenu hides the pre-open panel until Couatl publishes a fresh snapshot.
+func (s *Session) CurrentMenu() Menu {
+	menu := s.ReadMenu()
+	// In-memory menu sources provide snapshots directly and have no file metadata.
+	if s.pendingMenu != nil && (len(menu.Options) == 0 ||
+		sameSource(menu.source, s.pendingMenu.source) && (len(s.pendingMenu.Options) == 0 || menu.Same(*s.pendingMenu))) {
+		return ParseMenu("")
+	}
+	return menu
 }
 
 func (m Menu) Same(other Menu) bool {
@@ -229,7 +264,7 @@ func (s *Session) write(ctx context.Context, name string, value float64, check f
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, ErrDisconnected) || errors.Is(err, errWriteUncertain) {
+		if errors.Is(err, ErrDisconnected) || errors.Is(err, ErrWriteUncertain) {
 			return err
 		}
 		if attempt < 2 {
@@ -268,6 +303,11 @@ func (s *Session) Open(ctx context.Context) error {
 	current, err := s.get(ctx, MenuOpen)
 	if err != nil {
 		return err
+	}
+	if (current < 0.5 || !s.remote) && s.pendingMenu == nil {
+		// Couatl's panel file can outlive the previous menu or simulator session.
+		previous := s.ReadMenu()
+		s.pendingMenu = &previous
 	}
 	if current < 0.5 {
 		if err := s.set(ctx, Remote, 1); err != nil {
@@ -320,6 +360,9 @@ func (s *Session) Release(ctx context.Context) error {
 	err := errors.Join(menuErr, s.set(ctx, Remote, 0))
 	// Keep tracking remote control after a failed release so idle cleanup can retry
 	s.remote = err != nil && s.Connected()
+	if !s.remote {
+		s.pendingMenu = nil
+	}
 	return err
 }
 
@@ -330,6 +373,7 @@ func (s *Session) Close() error {
 	defer func() {
 		s.Sim = nil
 		s.remote = false
+		s.pendingMenu = nil
 	}()
 	// A monitoring session should leave a menu opened by the simulator alone
 	if !s.remote {
@@ -344,7 +388,12 @@ func (s *Session) Close() error {
 
 // Let GSX process the slot before the next choice
 func (s *Session) Choose(ctx context.Context, index int) error {
-	return s.choose(ctx, s.ReadMenu(), index, nil, nil)
+	page := s.CurrentMenu()
+	// Deny raw console choices while a newly opened panel is still stale.
+	if s.pendingMenu != nil && len(page.Options) == 0 {
+		return ErrMenuInactive
+	}
+	return s.choose(ctx, page, index, nil, nil)
 }
 
 // ChooseOn checks the page again because a GSX slot can change while a command waits
@@ -358,7 +407,7 @@ func (s *Session) chooseOn(ctx context.Context, page Menu, index int, afterSelec
 		return ErrMenuChanged
 	}
 	return s.choose(ctx, page, index, func() error {
-		if !page.Same(s.ReadMenu()) {
+		if !page.Same(s.CurrentMenu()) {
 			return ErrMenuChanged
 		}
 		if s.BeforeChoice != nil {
@@ -373,7 +422,17 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 		return errors.New("invalid GSX item")
 	}
 	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
-		return err
+		if !errors.Is(err, ErrWriteUncertain) || errors.Is(err, ErrDisconnected) || len(page.Options) == 0 {
+			return err
+		}
+		// GSX consumes the choice LVar. A new panel can confirm a missed readback.
+		if waitErr := s.Sleep(ctx, 300*time.Millisecond); waitErr != nil {
+			return errors.Join(err, waitErr)
+		}
+		current := s.CurrentMenu()
+		if len(current.Options) == 0 || page.Same(current) {
+			return err
+		}
 	}
 	s.remote = true
 	// Start command side effects before waiting for GSX to update the panel
@@ -417,7 +476,7 @@ func (s *Session) RefreshAndRelease(ctx context.Context) (Menu, error) {
 	return menu, err
 }
 
-// A fresh open can accept any populated menu
+// WaitMenu confirms the panel has updated after a new open.
 func (s *Session) WaitMenu(ctx context.Context) (Menu, error) {
 	return s.waitMenu(ctx, nil)
 }
@@ -425,9 +484,10 @@ func (s *Session) WaitMenu(ctx context.Context) (Menu, error) {
 func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	var menu Menu
 	for i := 0; i < 8; i++ {
-		menu = s.ReadMenu()
+		menu = s.CurrentMenu()
 		// The panel file can still show the parent menu after a submenu choice
 		if len(menu.Options) > 0 && (previous == nil || !menu.Same(*previous)) {
+			s.pendingMenu = nil
 			return menu, nil
 		}
 		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
@@ -473,7 +533,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	if !s.Connected() {
 		return "", ErrDisconnected
 	}
-	menu := s.ReadMenu()
+	menu := s.CurrentMenu()
 	// Start services by opening the menu A text choice can use the current page
 	if service != "" || !s.RemoteActive() || len(menu.Options) == 0 {
 		var err error
@@ -491,6 +551,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 					return index
 				}
 			}
+			// GSX exposes one jetway toggle and no jetway state API, so both verbs select the same item.
 			return optionContaining(options, keywords)
 		}
 		// Without a service ID, score the transcript against the visible labels
@@ -589,11 +650,11 @@ func (s *Session) Altitude(ctx context.Context) (float64, error) {
 
 // Check the menu flag before falling back to the first row
 func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
-	if !page.Same(s.ReadMenu()) {
+	if !page.Same(s.CurrentMenu()) {
 		return ErrMenuChanged
 	}
 	err := s.Release(ctx)
-	if errors.Is(err, errWriteUncertain) || errors.Is(err, ErrDisconnected) {
+	if errors.Is(err, ErrWriteUncertain) || errors.Is(err, ErrDisconnected) {
 		return err
 	}
 	if waitErr := s.Sleep(ctx, 200*time.Millisecond); waitErr != nil {
@@ -603,7 +664,7 @@ func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
 	if readErr != nil || open < 0.5 {
 		return errors.Join(err, readErr)
 	}
-	if !page.Same(s.ReadMenu()) {
+	if !page.Same(s.CurrentMenu()) {
 		return ErrMenuChanged
 	}
 	if enableErr := s.set(ctx, Remote, 1); enableErr != nil {

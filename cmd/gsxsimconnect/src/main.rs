@@ -34,6 +34,10 @@ struct Reply {
     error: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     fatal: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    uncertain: bool,
+    #[serde(skip)]
+    write_rejected: bool,
 }
 
 enum Message {
@@ -116,17 +120,16 @@ async fn wait_for_reply(
     messages: &mut mpsc::Receiver<Message>,
     definition: u32,
     registered: u32,
-    sent: u32,
-    request_id: Option<u32>,
+    read_sent: u32,
+    request_id: u32,
+    write_sent: Option<u32>,
     wait: Duration,
 ) -> Reply {
     let result = timeout(wait, async {
         loop {
             // Match late reads by request and definition IDs and exceptions by send ID
             match messages.recv().await {
-                Some(Message::Value(id, def, value))
-                    if Some(id) == request_id && def == definition =>
-                {
+                Some(Message::Value(id, def, value)) if id == request_id && def == definition => {
                     return if value.is_finite() {
                         Reply {
                             value: Some(value),
@@ -139,7 +142,13 @@ async fn wait_for_reply(
                 Some(Message::Exception(id, reason)) if id == registered => {
                     return error(format!("SimConnect definition failed: {reason}"), true);
                 }
-                Some(Message::Exception(id, reason)) if id == sent => {
+                Some(Message::Exception(id, reason)) if Some(id) == write_sent => {
+                    return Reply {
+                        write_rejected: true,
+                        ..error(format!("SimConnect write failed: {reason}"), false)
+                    };
+                }
+                Some(Message::Exception(id, reason)) if id == read_sent => {
                     return error(format!("SimConnect request failed: {reason}"), false);
                 }
                 Some(Message::Disconnected(reason)) => return error(reason, true),
@@ -151,9 +160,7 @@ async fn wait_for_reply(
     .await;
     match result {
         Ok(reply) => reply,
-        Err(_) if request_id.is_some() => error("SimConnect read timed out", false),
-        // The wire protocol only acknowledges failed writes, so allow a short exception window
-        Err(_) => Reply::default(),
+        Err(_) => error("SimConnect read timed out", false),
     }
 }
 
@@ -195,25 +202,8 @@ async fn request(
             }
         }
     };
-    let (sent, id, wait) = match request {
-        Request::Get { timeout_ms, .. } => {
-            *next_id = next_id.wrapping_add(1);
-            (
-                sim.request_data_on_sim_object(
-                    *next_id,
-                    definition,
-                    0,
-                    Period::Once,
-                    DataRequestFlags::empty(),
-                    0,
-                    0,
-                    0,
-                )
-                .await,
-                Some(*next_id),
-                Duration::from_millis(timeout_ms.clamp(1, 850)),
-            )
-        }
+    let (write, wait) = match request {
+        Request::Get { timeout_ms, .. } => (None, Duration::from_millis(timeout_ms.clamp(1, 850))),
         Request::Set { value, .. } => {
             if !value.is_finite()
                 || !matches!(
@@ -225,8 +215,8 @@ async fn request(
             {
                 return error("Unsupported simulator write", false);
             }
-            (
-                sim.set_data_on_sim_object(
+            let sent = match sim
+                .set_data_on_sim_object(
                     definition,
                     0,
                     DataSetFlags::DEFAULT,
@@ -234,15 +224,55 @@ async fn request(
                     8,
                     &value.to_le_bytes(),
                 )
-                .await,
-                None,
-                Duration::from_millis(45),
-            )
+                .await
+            {
+                Ok(sent) => sent,
+                Err(reason) => return error(reason.to_string(), true),
+            };
+            (Some((sent, value)), Duration::from_millis(350))
         }
     };
-    match sent {
-        Ok(sent) => wait_for_reply(messages, definition, registered, sent, id, wait).await,
-        Err(reason) => error(reason.to_string(), true),
+    // A correlated read checks the written state and gives the server time to report rejection.
+    *next_id = next_id.wrapping_add(1);
+    let read_sent = match sim
+        .request_data_on_sim_object(
+            *next_id,
+            definition,
+            0,
+            Period::Once,
+            DataRequestFlags::empty(),
+            0,
+            0,
+            0,
+        )
+        .await
+    {
+        Ok(sent) => sent,
+        Err(reason) => return error(reason.to_string(), true),
+    };
+    let reply = wait_for_reply(
+        messages,
+        definition,
+        registered,
+        read_sent,
+        *next_id,
+        write.map(|(sent, _)| sent),
+        wait,
+    )
+    .await;
+    let Some((_, value)) = write else {
+        return reply;
+    };
+    if reply.fatal || reply.write_rejected {
+        return reply;
+    }
+    if reply.value == Some(value) {
+        return Reply::default();
+    }
+    // GSX can consume a selection before the readback. The parent can check the panel.
+    Reply {
+        uncertain: true,
+        ..Reply::default()
     }
 }
 
@@ -327,7 +357,7 @@ mod tests {
         tx.send(Message::Value(1, 4, 10.0)).await.unwrap();
         tx.send(Message::Value(2, 3, 20.0)).await.unwrap();
         tx.send(Message::Value(2, 4, 30.0)).await.unwrap();
-        let reply = wait_for_reply(&mut rx, 4, 6, 9, Some(2), Duration::from_millis(20)).await;
+        let reply = wait_for_reply(&mut rx, 4, 6, 9, 2, None, Duration::from_millis(20)).await;
         assert_eq!(reply.value, Some(30.0));
     }
 
@@ -337,13 +367,17 @@ mod tests {
         tx.send(Message::Exception(8, "unrelated".into()))
             .await
             .unwrap();
-        tx.send(Message::Exception(9, "rejected".into()))
-            .await
-            .unwrap();
-        let reply = wait_for_reply(&mut rx, 4, 6, 9, None, Duration::from_millis(20)).await;
+        // Keep checking for a rejected write after the old 45 ms exception window.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            tx.send(Message::Exception(9, "rejected".into()))
+                .await
+                .unwrap();
+        });
+        let reply = wait_for_reply(&mut rx, 4, 6, 10, 2, Some(9), Duration::from_millis(350)).await;
         assert_eq!(
             reply.error.as_deref(),
-            Some("SimConnect request failed: rejected")
+            Some("SimConnect write failed: rejected")
         );
     }
 }

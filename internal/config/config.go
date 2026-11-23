@@ -151,12 +151,20 @@ func Load(dir string) (Values, error) {
 	}
 	values, err := decode(data)
 	if err != nil {
-		// Keep the bad file around in case its settings can be recovered
-		backup := fmt.Sprintf("%s.corrupt.%d", path, time.Now().UnixNano())
-		if renameErr := os.Rename(path, backup); renameErr != nil {
-			return Defaults(), errors.Join(err, renameErr)
+		// Malformed legacy JSON can still contain a plaintext API key.
+		protected, protectErr := protectSettingsBackup(data)
+		if protectErr != nil {
+			return Defaults(), errors.Join(err, fmt.Errorf("could not encrypt the corrupt settings backup: %w", protectErr))
 		}
-		return Defaults(), fmt.Errorf("settings were unreadable and backed up: %w", err)
+		backup := fmt.Sprintf("%s.corrupt.%d.dpapi", path, time.Now().UnixNano())
+		if writeErr := writeAtomic(backup, protected, moveNew); writeErr != nil {
+			return Defaults(), errors.Join(err, writeErr)
+		}
+		// Keep the original until the encrypted copy is durable.
+		if removeErr := os.Remove(path); removeErr != nil {
+			return Defaults(), errors.Join(err, removeErr)
+		}
+		return Defaults(), fmt.Errorf("settings were unreadable and backed up with Windows user protection: %w", err)
 	}
 	var before Values
 	_ = json.Unmarshal(data, &before)
@@ -301,12 +309,14 @@ func preserveSettingsCredential(path string, migrateKey func(string) error) erro
 		return err
 	}
 	var saved Values
-	if json.Unmarshal(data, &saved) == nil {
-		// Migrate the old key before saving settings that omit credentials.
-		if key := Get[string](saved, legacySecret); key != "" {
-			if err := migrateKey(key); err != nil {
-				return fmt.Errorf("could not migrate Voxtral credential: %w", err)
-			}
+	if err := json.Unmarshal(data, &saved); err != nil || saved == nil {
+		// An unsuccessful backup must not turn a later settings save into data loss.
+		return errors.New("could not overwrite unreadable settings. Restart GSXComms to retry the protected backup")
+	}
+	// Migrate the old key before saving settings that omit credentials.
+	if key := Get[string](saved, legacySecret); key != "" {
+		if err := migrateKey(key); err != nil {
+			return fmt.Errorf("could not migrate Voxtral credential: %w", err)
 		}
 	}
 	return nil

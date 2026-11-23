@@ -293,7 +293,7 @@
   "components": [
     {
       "name": "Go standard library and runtime",
-      "version": "1.27.0",
+      "version": "1.27.4",
       "license": "BSD-3-Clause",
       "source": "https://go.dev/LICENSE",
       "mode": "linked"

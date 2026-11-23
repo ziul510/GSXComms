@@ -66,8 +66,19 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		previous := s.cfg
 		s.cfg = req.values
 		s.publishTransmissionPolicy()
-		if s.presetReadoutChanged != nil && config.Get[bool](previous, config.MenuReadoutSetting) != config.Get[bool](s.cfg, config.MenuReadoutSetting) {
-			s.presetReadoutChanged()
+		if config.Get[bool](previous, config.MenuReadoutSetting) != config.Get[bool](s.cfg, config.MenuReadoutSetting) {
+			// Invalidate requests from the previous setting, even after re-enabling.
+			s.readoutGeneration.Add(1)
+			s.audioMu.Lock()
+			for i := len(s.audioQueue) - 1; i >= 0; i-- {
+				if s.audioQueue[i].dry {
+					s.dropAudio(i)
+				}
+			}
+			s.audioMu.Unlock()
+			if s.presetReadoutChanged != nil {
+				s.presetReadoutChanged()
+			}
 		}
 		if !bytes.Equal(previous["ptt_bind"], s.cfg["ptt_bind"]) {
 			// Stop recording before changing which key release the hook listens for

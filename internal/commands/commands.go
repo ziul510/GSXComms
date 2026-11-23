@@ -165,6 +165,7 @@ func Parse(raw []byte) (Vocabulary, error) {
 	var v Vocabulary
 	// Track the first rule for each bias phrase separately from the full hotword set
 	seen, terms := map[string]bool{}, map[string]bool{}
+	serviceIDs := make(map[string]bool)
 	for _, term := range language.Boost {
 		terms[term] = true
 	}
@@ -178,6 +179,11 @@ func Parse(raw []byte) (Vocabulary, error) {
 			return Vocabulary{}, invalid("invalid JSON")
 		}
 		e := entry{Name: name.(string)}
+		// Keep routing and keyword lookup in agreement on each service ID.
+		if serviceIDs[e.Name] {
+			return Vocabulary{}, invalid("duplicate service ID")
+		}
+		serviceIDs[e.Name] = true
 		var ok, biasOK bool
 		if len(raw) > 0 && raw[0] == '{' {
 			var parts map[string]json.RawMessage
@@ -304,11 +310,32 @@ type Action struct {
 	Services []string
 }
 
+// Match a codeword only where it begins and ends at a Unicode word boundary.
+func containsPhrase(text, phrase string) bool {
+	for start := 0; start < len(text); {
+		offset := strings.Index(text[start:], phrase)
+		if offset < 0 {
+			return false
+		}
+		at := start + offset
+		left, _ := utf8.DecodeLastRuneInString(text[:at])
+		right, _ := utf8.DecodeRuneInString(text[at+len(phrase):])
+		if !word(left) && !word(right) {
+			return true
+		}
+		// Advance past the current start so an overlapping match can still count.
+		_, width := utf8.DecodeRuneInString(text[at:])
+		start = at + width
+	}
+	return false
+}
+
 func (v Vocabulary) Route(text, raw string, presets []config.Preset, menuMatching bool) Action {
 	// Prefer the original codeword when correction matches a different preset
 	for _, candidate := range []string{raw, text} {
+		candidate = strings.ToLower(candidate)
 		for _, p := range presets {
-			if p.Enabled && len(p.Services) > 0 && p.Codeword != "" && strings.Contains(strings.ToLower(candidate), p.Codeword) {
+			if p.Enabled && len(p.Services) > 0 && p.Codeword != "" && containsPhrase(candidate, p.Codeword) {
 				return Action{Kind: "preset", Preset: p.Name, Services: slices.Clone(p.Services)}
 			}
 		}

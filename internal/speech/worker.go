@@ -100,20 +100,25 @@ type Worker struct {
 // Construction records the provider The subprocess starts on the first load
 func NewWorker(kind string) *Worker { return &Worker{kind: kind} }
 
-func (w *Worker) Load(ctx context.Context, signature string, paths map[string]string, hotwords []string) error {
+func (w *Worker) Load(ctx context.Context, signature string, paths map[string]string, hotwords []string, verify func(context.Context) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Keep the native model loaded across transmissions with the same inputs.
+	if w.cmd != nil && w.loaded == signature {
+		return nil
+	}
+	if verify != nil {
+		if err := verify(ctx); err != nil {
+			return err
+		}
+	}
 	if w.cmd == nil {
 		if err := w.start(ctx); err != nil {
 			return err
 		}
-	}
-	// Keep the native model loaded across transmissions with the same inputs
-	if w.loaded == signature {
-		return nil
 	}
 	r, err := w.exchange(ctx, 120*time.Second, Frame{Op: "load", Paths: paths, Hotwords: hotwords})
 	if err != nil {
@@ -260,17 +265,18 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 	type result struct {
 		reply Frame
 		err   error
+		stage string
 	}
 	// The pipe goroutine may still need to send after a timeout returns
 	resultCh := make(chan result, 1)
 	in, out := w.in, w.out
 	go func() {
 		if err := Write(in, req); err != nil {
-			resultCh <- result{err: err}
+			resultCh <- result{err: err, stage: "write request"}
 			return
 		}
 		f, err := Read(out)
-		resultCh <- result{f, err}
+		resultCh <- result{reply: f, err: err, stage: "read response"}
 	}()
 	select {
 	case r := <-resultCh:
@@ -279,7 +285,11 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 			return r.reply, nil
 		}
 		w.fail()
-		return Frame{}, errors.New("speech worker exited or returned an invalid response")
+		if r.err != nil {
+			// Keep request text and native worker output out of diagnostic messages.
+			return Frame{}, fmt.Errorf("speech %s: could not %s: %w", req.Op, r.stage, r.err)
+		}
+		return Frame{}, fmt.Errorf("speech %s: response did not match the request", req.Op)
 	// Canceling a request can leave native inference running inside the child.
 	case <-ctx.Done():
 		// Give active inference a short chance to finish before stopping the process

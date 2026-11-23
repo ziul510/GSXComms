@@ -51,6 +51,11 @@ jobs:
           # Compile the patched renderer used by the portable build
           $modfile = & scripts/go-gui-overlay.ps1
           go build -modfile $modfile ./...
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - name: Test dependency license tooling
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Check SimConnect helper
         shell: pwsh
         run: |

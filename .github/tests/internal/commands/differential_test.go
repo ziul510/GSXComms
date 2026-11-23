@@ -194,3 +194,23 @@ func TestVocabularyKeepsLastGoodOverride(t *testing.T) {
 		t.Fatalf("failed to reload corrected override: %s", warning)
 	}
 }
+
+func TestPresetCodewordUsesPhraseBoundaries(t *testing.T) {
+	vocab, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	presets := []config.Preset{{Name: "Fuel", Codeword: "go", Enabled: true, Services: []string{"REFUELING"}}}
+	for text, want := range map[string]string{"request cargo": "unknown", "please go!": "preset", "goose": "unknown"} {
+		if action := vocab.Route(text, text, presets, false); action.Kind != want {
+			t.Errorf("%q routed as %q, want %q", text, action.Kind, want)
+		}
+	}
+}
+
+func TestVocabularyRejectsDuplicateServiceIDs(t *testing.T) {
+	data := []byte(`{"JETWAY":["jetway"],"JETWAY":["boarding bridge"]}`)
+	if _, err := Parse(data); err == nil {
+		t.Fatal("accepted conflicting aliases for a single service ID")
+	}
+}

@@ -73,6 +73,28 @@ func (m Model) Ready(data string) bool {
 	return err == nil && strings.TrimSpace(string(mark)) == m.Revision
 }
 
+// Verify hashes cached files before passing them to a worker that will load the model.
+func (m Model) Verify(ctx context.Context, data string) error {
+	handle, err := m.lock(data)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	dir := m.Directory(data)
+	for _, file := range m.Files {
+		// A cancellation does not invalidate an otherwise healthy download.
+		if !file.matchesContext(ctx, filepath.Join(dir, filepath.FromSlash(file.Path))) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// Remove the marker so Settings offers deletion and a verified download.
+			_ = os.Remove(filepath.Join(dir, ".verified"))
+			return errors.New("model failed integrity verification. Delete the model in Settings and download it again")
+		}
+	}
+	return nil
+}
+
 // The delete action is also available for incomplete or staged downloads
 func (m Model) Cached(data string) bool {
 	final := m.Directory(data)
@@ -219,6 +241,11 @@ func (m Model) Delete(data string) error {
 
 // Check size first so an incomplete model doesn't get hashed on every retry
 func (f File) matches(path string) bool {
+	return f.matchesContext(context.Background(), path)
+}
+
+// Stop hashing when the user cancels a pending worker load.
+func (f File) matchesContext(ctx context.Context, path string) bool {
 	handle, err := os.Open(path)
 	if err != nil {
 		return false
@@ -229,7 +256,7 @@ func (f File) matches(path string) bool {
 		return false
 	}
 	hash := sha256.New()
-	_, err = io.Copy(hash, handle)
+	_, err = copyProgress(ctx, hash, handle, func(int64) {})
 	return err == nil && hex.EncodeToString(hash.Sum(nil)) == f.SHA256
 }
 

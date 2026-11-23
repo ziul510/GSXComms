@@ -1,7 +1,7 @@
 Third-party notices for GSXComms
 Copyright 2026 ziul510. Apache License 2.0 applies to the rewrite code.
 
-Go standard library and runtime 1.27.0 — BSD-3-Clause
+Go standard library and runtime 1.27.4 — BSD-3-Clause
 Use: linked
 Source: https://go.dev/LICENSE
 

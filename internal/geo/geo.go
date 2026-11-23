@@ -138,13 +138,12 @@ func init() {
 	}
 }
 
-// AccentCandidates preserves the legacy country name preference before regional fallbacks
+// AccentCandidates honors overrides first, then prefers the more specific region.
 func AccentCandidates(pos Position, overrides map[string]string) []string {
 	name := strings.ToLower(mapping.Names[pos.Country])
 	return []string{
-		overrides[strings.ToLower(pos.Country)], overrides[name], stockNames[name],
-		// Try the region before falling back to the broader country mapping.
-		mapping.Regions[pos.Country][strings.ToLower(pos.Region)], mapping.Country[pos.Country],
+		overrides[strings.ToLower(pos.Country)], overrides[name],
+		mapping.Regions[pos.Country][strings.ToLower(pos.Region)], stockNames[name], mapping.Country[pos.Country],
 	}
 }
 

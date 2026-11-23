@@ -24,9 +24,20 @@ type playback struct {
 	voice, crewAccent string
 	readout           string
 	readoutEntries    int
+	readoutGeneration uint64
+	preparing         *readoutPreparation
 	location          *geo.Position
 	priority, ordered bool
 	dry               bool
+}
+
+// Hold the result off the playback goroutine until the reader has finished.
+type readoutPreparation struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	pcm    []byte
+	rate   int
 }
 
 func (s *state) randomizeVoice() {
@@ -54,11 +65,17 @@ func (p playback) protected() bool { return p.priority || p.ordered }
 func (s *state) queueAudio(request playback, interrupt bool) bool {
 	s.audioMu.Lock()
 	defer s.audioMu.Unlock()
-	if s.ctx.Err() != nil {
+	// Settings can disable the reader while standalone synthesis is running.
+	if s.ctx.Err() != nil || request.dry && request.readoutGeneration != s.readoutGeneration.Load() {
 		return false
 	}
 	request.priority = interrupt
+	const queueLimit = 16
 	if interrupt {
+		// Repeated pending errors only need one audible cue.
+		if slices.ContainsFunc(s.audioQueue, func(p playback) bool { return p.priority && p.cue == request.cue && p.option == request.option }) {
+			return true
+		}
 		if s.audioCancel != nil {
 			s.audioCancel()
 		}
@@ -67,11 +84,19 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 		for i < len(s.audioQueue) && s.audioQueue[i].priority {
 			i++
 		}
+		if len(s.audioQueue) == queueLimit {
+			// Keep the newest urgent cue when the queue otherwise contains only priorities.
+			drop := min(i, queueLimit-1)
+			if i == queueLimit {
+				drop, i = 0, queueLimit-1
+			}
+			s.dropAudio(drop)
+		}
 		// Keep interrupts in arrival order and place them ahead of preset audio.
 		s.audioQueue = slices.Insert(s.audioQueue, i, request)
-	} else if len(s.audioQueue) < 16 || request.ordered && request.readout == "" {
+	} else if len(s.audioQueue) < queueLimit {
 		s.audioQueue = append(s.audioQueue, request)
-	} else {
+	} else if !request.ordered || request.readout != "" || !s.replaceQueuedCrewCue(request) {
 		s.traceLevel("WARN", "AUDIO", "Playback skipped because the queue is full")
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 		return false
@@ -80,6 +105,28 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 	case s.audioWake <- struct{}{}:
 	default:
 	}
+	return true
+}
+
+// Cancel synthesis for a readout that is no longer queued.
+func (s *state) dropAudio(index int) {
+	if job := s.audioQueue[index].preparing; job != nil {
+		job.cancel()
+	}
+	s.audioQueue = slices.Delete(s.audioQueue, index, index+1)
+}
+
+// Prefer fresh service state and keep the order of the cues that survive.
+func (s *state) replaceQueuedCrewCue(request playback) bool {
+	index := slices.IndexFunc(s.audioQueue, func(p playback) bool { return p.ordered && !p.dry && p.cue == request.cue })
+	if index < 0 {
+		index = slices.IndexFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+	}
+	if index < 0 {
+		return false
+	}
+	s.dropAudio(index)
+	s.audioQueue = append(s.audioQueue, request)
 	return true
 }
 
@@ -97,8 +144,39 @@ func (s *state) playbackLoop() {
 			continue
 		}
 		next := s.audioQueue[0]
-		s.audioQueue[0] = playback{}
-		s.audioQueue = s.audioQueue[1:]
+		if next.dry && next.readoutGeneration != s.readoutGeneration.Load() {
+			s.dropAudio(0)
+			s.audioMu.Unlock()
+			continue
+		}
+		if next.readout != "" {
+			job := next.preparing
+			if job == nil {
+				// The queue retains preset order while urgent cues can move ahead.
+				job = s.prepareReadout(next)
+				s.audioQueue[0].preparing = job
+			}
+			select {
+			case <-job.done:
+				next.pcm, next.rate = job.pcm, job.rate
+			default:
+				if job.ctx.Err() == nil {
+					s.audioMu.Unlock()
+					select {
+					case <-s.audioWake:
+					case <-job.done:
+					case <-job.ctx.Done():
+					}
+					continue
+				}
+			}
+			if job.ctx.Err() != nil || len(next.pcm) == 0 {
+				s.dropAudio(0)
+				s.audioMu.Unlock()
+				continue
+			}
+		}
+		s.dropAudio(0)
 		ctx, cancel := context.WithCancel(s.ctx)
 		// Only expose a cancel function for playback that an interrupt may cut short.
 		if !next.protected() {
@@ -128,6 +206,19 @@ func (s *state) playbackLoop() {
 		s.audioCancel = nil
 		s.audioMu.Unlock()
 	}
+}
+
+// Start Kokoro outside playback and bound how long an ordered request can hold its place.
+func (s *state) prepareReadout(next playback) *readoutPreparation {
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	job := &readoutPreparation{ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(job.done)
+		if s.menuReaderReady() && ctx.Err() == nil {
+			job.pcm, job.rate = s.synthesizeReadout(ctx, next.readout, next.readoutEntries)
+		}
+	}()
+	return job
 }
 
 var statefulServices = []string{"GPU", "JETWAY", "STAIRS"}

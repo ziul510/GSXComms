@@ -39,7 +39,7 @@ func TestInstalledWorkerRestarts(t *testing.T) {
 	for _, name := range []string{"encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"} {
 		paths[name] = filepath.Join(dir, name)
 	}
-	if err := w.Load(ctx, "restart-fixture", paths, vocab.Hotwords()); err != nil {
+	if err := w.Load(ctx, "restart-fixture", paths, vocab.Hotwords(), nil); err != nil {
 		t.Fatal(err)
 	}
 	first := w.cmd.Process.Pid
@@ -51,7 +51,7 @@ func TestInstalledWorkerRestarts(t *testing.T) {
 	if _, err := w.Transcribe(ctx, make([]byte, 8000)); err == nil {
 		t.Fatal("crashed worker still looked usable")
 	}
-	if err := w.Load(ctx, "restart-fixture", paths, vocab.Hotwords()); err != nil {
+	if err := w.Load(ctx, "restart-fixture", paths, vocab.Hotwords(), nil); err != nil {
 		t.Fatal(err)
 	}
 	// Check the process ID because a cached model signature alone cannot prove the restart.

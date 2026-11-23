@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/binary"
 	"slices"
+	"strconv"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/go-gui-org/go-gui/gui"
+	"github.com/ziul510/GSXCommsGo/internal/config"
 )
 
 // A slow watchdog must never stall menu work or delay playback beyond its budget
@@ -133,5 +135,38 @@ func TestProtectedAudioSurvivesOverflowAndInterruption(t *testing.T) {
 	}
 	if !slices.Equal(cues, []string{"error 1", "error 2", "", "gpu"}) || s.audioQueue[2].readout != "readout fixture" {
 		t.Fatalf("wrong protected playback order: %v", cues)
+	}
+}
+
+func TestPlaybackQueueCapsAndCoalescesPriority(t *testing.T) {
+	s := &state{ctx: t.Context()}
+	for range 30 {
+		if !s.queueAudio(playback{cue: "error"}, true) {
+			t.Fatal("priority error was rejected")
+		}
+	}
+	if len(s.audioQueue) != 1 {
+		t.Fatalf("duplicate priority cues = %d, want 1", len(s.audioQueue))
+	}
+	for i := range 30 {
+		s.queueAudio(playback{cue: "error", option: strconv.Itoa(i)}, true)
+	}
+	if len(s.audioQueue) != 16 || s.audioQueue[15].option != "29" {
+		t.Fatalf("queue length = %d, wanted 16 including the latest urgent cue", len(s.audioQueue))
+	}
+}
+
+func TestDisablingMenuReaderDiscardsQueuedReadouts(t *testing.T) {
+	s := &state{ctx: t.Context(), cfg: config.Defaults()}
+	s.cfg.Put(config.MenuReadoutSetting, true)
+	if !s.queueAudio(playback{dry: true, ordered: true, readout: "old"}, false) {
+		t.Fatal("fixture did not queue")
+	}
+	disabled := s.cfg.Copy()
+	disabled.Put(config.MenuReadoutSetting, false)
+	s.finishSave(&saveRequest{values: disabled}, nil)
+	s.cfg.Put(config.MenuReadoutSetting, true)
+	if len(s.audioQueue) != 0 || s.queueAudio(playback{dry: true, pcm: []byte{0, 0}}, false) {
+		t.Fatal("previous-generation readout survived disabling the reader")
 	}
 }

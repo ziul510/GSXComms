@@ -103,6 +103,9 @@ func (s *state) boundHIDPath(b config.Binding) string {
 func (s *state) bindingDescription(b config.Binding) (string, bool) {
 	switch b.Type {
 	case "key":
+		if s.keyboardUnavailable {
+			return "Keyboard hook unavailable", false
+		}
 		if bindingKey(b) != 0 {
 			return b.Description, true
 		}

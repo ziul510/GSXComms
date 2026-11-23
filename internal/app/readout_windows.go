@@ -72,7 +72,10 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	return false
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, onPresetQueued func()) bool {
+func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, generation uint64, onPresetQueued func()) bool {
+	if generation != s.readoutGeneration.Load() {
+		return false
+	}
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
 	inPreset := onPresetQueued != nil
 	if !session.Connected() {
@@ -100,7 +103,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		}
 	}
 	// Reuse the menu if it is already populated Open a temporary one only when needed
-	options := session.ReadMenu().Options
+	options := session.CurrentMenu().Options
 	if len(options) == 0 {
 		menu, err := session.OpenMenuPage(ctx)
 		// Release the menu opened for readout before starting the slower speech work
@@ -120,7 +123,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		// Queue through the same window thread as the neighboring service acknowledgments
 		s.async(func() {
 			if config.Get[bool](s.cfg, config.MenuReadoutSetting) &&
-				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true}, false) {
+				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true, readoutGeneration: generation}, false) {
 				onPresetQueued()
 			}
 		})
@@ -129,9 +132,12 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	// Synthesizing speech is slower than GSX polling, so give the simulator queue back now
 	go func() {
 		defer func() { <-s.speaking }()
+		if generation != s.readoutGeneration.Load() {
+			return
+		}
 		if pcm, rate := s.synthesizeReadout(s.ctx, text, len(options)); len(pcm) > 0 {
 			// Queue readout audio behind waiting priority crew cues
-			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true}, false)
+			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true, readoutGeneration: generation}, false)
 		}
 	}()
 	return true
@@ -155,7 +161,9 @@ func (s *state) synthesizeReadout(ctx context.Context, text string, entries int)
 	m, _ := models.Lookup("kokoro")
 	start := time.Now()
 	// Use the pinned revision as the worker signature so repeated readouts can reuse the model.
-	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil); err != nil {
+	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil, func(ctx context.Context) error {
+		return m.Verify(ctx, s.dir)
+	}); err != nil {
 		s.traceFailure("TTS", "Could not load the Kokoro worker", err)
 		log("ERR", "GSX menu readout failed: "+err.Error())
 		return nil, 0
@@ -176,14 +184,9 @@ func (s *state) synthesizeReadout(ctx context.Context, text string, entries int)
 }
 
 func (s *state) output(ctx context.Context, next playback) error {
-	if next.readout != "" {
-		if !s.menuReaderReady() {
-			return nil
-		}
-		next.pcm, next.rate = s.synthesizeReadout(ctx, next.readout, next.readoutEntries)
-		if len(next.pcm) == 0 || ctx.Err() != nil {
-			return nil
-		}
+	// Protected preset order does not keep readouts alive after Settings changes.
+	if next.dry && next.readoutGeneration != s.readoutGeneration.Load() {
+		return nil
 	}
 	var ready <-chan struct{}
 	if !next.dry && next.cue != "error" {
@@ -216,6 +219,9 @@ func (s *state) output(ctx context.Context, next playback) error {
 			detail += " | crew accent=" + debugCrewAccent(next.prefs, next.crewAccent)
 		}
 		s.trace("AUDIO", detail)
+	}
+	if next.dry && next.readoutGeneration != s.readoutGeneration.Load() {
+		return nil
 	}
 	return playPCMBuffer(ctx, config.Get[string](next.prefs, "output_device_name"), config.Get[string](next.prefs, "output_device_id"), pcm, next.rate, channels, false)
 }
@@ -280,7 +286,7 @@ func mixRadio(pcm []byte, gain, static float64, rate, channels int) {
 }
 
 // Run a separate process so GSX audio recovery can survive the player exiting
-func watchdog(dir string, restore bool) (*exec.Cmd, error) {
+func watchdog(ctx context.Context, dir string, restore bool) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -290,7 +296,7 @@ func watchdog(dir string, restore bool) (*exec.Cmd, error) {
 	if restore {
 		args = append(args, "--restore")
 	}
-	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxmute.exe"), args...)
+	cmd := exec.CommandContext(ctx, filepath.Join(filepath.Dir(exe), "gsxmute.exe"), args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	return cmd, nil
 }
@@ -336,12 +342,20 @@ func safeWatchdogDiagnostic(line string) string {
 	return ""
 }
 
+var errMuteActive = errors.New("mute watchdog is active")
+
 // Stream status while stdin remains open, so EOF also works on app exit
 func (s *state) runWatchdog(ctx context.Context, restore bool, ready func()) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	cmd, err := watchdog(s.dir, restore)
+	// Recovery has no playback context to supply a deadline.
+	if restore {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	cmd, err := watchdog(ctx, s.dir, restore)
 	if err != nil {
 		return err
 	}
@@ -356,20 +370,25 @@ func (s *state) runWatchdog(ctx context.Context, restore bool, ready func()) err
 	}
 	defer out.Close()
 	cmd.Stderr = cmd.Stdout
+	// Signal EOF first so the child can restore audio before a forced stop.
+	cmd.Cancel = func() error {
+		_ = in.Close()
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	stop := context.AfterFunc(ctx, func() {
-		_ = in.Close()
-	})
-	defer stop()
 	scan := bufio.NewScanner(out)
+	var busy bool
 	for scan.Scan() {
 		line := strings.TrimSpace(scan.Text())
 		switch {
 		case line == "ready" && ready != nil:
 			ready()
 			ready = nil
+		case restore && line == "busy":
+			busy = true
 		case line == "no-match":
 			s.trace("AUDIO", "Mute watchdog found no matching Couatl/GSX audio session")
 		case line == "matched":
@@ -384,6 +403,9 @@ func (s *state) runWatchdog(ctx context.Context, restore bool, ready func()) err
 	_ = in.Close()
 	_ = out.Close()
 	err = errors.Join(scan.Err(), cmd.Wait())
+	if err == nil && busy {
+		return errMuteActive
+	}
 	if err == nil && ready != nil && ctx.Err() == nil {
 		return io.ErrUnexpectedEOF
 	}
@@ -394,11 +416,28 @@ func (s *state) runWatchdog(ctx context.Context, restore bool, ready func()) err
 func (s *state) restoreMute(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	path := filepath.Join(s.dir, "gsx-mute.json")
+	var pending bool
 	for ctx.Err() == nil {
-		if _, err := os.Stat(filepath.Join(s.dir, "gsx-mute.json")); err == nil {
-			if err := s.runWatchdog(ctx, true, nil); err != nil {
-				s.traceFailure("AUDIO", "Could not restore Couatl/GSX audio", err)
+		_, err := os.Stat(path)
+		var active bool
+		if err == nil {
+			recoveryErr := s.runWatchdog(ctx, true, nil)
+			active = errors.Is(recoveryErr, errMuteActive)
+			if recoveryErr != nil && !active {
+				s.traceFailure("AUDIO", "Could not restore Couatl/GSX audio", recoveryErr)
 			}
+			_, err = os.Stat(path)
+		}
+		// Only report pending recovery after checking that a live mute does not own the journal.
+		nowPending := !errors.Is(err, os.ErrNotExist)
+		if !active && nowPending != pending && ctx.Err() == nil {
+			pending = nowPending
+			message := "Couatl/GSX audio recovery cleared."
+			if nowPending {
+				message = "Couatl/GSX audio recovery is pending. GSXComms will retry."
+			}
+			s.async(func() { s.log("AUDIO", message) })
 		}
 		select {
 		case <-ctx.Done():

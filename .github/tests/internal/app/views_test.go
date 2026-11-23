@@ -161,6 +161,18 @@ func TestSettingsDraftPreservesOtherWindowChanges(t *testing.T) {
 	}
 }
 
+func TestSettingsMergePreservesPendingWizardFallback(t *testing.T) {
+	s := &state{cfg: config.Defaults(), saves: make(chan *saveRequest, 1)}
+	base := s.cfg.Copy()
+	base.Put("fallback_accent", "American")
+	draft := base.Copy()
+	draft.Put("fallback_accent", "Scottish")
+	s.save(accentPreferences(s.cfg.Copy(), []string{packs[1].name}, "French"), nil)
+	if got := config.Get[string](s.mergeSettings(base, draft), "fallback_accent"); got != "French" {
+		t.Fatalf("settings merged disabled fallback %q", got)
+	}
+}
+
 // Exercise the single Top Most toggle through the normal settings save
 func TestSettingsTopMostToggle(t *testing.T) {
 	s := &state{cfg: config.Defaults(), host: gui.NewApp(), ctx: t.Context(), saves: make(chan *saveRequest, 1)}

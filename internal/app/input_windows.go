@@ -33,7 +33,8 @@ type keyboardMsg struct {
 	private        uint32
 }
 
-func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
+// Listen until shutdown or report why Windows cannot deliver keyboard PTT events.
+func listenKeyboard(ctx context.Context, apply func(uint32, bool)) error {
 	// The message pump has to run on the thread that owns the keyboard hook
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -67,22 +68,26 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) {
 	})
 	var module windows.Handle
 	if err := windows.GetModuleHandleEx(windows.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, nil, &module); err != nil {
-		return
+		return err
 	}
 	var msg keyboardMsg
 	// Create the thread's message queue before cancellation can post WM_QUIT
 	_, _, _ = peek.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 0)
 	id := windows.GetCurrentThreadId()
-	handle, _, _ := set.Call(13, callback, uintptr(module), 0)
-	if handle != 0 {
-		defer unhook.Call(handle)
+	handle, _, err := set.Call(13, callback, uintptr(module), 0)
+	if handle == 0 {
+		return fmt.Errorf("register keyboard hook: %w", err)
 	}
+	defer unhook.Call(handle)
 	// Wake GetMessage on cancellation so the hook can be removed on its owning thread
 	go func() { <-ctx.Done(); _, _, _ = post.Call(uintptr(id), 0x0012, 0, 0) }()
 	for {
-		result, _, _ := get.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if int32(result) <= 0 {
-			return
+		result, _, err := get.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+		switch int32(result) {
+		case -1:
+			return fmt.Errorf("read keyboard hook messages: %w", err)
+		case 0:
+			return nil
 		}
 	}
 }
@@ -230,7 +235,11 @@ func (s *state) rebind(parent *gui.Window) {
 		}
 	}, func(w *gui.Window) gui.View {
 		window = w
-		body := []gui.View{wrapped("Press a keyboard key or controller button. Press Escape to cancel.", 14, ink)}
+		prompt := "Press a keyboard key or controller button. Press Escape to cancel."
+		if s.keyboardUnavailable {
+			prompt = "Press a controller button or click Cancel. Keyboard capture is unavailable."
+		}
+		body := []gui.View{wrapped(prompt, 14, ink)}
 		if message != "" {
 			body = append(body, wrapped(message, 13, muted))
 		}

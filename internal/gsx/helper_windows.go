@@ -26,9 +26,10 @@ type helperRequest struct {
 }
 
 type helperReply struct {
-	Value *float64 `json:"value"`
-	Error string   `json:"error"`
-	Fatal bool     `json:"fatal"`
+	Value     *float64 `json:"value"`
+	Error     string   `json:"error"`
+	Fatal     bool     `json:"fatal"`
+	Uncertain bool     `json:"uncertain"`
 }
 
 // Serialize individual exchanges so telemetry can run between menu operations
@@ -41,7 +42,8 @@ type helperTransport struct {
 	recv *json.Decoder
 }
 
-var errWriteUncertain = errors.New("SimConnect write outcome unknown")
+// ErrWriteUncertain means the simulator may already have acted on the write.
+var ErrWriteUncertain = errors.New("SimConnect write outcome unknown")
 
 func Connect(ctx context.Context) (Transport, error) {
 	exe, err := os.Executable()
@@ -143,7 +145,7 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		}
 		// A lost reply can mean the simulator already processed the write
 		if req.Op == "set" {
-			err = errors.Join(errWriteUncertain, err)
+			err = errors.Join(ErrWriteUncertain, err)
 		}
 		return helperReply{}, errors.Join(ErrDisconnected, err)
 	}
@@ -154,6 +156,9 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 		}
 		if result.reply.Fatal {
 			return fail(errors.New(result.reply.Error))
+		}
+		if result.reply.Uncertain {
+			return result.reply, ErrWriteUncertain
 		}
 		if result.reply.Error != "" {
 			return result.reply, errors.New(result.reply.Error)

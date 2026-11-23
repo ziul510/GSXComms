@@ -49,11 +49,11 @@ func TestSilenceGate(t *testing.T) {
 
 func TestWorkerWaitsBeforeRetryingRepeatedFailures(t *testing.T) {
 	w := NewWorker("missing-test-worker")
-	if err := w.Load(t.Context(), "model", nil, nil); err == nil || w.failures != 1 {
+	if err := w.Load(t.Context(), "model", nil, nil, nil); err == nil || w.failures != 1 {
 		t.Fatalf("first launch: failures=%d err=%v", w.failures, err)
 	}
 	w.failed = time.Now().Add(-2 * time.Second)
-	if err := w.Load(t.Context(), "model", nil, nil); err == nil || w.failures != 2 {
+	if err := w.Load(t.Context(), "model", nil, nil, nil); err == nil || w.failures != 2 {
 		t.Fatalf("second launch: failures=%d err=%v", w.failures, err)
 	}
 	w.failed = time.Now().Add(-2 * time.Second)

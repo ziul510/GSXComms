@@ -5,8 +5,8 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 $module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
 $version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
-# Stop if the selected module differs from the source these patches target
-if ($version -ne 'v0.98.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.98.0' }
+# Try the selected version and let the patch anchors detect incompatible changes
+if (!$module -or !$version) { throw 'Could not locate the selected go-gui module' }
 # Hide the copy from Go package discovery while it is being staged
 $destination = Join-Path $PWD 'build/.go-gui-win32'
 $copy = Join-Path $destination "module-$version"
@@ -26,7 +26,7 @@ function Source([string]$relative) {
 }
 function Change([string]$source,[string]$before,[string]$after) {
     # A source mismatch means the patch needs checking against upstream before building
-    if (!$source.Contains($before)) { throw ('Unexpected upstream source around ' + $before) }
+    if (!$source.Contains($before)) { throw "go-gui $version changed $file near: $before" }
     return $source.Replace($before,$after)
 }
 

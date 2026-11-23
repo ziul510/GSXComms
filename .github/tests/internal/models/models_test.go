@@ -213,3 +213,23 @@ func TestCacheImportPreservesResumableModel(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyRejectsSameSizeModelCorruption(t *testing.T) {
+	m := Model{"test", "owner/example", "pinned", []File{{"fixture", 4, fmt.Sprintf("%x", sha256.Sum256([]byte("good")))}}}
+	dir := t.TempDir()
+	if err := os.MkdirAll(m.Directory(dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Paths(dir)["fixture"], []byte("bad!"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.Directory(dir), ".verified"), []byte(m.Revision), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !m.Ready(dir) {
+		t.Fatal("fixture should pass the lightweight UI readiness check")
+	}
+	if err := m.Verify(t.Context(), dir); err == nil || m.Ready(dir) || !m.Cached(dir) {
+		t.Fatalf("corrupted model should be available for deletion only: %v", err)
+	}
+}

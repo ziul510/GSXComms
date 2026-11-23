@@ -1,6 +1,6 @@
 module github.com/ziul510/GSXCommsGo
 
-go 1.27.0
+go 1.27.4
 
 require (
 	github.com/go-gui-org/go-gui v0.98.0

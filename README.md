@@ -14,14 +14,18 @@ GSXComms uses Orukeet by default and downloads the selected local speech model o
 
 For cloud recognition, choose the **Mistral** provider in settings and follow the API key setup. GSXComms stores the key in Windows Credential Manager and sends recordings with detected speech to Mistral for transcription. Mistral may use those recordings for training depending on your plan and privacy settings.
 
-GSXComms keeps `user_settings.json`, downloaded models, and extracted voice packs beside the executable by default. Use `--data-dir` to change that folder. Place `words.json` or `accent_mappings.json` there to override the bundled defaults.
+GSXComms keeps `user_settings.json`, downloaded models, and extracted voice packs beside the executable by default. Use `--data-dir` to change that folder. Place `words.json` or `accent_mappings.json` there to override the bundled defaults. Use a separate data directory for each running instance.
+
+GSXComms encrypts new corrupt settings backups for the Windows user who created them. Older `user_settings.json.corrupt.*` backups without the `.dpapi` extension can contain a legacy Mistral API key. If you have one of those backups, rotate that key in Mistral and remove the backup when you no longer need it.
 
 ## Build from source
 
-On Windows x64, use Go 1.27.0, PowerShell 7, a MinGW-w64 UCRT C compiler, and Rust 1.98.0 with the MSVC x64 build tools. For the Kokoro phonemizer export, use Python 3.12 and the checkpoint and dependencies in the [export manifest](docs/phonemizer-export.json).
+On Windows x64, use Go 1.27.4, PowerShell 7, a MinGW-w64 UCRT C compiler, and Rust 1.98.0 with the MSVC x64 build tools. For the Kokoro phonemizer export, use Python 3.12 and the checkpoint and dependencies in the [export manifest](docs/phonemizer-export.json).
 
 ```powershell
-python scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
+py -3.12 -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
+py -3.12 -m pip install --require-hashes --no-build-isolation -r docs/phonemizer-requirements.txt
+py -3.12 scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
 rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
 pwsh -File scripts/build.ps1 -PhonemizerDir build\phonemizer
 pwsh -File scripts/package.ps1
