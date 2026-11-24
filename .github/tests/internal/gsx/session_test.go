@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 type operation struct {
@@ -19,12 +21,13 @@ type operation struct {
 	value float64
 }
 type fakeSim struct {
-	values  map[string]float64
-	writes  []operation
-	closed  bool
-	onWrite func(string, float64)
-	failGet int
-	missing string
+	values          map[string]float64
+	writes          []operation
+	closed          bool
+	onWrite         func(string, float64)
+	failGet         int
+	missing         string
+	uncertainRemote bool
 }
 
 func (f *fakeSim) Get(ctx context.Context, key string) (float64, error) {
@@ -50,6 +53,10 @@ func (f *fakeSim) Set(ctx context.Context, key string, value float64) error {
 	if f.onWrite != nil {
 		f.onWrite(key, value)
 	}
+	// The simulator may apply a write even when readback cannot verify it.
+	if f.uncertainRemote && key == Remote && value == 1 {
+		return ErrWriteUncertain
+	}
 	return nil
 }
 func (f *fakeSim) Close() error { f.closed = true; return nil } // Track whether cleanup actually closed the transport
@@ -68,12 +75,56 @@ func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
 	transport := &uncertainWrite{fakeSim: &fakeSim{}}
 	session := New(transport, t.TempDir())
 	page := ParseMenu("Ramp\nJetway")
-	session.ReadMenu = func() Menu { return page }
+	session.ReadMenu = func() Menu {
+		// An independent panel update cannot verify an uncertain selection.
+		if transport.attempts > 0 {
+			return ParseMenu("Another menu\nStairs")
+		}
+		return page
+	}
 	// A lost reply leaves the selection unconfirmed, so the UI should get no callback.
 	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
 	session.AfterSelection = func() { t.Error("uncertain write triggered selection callback") }
 	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, ErrWriteUncertain) || transport.attempts != 1 {
 		t.Fatalf("choice error = %v, attempts = %d", err, transport.attempts)
+	}
+}
+
+func TestUncertainRemoteEnableCanRelease(t *testing.T) {
+	for _, open := range []float64{0, 1} {
+		f := &fakeSim{values: map[string]float64{MenuOpen: open}, uncertainRemote: true}
+		s := New(f, t.TempDir())
+		s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+		if err := s.Open(t.Context()); !errors.Is(err, ErrWriteUncertain) || !s.RemoteActive() {
+			t.Fatalf("menu flag = %g, open error = %v, remote tracked = %t", open, err, s.RemoteActive())
+		}
+		if err := s.Close(); err != nil || f.values[Remote] != 0 || !f.closed {
+			t.Fatalf("menu flag = %g, cleanup error = %v, simulator = %+v", open, err, f)
+		}
+	}
+}
+
+func TestOpenRejectsUnreadablePreexistingPanel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	if err := os.WriteFile(path, []byte("Old ramp\nJetway"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate Couatl holding a stale file exclusively during the pre-open read.
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	f := &fakeSim{values: map[string]float64{}}
+	s := New(f, dir)
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	if _, err := s.OpenMenuPage(t.Context()); !errors.Is(err, windows.ERROR_SHARING_VIOLATION) || len(f.writes) != 0 {
+		t.Fatalf("open error = %v, writes = %v", err, f.writes)
 	}
 }
 

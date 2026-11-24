@@ -800,6 +800,7 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(),
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.readouts = newReadoutScope(s.ctx)
 	// Use a speed that would block transmission to check that typed readout is independent.
 	s.groundSpeed.Store(&speedReading{80, time.Now()})
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
@@ -817,6 +818,7 @@ func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), speechReady: true,
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.readouts = newReadoutScope(s.ctx)
 	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
 	s.cfg.Put(config.MenuReadoutSetting, true)
 	s.cfg.Put("simulation_mode", true)

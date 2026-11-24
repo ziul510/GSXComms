@@ -159,14 +159,58 @@ func TestPlaybackQueueCapsAndCoalescesPriority(t *testing.T) {
 func TestDisablingMenuReaderDiscardsQueuedReadouts(t *testing.T) {
 	s := &state{ctx: t.Context(), cfg: config.Defaults()}
 	s.cfg.Put(config.MenuReadoutSetting, true)
+	s.readouts = newReadoutScope(s.ctx)
+	previous := s.readouts
+	previous.speaking <- struct{}{}
 	if !s.queueAudio(playback{dry: true, ordered: true, readout: "old"}, false) {
 		t.Fatal("fixture did not queue")
 	}
 	disabled := s.cfg.Copy()
 	disabled.Put(config.MenuReadoutSetting, false)
 	s.finishSave(&saveRequest{values: disabled}, nil)
-	s.cfg.Put(config.MenuReadoutSetting, true)
-	if len(s.audioQueue) != 0 || s.queueAudio(playback{dry: true, pcm: []byte{0, 0}}, false) {
+	enabled := disabled.Copy()
+	enabled.Put(config.MenuReadoutSetting, true)
+	s.finishSave(&saveRequest{values: enabled}, nil)
+	if len(s.audioQueue) != 0 || s.queueAudio(playback{dry: true, pcm: []byte{0, 0}}, false) ||
+		previous.ctx.Err() == nil || s.readouts.ctx.Err() != nil || len(s.readouts.speaking) != 0 {
 		t.Fatal("previous-generation readout survived disabling the reader")
 	}
+}
+
+func TestQueueOverflowKeepsLatestStateForEachService(t *testing.T) {
+	s := &state{ctx: t.Context()}
+	for i := range 16 {
+		s.queueAudio(playback{cue: "jetway", option: strconv.Itoa(i), ordered: true}, false)
+	}
+	if !s.queueAudio(playback{cue: "gpu", ordered: true}, false) {
+		t.Fatal("the queue discarded a new service transition")
+	}
+	if len(s.audioQueue) != 2 || s.audioQueue[0].cue != "jetway" || s.audioQueue[0].option != "15" || s.audioQueue[1].cue != "gpu" {
+		t.Fatalf("queue did not retain the latest state for each service: %+v", s.audioQueue)
+	}
+}
+
+func TestMuteShutdownWaitsForRetiredWatchdog(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var m crewMute
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		started := make(chan struct{})
+		_, release := m.hold(ctx, 0, func(ctx context.Context, _ func()) {
+			close(started)
+			<-ctx.Done()
+			time.Sleep(2 * time.Second)
+		})
+		<-started
+		release()
+		synctest.Wait()
+		cancel()
+		shutdown, stop := context.WithTimeout(t.Context(), 2500*time.Millisecond)
+		defer stop()
+		start := time.Now()
+		m.wait(shutdown)
+		if elapsed := time.Since(start); elapsed != 2*time.Second {
+			t.Fatalf("shutdown waited %s for watchdog", elapsed)
+		}
+	})
 }

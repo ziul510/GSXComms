@@ -25,6 +25,7 @@ type playback struct {
 	readout           string
 	readoutEntries    int
 	readoutGeneration uint64
+	readoutCtx        context.Context
 	preparing         *readoutPreparation
 	location          *geo.Position
 	priority, ordered bool
@@ -80,15 +81,19 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 			s.audioCancel()
 		}
 		s.audioQueue = slices.DeleteFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+		if len(s.audioQueue) == queueLimit {
+			s.coalesceQueuedCrewCues("")
+		}
 		i := 0
 		for i < len(s.audioQueue) && s.audioQueue[i].priority {
 			i++
 		}
 		if len(s.audioQueue) == queueLimit {
-			// Keep the newest urgent cue when the queue otherwise contains only priorities.
-			drop := min(i, queueLimit-1)
-			if i == queueLimit {
-				drop, i = 0, queueLimit-1
+			// Prefer dropping an ordered readout over losing the latest service state.
+			drop := slices.IndexFunc(s.audioQueue, func(p playback) bool { return !p.priority && !p.crewState() })
+			if drop < 0 {
+				drop = 0
+				i = max(0, i-1)
 			}
 			s.dropAudio(drop)
 		}
@@ -96,7 +101,7 @@ func (s *state) queueAudio(request playback, interrupt bool) bool {
 		s.audioQueue = slices.Insert(s.audioQueue, i, request)
 	} else if len(s.audioQueue) < queueLimit {
 		s.audioQueue = append(s.audioQueue, request)
-	} else if !request.ordered || request.readout != "" || !s.replaceQueuedCrewCue(request) {
+	} else if !request.crewState() || !s.replaceQueuedCrewCue(request, queueLimit) {
 		s.traceLevel("WARN", "AUDIO", "Playback skipped because the queue is full")
 		s.async(func() { s.log("AUDIO", "Playback queue is full") })
 		return false
@@ -116,16 +121,36 @@ func (s *state) dropAudio(index int) {
 	s.audioQueue = slices.Delete(s.audioQueue, index, index+1)
 }
 
+// Identify service transitions separately from ordered speech.
+func (p playback) crewState() bool { return p.ordered && p.cue != "" }
+
+// Keep only the latest pending state per service when the queue is full.
+func (s *state) coalesceQueuedCrewCues(incoming string) {
+	for i := len(s.audioQueue) - 1; i >= 0; i-- {
+		p := s.audioQueue[i]
+		// A later cue or the incoming state supersedes this transition.
+		if p.crewState() && (p.cue == incoming || slices.ContainsFunc(s.audioQueue[i+1:], func(next playback) bool {
+			return next.crewState() && next.cue == p.cue
+		})) {
+			s.dropAudio(i)
+		}
+	}
+}
+
 // Prefer fresh service state and keep the order of the cues that survive.
-func (s *state) replaceQueuedCrewCue(request playback) bool {
-	index := slices.IndexFunc(s.audioQueue, func(p playback) bool { return p.ordered && !p.dry && p.cue == request.cue })
-	if index < 0 {
-		index = slices.IndexFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+func (s *state) replaceQueuedCrewCue(request playback, limit int) bool {
+	s.coalesceQueuedCrewCues(request.cue)
+	if len(s.audioQueue) == limit {
+		index := slices.IndexFunc(s.audioQueue, func(p playback) bool { return !p.protected() })
+		// A queue full of ordered readouts still needs room for service state.
+		if index < 0 {
+			index = slices.IndexFunc(s.audioQueue, func(p playback) bool { return !p.priority && !p.crewState() })
+		}
+		if index < 0 {
+			return false
+		}
+		s.dropAudio(index)
 	}
-	if index < 0 {
-		return false
-	}
-	s.dropAudio(index)
 	s.audioQueue = append(s.audioQueue, request)
 	return true
 }
@@ -177,7 +202,12 @@ func (s *state) playbackLoop() {
 			}
 		}
 		s.dropAudio(0)
-		ctx, cancel := context.WithCancel(s.ctx)
+		parent := s.ctx
+		// Settings can cancel a dry readout after it has left the queue.
+		if next.readoutCtx != nil {
+			parent = next.readoutCtx
+		}
+		ctx, cancel := context.WithCancel(parent)
 		// Only expose a cancel function for playback that an interrupt may cut short.
 		if !next.protected() {
 			s.audioCancel = cancel
@@ -210,11 +240,15 @@ func (s *state) playbackLoop() {
 
 // Start Kokoro outside playback and bound how long an ordered request can hold its place.
 func (s *state) prepareReadout(next playback) *readoutPreparation {
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	parent := s.ctx
+	if next.readoutCtx != nil {
+		parent = next.readoutCtx
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	job := &readoutPreparation{ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(job.done)
-		if s.menuReaderReady() && ctx.Err() == nil {
+		if ctx.Err() == nil && s.menuReaderReady() {
 			job.pcm, job.rate = s.synthesizeReadout(ctx, next.readout, next.readoutEntries)
 		}
 	}()
@@ -283,10 +317,11 @@ func serviceConnected(was bool, selected string) (connected, known bool) {
 
 type crewMute struct {
 	sync.Mutex
-	active int
-	window *muteWindow
-	timer  *time.Timer
-	until  time.Time
+	workers sync.WaitGroup
+	active  int
+	window  *muteWindow
+	timer   *time.Timer
+	until   time.Time
 }
 
 type muteWindow struct {
@@ -317,7 +352,9 @@ func (m *crewMute) hold(ctx context.Context, grace time.Duration, run func(conte
 		watchCtx, cancel := context.WithCancel(ctx)
 		window := &muteWindow{ready: make(chan struct{}), cancel: cancel}
 		m.window = window
+		m.workers.Add(1)
 		go func() {
+			defer m.workers.Done()
 			defer cancel()
 			ready := sync.OnceFunc(func() { close(window.ready) })
 			run(watchCtx, ready)
@@ -353,6 +390,23 @@ func (m *crewMute) hold(ctx context.Context, grace time.Duration, run func(conte
 			})
 			m.timer = timer
 		}
+	}
+}
+
+// Give stopping watchdogs time to restore audio or reach the forced stop.
+func (m *crewMute) wait(ctx context.Context) {
+	m.Lock()
+	m.stop()
+	m.Unlock()
+	// Serialize with holds started before app cancellation, including retired watchdogs.
+	done := make(chan struct{})
+	go func() {
+		m.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-done:
 	}
 }
 

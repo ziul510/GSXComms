@@ -63,7 +63,7 @@ type state struct {
 	location                                         atomic.Pointer[geo.Position]
 	accentsDir, crewVoice                            string
 	reader                                           *speech.Worker
-	speaking                                         chan struct{}
+	readouts                                         readoutScope
 	pttHeld, processing, savingKey, settingUpMistral bool
 	recording                                        context.CancelCauseFunc
 	recognizer                                       *speech.Worker
@@ -137,7 +137,7 @@ func Run(dir string) {
 	s.recognizer = speech.NewWorker("sherpa")
 	s.speechAttempted = make(map[string]bool)
 	s.reader = speech.NewWorker("kokoro")
-	s.speaking = make(chan struct{}, 1)
+	s.readouts = newReadoutScope(ctx)
 	s.audioWake = make(chan struct{}, 1)
 	// Keep all local audio on one playback loop so it can share the mute watchdog
 	go s.playbackLoop()
@@ -168,6 +168,7 @@ func Run(dir string) {
 		s.log("ERR", err.Error())
 	}
 	var stopDialogPlacement func()
+	restoreDone := make(chan struct{})
 	w := gui.NewWindow(gui.WindowCfg{
 		Title: "GSXComms", Width: 420, Height: 680, MinWidth: 380, MinHeight: 560, State: s, IconPNG: icon,
 		OnInit: func(w *gui.Window) {
@@ -176,7 +177,10 @@ func Run(dir string) {
 			// Start background work after the main window can accept UI callbacks
 			go s.simulator()
 			// Recovery can report its status once the window is available.
-			go s.restoreMute(ctx)
+			go func() {
+				defer close(restoreDone)
+				s.restoreMute(ctx)
+			}()
 			s.prepareSpeech(true, false)
 			s.configureTray()
 			s.setTopmost()
@@ -231,14 +235,18 @@ func Run(dir string) {
 	case <-time.After(2 * time.Second):
 	}
 	cancel()
-	s.crewMute.Lock()
-	s.crewMute.stop()
-	s.crewMute.Unlock()
-	// The simulator loop may still be closing a menu it owns
+	// Share the quit deadline between audio recovery and simulator cleanup.
+	shutdown, stopShutdown := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer stopShutdown()
+	s.crewMute.wait(shutdown)
 	if s.main != nil {
 		select {
+		case <-restoreDone:
+		case <-shutdown.Done():
+		}
+		select {
 		case <-s.done:
-		case <-time.After(2500 * time.Millisecond):
+		case <-shutdown.Done():
 		}
 	}
 }
@@ -843,6 +851,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 	// Snapshot window state before handing the request to the simulator loop
 	prefs := s.cfg.Copy()
 	readoutGeneration := s.readoutGeneration.Load()
+	readouts := s.readouts
 	page, overlay := s.menu, s.overlay
 	s.publishTransmissionPolicy()
 	fail := func(reason string) {
@@ -865,7 +874,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		if readoutMatches(prefs, text, raw) {
 			s.trace("CMD", "Routed command to menu readout")
 			s.async(func() { s.log("CMD", "GSX menu readout requested") })
-			s.sayMenu(ctx, session, prefs, readoutGeneration, nil)
+			s.sayMenu(ctx, session, prefs, readoutGeneration, readouts, nil)
 			return
 		}
 		gate := func() error {
@@ -956,7 +965,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				return false
 			}
 			if action.Kind == "preset" && service == config.ReadMenuAction {
-				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, readoutGeneration, func() {
+				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, readoutGeneration, readouts, func() {
 					queuedReadouts++
 				})
 			}

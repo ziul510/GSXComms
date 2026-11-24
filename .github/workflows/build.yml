@@ -38,15 +38,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
           $unformatted = gofmt -l .
           if ($LASTEXITCODE -ne 0 -or $unformatted) { throw "Go formatting check failed: $unformatted" }
+      - name: Check Go vulnerability advisories
+        shell: pwsh
+        # Surface advisories without turning the live database into a release gate.
+        continue-on-error: true
+        env:
+          CGO_ENABLED: '1'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
       - name: Prepare build tools and phonemizer
         shell: pwsh
         run: |
           # Use the pinned export inputs so the builder can verify the ONNX and tokenizer hashes
           $export = Get-Content -Raw -LiteralPath 'docs/phonemizer-export.json' | ConvertFrom-Json -AsHashtable
-          # Build the pinned source distribution with its verified local backend.
-          python -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
+          # Pip skips hash checks for packages already installed in the environment.
+          $venv = Join-Path $env:RUNNER_TEMP 'gsxcomms-phonemizer'
+          python -m venv --clear $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Phonemizer environment creation failed' }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          & $python -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Phonemizer build dependency install failed' }
-          python -m pip install --require-hashes --no-build-isolation -r docs/phonemizer-requirements.txt
+          & $python -m pip install --require-hashes --no-cache-dir --no-build-isolation -r docs/phonemizer-requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Phonemizer dependency install failed' }
           # Download the checkpoint for the pinned phonemizer assets
           $checkpoint = Join-Path $env:RUNNER_TEMP 'best_model.pt'
@@ -54,7 +65,7 @@ jobs:
           if ((Get-FileHash -LiteralPath $checkpoint -Algorithm SHA256).Hash -ne $export.checkpointSHA256) {
             throw 'Phonemizer checkpoint checksum mismatch'
           }
-          python scripts/export-phonemizer.py $checkpoint build/phonemizer
+          & $python scripts/export-phonemizer.py $checkpoint build/phonemizer
           if ($LASTEXITCODE -ne 0) { throw 'Phonemizer export failed' }
       - name: Build and package
         shell: pwsh

@@ -58,6 +58,7 @@ type Menu struct {
 	Options []string `json:"options"`
 	Active  bool     `json:"active"`
 	source  os.FileInfo
+	readErr error
 }
 
 var (
@@ -117,7 +118,7 @@ func New(sim Transport, panel string) *Session {
 	var cached Menu
 	var reported string
 	s.ReadMenu = func() Menu {
-		read := func() ([]byte, os.FileInfo) {
+		read := func() ([]byte, os.FileInfo, error) {
 			// Capture metadata from the same file handle as the menu bytes.
 			file, err := os.Open(path)
 			if err == nil {
@@ -129,21 +130,24 @@ func New(sim Transport, panel string) *Session {
 					info, err = file.Stat()
 					if err == nil {
 						reported = ""
-						return data, info
+						return data, info, nil
 					}
 				}
 			}
-			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) && err.Error() != reported && s.OnReadError != nil {
-					reported = err.Error()
-					s.OnReadError(err)
-				}
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil, nil
 			}
-			return nil, nil
+			if err.Error() != reported && s.OnReadError != nil {
+				reported = err.Error()
+				s.OnReadError(err)
+			}
+			return nil, nil, err
 		}
-		data, source := read()
+		data, source, err := read()
 		if source == nil || len(data) == 0 {
-			return empty
+			snapshot := empty
+			snapshot.source, snapshot.readErr = source, err
+			return snapshot
 		}
 		if bytes.Equal(last, data) && sameSource(cached.source, source) {
 			return cached
@@ -151,9 +155,11 @@ func New(sim Transport, panel string) *Session {
 		// Couatl can replace the panel while it is still being written
 		for range 2 {
 			time.Sleep(10 * time.Millisecond)
-			next, nextSource := read()
+			next, nextSource, err := read()
 			if nextSource == nil || len(next) == 0 {
-				return empty
+				snapshot := empty
+				snapshot.source, snapshot.readErr = nextSource, err
+				return snapshot
 			}
 			if bytes.Equal(data, next) && sameSource(source, nextSource) {
 				last, cached = next, ParseMenu(strings.ToValidUTF8(string(next), ""))
@@ -304,17 +310,19 @@ func (s *Session) Open(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if (current < 0.5 || !s.remote) && s.pendingMenu == nil {
+	if current < 0.5 || !s.remote {
 		// Couatl's panel file can outlive the previous menu or simulator session.
 		previous := s.ReadMenu()
+		// Without a pre-open snapshot, a readable panel could still be stale.
+		if previous.readErr != nil {
+			return fmt.Errorf("could not establish GSX menu freshness: %w", previous.readErr)
+		}
 		s.pendingMenu = &previous
 	}
 	if current < 0.5 {
-		if err := s.set(ctx, Remote, 1); err != nil {
+		if err := s.enableRemote(ctx); err != nil {
 			return err
 		}
-		// Mark the remote flag before waiting so a canceled open can still be cleaned up
-		s.remote = true
 		if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
 			return err
 		}
@@ -333,12 +341,20 @@ func (s *Session) Open(ctx context.Context) error {
 	if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
 		return err
 	}
-	if err := s.set(ctx, Remote, 1); err != nil {
+	if err := s.enableRemote(ctx); err != nil {
 		return err
 	}
-	s.remote = true
 	// Let GSX apply remote control before callers read or select from the menu
 	return s.Sleep(ctx, 200*time.Millisecond)
+}
+
+// Track possible remote ownership so idle and shutdown cleanup release it.
+func (s *Session) enableRemote(ctx context.Context) error {
+	err := s.set(ctx, Remote, 1)
+	if err == nil || errors.Is(err, ErrWriteUncertain) {
+		s.remote = true
+	}
+	return err
 }
 
 // Use the simulator's menu flag so the console can toggle a menu opened elsewhere
@@ -422,17 +438,8 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 		return errors.New("invalid GSX item")
 	}
 	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
-		if !errors.Is(err, ErrWriteUncertain) || errors.Is(err, ErrDisconnected) || len(page.Options) == 0 {
-			return err
-		}
-		// GSX consumes the choice LVar. A new panel can confirm a missed readback.
-		if waitErr := s.Sleep(ctx, 300*time.Millisecond); waitErr != nil {
-			return errors.Join(err, waitErr)
-		}
-		current := s.CurrentMenu()
-		if len(current.Options) == 0 || page.Same(current) {
-			return err
-		}
+		// GSX or the pilot can change the panel independently of this write.
+		return err
 	}
 	s.remote = true
 	// Start command side effects before waiting for GSX to update the panel
@@ -667,9 +674,8 @@ func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
 	if !page.Same(s.CurrentMenu()) {
 		return ErrMenuChanged
 	}
-	if enableErr := s.set(ctx, Remote, 1); enableErr != nil {
+	if enableErr := s.enableRemote(ctx); enableErr != nil {
 		return errors.Join(err, enableErr)
 	}
-	s.remote = true
 	return s.ChooseOn(ctx, page, 0)
 }

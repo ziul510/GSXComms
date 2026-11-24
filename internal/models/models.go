@@ -82,11 +82,12 @@ func (m Model) Verify(ctx context.Context, data string) error {
 	defer windows.CloseHandle(handle)
 	dir := m.Directory(data)
 	for _, file := range m.Files {
-		// A cancellation does not invalidate an otherwise healthy download.
-		if !file.matchesContext(ctx, filepath.Join(dir, filepath.FromSlash(file.Path))) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+		match, err := file.matchesContext(ctx, filepath.Join(dir, filepath.FromSlash(file.Path)))
+		// Transient read failures leave the marker intact for a later retry.
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("could not verify %s: %w", file.Path, err)
+		}
+		if !match {
 			// Remove the marker so Settings offers deletion and a verified download.
 			_ = os.Remove(filepath.Join(dir, ".verified"))
 			return errors.New("model failed integrity verification. Delete the model in Settings and download it again")
@@ -241,23 +242,28 @@ func (m Model) Delete(data string) error {
 
 // Check size first so an incomplete model doesn't get hashed on every retry
 func (f File) matches(path string) bool {
-	return f.matchesContext(context.Background(), path)
+	match, err := f.matchesContext(context.Background(), path)
+	return err == nil && match
 }
 
-// Stop hashing when the user cancels a pending worker load.
-func (f File) matchesContext(ctx context.Context, path string) bool {
+// Distinguish unreadable bytes from a confirmed size or digest mismatch.
+func (f File) matchesContext(ctx context.Context, path string) (bool, error) {
 	handle, err := os.Open(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer handle.Close()
 	stat, err := handle.Stat()
-	if err != nil || !stat.Mode().IsRegular() || stat.Size() != f.Bytes {
-		return false
+	if err != nil {
+		return false, err
+	}
+	// Skip hashing files that cannot match the manifest.
+	if !stat.Mode().IsRegular() || stat.Size() != f.Bytes {
+		return false, nil
 	}
 	hash := sha256.New()
 	_, err = copyProgress(ctx, hash, handle, func(int64) {})
-	return err == nil && hex.EncodeToString(hash.Sum(nil)) == f.SHA256
+	return hex.EncodeToString(hash.Sum(nil)) == f.SHA256, err
 }
 
 var client = &http.Client{

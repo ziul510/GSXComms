@@ -69,6 +69,10 @@ func (s *state) finishSave(req *saveRequest, err error) {
 		if config.Get[bool](previous, config.MenuReadoutSetting) != config.Get[bool](s.cfg, config.MenuReadoutSetting) {
 			// Invalidate requests from the previous setting, even after re-enabling.
 			s.readoutGeneration.Add(1)
+			if s.readouts.cancel != nil {
+				s.readouts.cancel()
+			}
+			s.readouts = newReadoutScope(s.ctx)
 			s.audioMu.Lock()
 			for i := len(s.audioQueue) - 1; i >= 0; i-- {
 				if s.audioQueue[i].dry {

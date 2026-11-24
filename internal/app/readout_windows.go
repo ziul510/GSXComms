@@ -72,8 +72,21 @@ func readoutMatches(prefs config.Values, values ...string) bool {
 	return false
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, generation uint64, onPresetQueued func()) bool {
-	if generation != s.readoutGeneration.Load() {
+// Scope synthesis, playback, and the standalone reservation to one setting generation.
+type readoutScope struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	speaking chan struct{}
+}
+
+// Start a fresh reservation so a canceled reader cannot block new requests.
+func newReadoutScope(parent context.Context) readoutScope {
+	ctx, cancel := context.WithCancel(parent)
+	return readoutScope{ctx: ctx, cancel: cancel, speaking: make(chan struct{}, 1)}
+}
+
+func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, generation uint64, scope readoutScope, onPresetQueued func()) bool {
+	if generation != s.readoutGeneration.Load() || scope.ctx.Err() != nil {
 		return false
 	}
 	log := func(sender, note string) { s.async(func() { s.log(sender, note) }) }
@@ -92,10 +105,14 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 			return false
 		}
 	}
+	// The setting can change while waiting for Couatl to settle.
+	if scope.ctx.Err() != nil {
+		return false
+	}
 	if !inPreset {
 		select {
 		// Reserve the reader through synthesis so repeated standalone requests don't pile up
-		case s.speaking <- struct{}{}:
+		case scope.speaking <- struct{}{}:
 		default:
 			s.trace("TTS", "Menu readout already in progress")
 			log("SYS", "GSX menu readout is already in progress")
@@ -106,11 +123,13 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	options := session.CurrentMenu().Options
 	if len(options) == 0 {
 		menu, err := session.OpenMenuPage(ctx)
-		// Release the menu opened for readout before starting the slower speech work
-		_ = session.Release(ctx)
+		// A failed pre-open check can leave the pilot's menu unowned.
+		if session.RemoteActive() {
+			_ = session.Release(ctx)
+		}
 		if err != nil {
 			if !inPreset {
-				<-s.speaking
+				<-scope.speaking
 			}
 			s.traceFailure("TTS", "Could not open the menu for readout", err)
 			log("ERR", err.Error())
@@ -123,7 +142,7 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 		// Queue through the same window thread as the neighboring service acknowledgments
 		s.async(func() {
 			if config.Get[bool](s.cfg, config.MenuReadoutSetting) &&
-				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true, readoutGeneration: generation}, false) {
+				s.queueAudio(playback{prefs: prefs, readout: text, readoutEntries: len(options), dry: true, ordered: true, readoutGeneration: generation, readoutCtx: scope.ctx}, false) {
 				onPresetQueued()
 			}
 		})
@@ -131,13 +150,13 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	}
 	// Synthesizing speech is slower than GSX polling, so give the simulator queue back now
 	go func() {
-		defer func() { <-s.speaking }()
-		if generation != s.readoutGeneration.Load() {
+		defer func() { <-scope.speaking }()
+		if scope.ctx.Err() != nil {
 			return
 		}
-		if pcm, rate := s.synthesizeReadout(s.ctx, text, len(options)); len(pcm) > 0 {
+		if pcm, rate := s.synthesizeReadout(scope.ctx, text, len(options)); len(pcm) > 0 {
 			// Queue readout audio behind waiting priority crew cues
-			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true, readoutGeneration: generation}, false)
+			s.queueAudio(playback{prefs: prefs, pcm: pcm, rate: rate, dry: true, readoutGeneration: generation, readoutCtx: scope.ctx}, false)
 		}
 	}()
 	return true
@@ -164,14 +183,22 @@ func (s *state) synthesizeReadout(ctx context.Context, text string, entries int)
 	if err := s.reader.Load(ctx, m.Revision, m.Paths(s.dir), nil, func(ctx context.Context) error {
 		return m.Verify(ctx, s.dir)
 	}); err != nil {
-		s.traceFailure("TTS", "Could not load the Kokoro worker", err)
-		log("ERR", "GSX menu readout failed: "+err.Error())
+		// A settings change can cancel synthesis without an error for the user.
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			s.traceFailure("TTS", "Could not load the Kokoro worker", err)
+			log("ERR", "GSX menu readout failed: "+err.Error())
+		}
 		return nil, 0
 	}
 	pcm, rate, err := s.reader.Synthesize(ctx, text)
 	if err != nil {
-		s.traceFailure("TTS", "Could not synthesize the menu readout", err)
-		log("ERR", "GSX menu readout failed: "+err.Error())
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			s.traceFailure("TTS", "Could not synthesize the menu readout", err)
+			log("ERR", "GSX menu readout failed: "+err.Error())
+		}
+		return nil, 0
+	}
+	if ctx.Err() != nil {
 		return nil, 0
 	}
 	engine := s.reader.Runtime()

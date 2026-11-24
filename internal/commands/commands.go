@@ -320,7 +320,8 @@ func containsPhrase(text, phrase string) bool {
 		at := start + offset
 		left, _ := utf8.DecodeLastRuneInString(text[:at])
 		right, _ := utf8.DecodeRuneInString(text[at+len(phrase):])
-		if !word(left) && !word(right) {
+		// A combining mark can continue a word in decomposed text.
+		if !word(left) && !unicode.IsMark(left) && !word(right) && !unicode.IsMark(right) {
 			return true
 		}
 		// Advance past the current start so an overlapping match can still count.

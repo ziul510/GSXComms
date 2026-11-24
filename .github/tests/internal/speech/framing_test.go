@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,5 +80,29 @@ func TestCanceledExchangeSkipsDispatch(t *testing.T) {
 	w := NewWorker("sherpa")
 	if _, err := w.exchange(ctx, time.Second, Frame{Op: "transcribe"}); !errors.Is(err, context.Canceled) || w.sequence != 0 {
 		t.Fatalf("sequence=%d err=%v", w.sequence, err)
+	}
+}
+
+func TestWorkerPipeFailureReportsNaturalExit(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/d", "/c", "exit", "42")
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// The child exits without replying, so only its numeric status is available.
+	w := &Worker{cmd: cmd, in: in, out: out}
+	defer w.stop()
+	_, err = w.exchange(t.Context(), 5*time.Second, Frame{Op: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "speech hello") || !strings.Contains(err.Error(), "worker exit status 0x0000002A") {
+		t.Fatalf("missing exit diagnostic: %v", err)
 	}
 }

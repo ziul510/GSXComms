@@ -201,7 +201,7 @@ func TestPresetCodewordUsesPhraseBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	presets := []config.Preset{{Name: "Fuel", Codeword: "go", Enabled: true, Services: []string{"REFUELING"}}}
-	for text, want := range map[string]string{"request cargo": "unknown", "please go!": "preset", "goose": "unknown"} {
+	for text, want := range map[string]string{"request cargo": "unknown", "please go!": "preset", "goose": "unknown", "go\u0301ogle": "unknown"} {
 		if action := vocab.Route(text, text, presets, false); action.Kind != want {
 			t.Errorf("%q routed as %q, want %q", text, action.Kind, want)
 		}

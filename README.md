@@ -23,9 +23,10 @@ GSXComms encrypts new corrupt settings backups for the Windows user who created 
 On Windows x64, use Go 1.27.4, PowerShell 7, a MinGW-w64 UCRT C compiler, and Rust 1.98.0 with the MSVC x64 build tools. For the Kokoro phonemizer export, use Python 3.12 and the checkpoint and dependencies in the [export manifest](docs/phonemizer-export.json).
 
 ```powershell
-py -3.12 -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
-py -3.12 -m pip install --require-hashes --no-build-isolation -r docs/phonemizer-requirements.txt
-py -3.12 scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
+py -3.12 -m venv --clear build\phonemizer-venv
+& .\build\phonemizer-venv\Scripts\python.exe -m pip install --require-hashes -r docs/phonemizer-build-requirements.txt
+& .\build\phonemizer-venv\Scripts\python.exe -m pip install --require-hashes --no-cache-dir --no-build-isolation -r docs/phonemizer-requirements.txt
+& .\build\phonemizer-venv\Scripts\python.exe scripts/export-phonemizer.py C:\models\best_model.pt build\phonemizer
 rustup toolchain install 1.98.0 --profile minimal --target x86_64-pc-windows-msvc
 pwsh -File scripts/build.ps1 -PhonemizerDir build\phonemizer
 pwsh -File scripts/package.ps1

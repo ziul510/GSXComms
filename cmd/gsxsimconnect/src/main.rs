@@ -17,7 +17,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, timeout, timeout_at},
+};
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -125,42 +128,49 @@ async fn wait_for_reply(
     write_sent: Option<u32>,
     wait: Duration,
 ) -> Reply {
-    let result = timeout(wait, async {
-        loop {
-            // Match late reads by request and definition IDs and exceptions by send ID
-            match messages.recv().await {
-                Some(Message::Value(id, def, value)) if id == request_id && def == definition => {
-                    return if value.is_finite() {
-                        Reply {
-                            value: Some(value),
-                            ..Reply::default()
-                        }
-                    } else {
-                        error("Simulator returned a non-finite value", false)
-                    };
+    let started = Instant::now();
+    let mut deadline = started + wait;
+    let mut read_reply = None;
+    loop {
+        // Match late reads by request and definition IDs and exceptions by send ID.
+        let reply = match timeout_at(deadline, messages.recv()).await {
+            Ok(Some(Message::Value(id, def, value))) if id == request_id && def == definition => {
+                if value.is_finite() {
+                    Reply {
+                        value: Some(value),
+                        ..Reply::default()
+                    }
+                } else {
+                    error("Simulator returned a non-finite value", false)
                 }
-                Some(Message::Exception(id, reason)) if id == registered => {
-                    return error(format!("SimConnect definition failed: {reason}"), true);
-                }
-                Some(Message::Exception(id, reason)) if Some(id) == write_sent => {
-                    return Reply {
-                        write_rejected: true,
-                        ..error(format!("SimConnect write failed: {reason}"), false)
-                    };
-                }
-                Some(Message::Exception(id, reason)) if id == read_sent => {
-                    return error(format!("SimConnect request failed: {reason}"), false);
-                }
-                Some(Message::Disconnected(reason)) => return error(reason, true),
-                None => return error("SimConnect reader exited", true),
-                _ => {}
             }
+            Ok(Some(Message::Exception(id, reason))) if id == registered => {
+                return error(format!("SimConnect definition failed: {reason}"), true);
+            }
+            Ok(Some(Message::Exception(id, reason))) if Some(id) == write_sent => {
+                return Reply {
+                    write_rejected: true,
+                    ..error(format!("SimConnect write failed: {reason}"), false)
+                };
+            }
+            Ok(Some(Message::Exception(id, reason))) if id == read_sent => {
+                error(format!("SimConnect request failed: {reason}"), false)
+            }
+            Ok(Some(Message::Disconnected(reason))) => return error(reason, true),
+            Ok(None) => return error("SimConnect reader exited", true),
+            Err(_) => {
+                return read_reply.unwrap_or_else(|| error("SimConnect read timed out", false));
+            }
+            _ => continue,
+        };
+        if write_sent.is_none() {
+            return reply;
         }
-    })
-    .await;
-    match result {
-        Ok(reply) => reply,
-        Err(_) => error("SimConnect read timed out", false),
+        // A readback can arrive before a write exception, including for an unchanged value.
+        if read_reply.is_none() {
+            read_reply = Some(reply);
+            deadline = deadline.min(started + Duration::from_millis(100));
+        }
     }
 }
 
@@ -269,7 +279,7 @@ async fn request(
     if reply.value == Some(value) {
         return Reply::default();
     }
-    // GSX can consume a selection before the readback. The parent can check the panel.
+    // GSX can consume a selection before the readback. The caller must avoid replaying it.
     Reply {
         uncertain: true,
         ..Reply::default()
@@ -367,7 +377,8 @@ mod tests {
         tx.send(Message::Exception(8, "unrelated".into()))
             .await
             .unwrap();
-        // Keep checking for a rejected write after the old 45 ms exception window.
+        // An early readback must leave time to receive the matching write exception.
+        tx.send(Message::Value(2, 4, 0.0)).await.unwrap();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
             tx.send(Message::Exception(9, "rejected".into()))

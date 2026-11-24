@@ -284,11 +284,17 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 		if r.err == nil && r.reply.ID == req.ID && r.reply.Op == req.Op {
 			return r.reply, nil
 		}
-		w.fail()
 		if r.err != nil {
 			// Keep request text and native worker output out of diagnostic messages.
-			return Frame{}, fmt.Errorf("speech %s: could not %s: %w", req.Op, r.stage, r.err)
+			err := fmt.Errorf("speech %s: could not %s: %w", req.Op, r.stage, r.err)
+			// Capture a natural exit before cleanup can replace it with a forced exit.
+			if code, exited := workerExitCode(w.cmd.Process); exited {
+				err = fmt.Errorf("%w (worker exit status 0x%08X)", err, code)
+			}
+			w.fail()
+			return Frame{}, err
 		}
+		w.fail()
 		return Frame{}, fmt.Errorf("speech %s: response did not match the request", req.Op)
 	// Canceling a request can leave native inference running inside the child.
 	case <-ctx.Done():
@@ -309,6 +315,19 @@ func (w *Worker) exchange(ctx context.Context, timeout time.Duration, req Frame)
 		}
 		return Frame{}, fmt.Errorf("speech %s: %w", req.Op, ctx.Err())
 	}
+}
+
+// Allow an exiting worker a brief interval to publish its numeric status.
+func workerExitCode(process *os.Process) (code uint32, exited bool) {
+	_ = process.WithHandle(func(handle uintptr) {
+		h := windows.Handle(handle)
+		result, err := windows.WaitForSingleObject(h, 50)
+		// A live worker can lose its pipe without having an exit code yet.
+		if err == nil && result == windows.WAIT_OBJECT_0 {
+			exited = windows.GetExitCodeProcess(h, &code) == nil
+		}
+	})
+	return code, exited
 }
 
 func (w *Worker) fail() {

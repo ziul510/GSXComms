@@ -6,6 +6,7 @@ package models
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -231,5 +234,38 @@ func TestVerifyRejectsSameSizeModelCorruption(t *testing.T) {
 	}
 	if err := m.Verify(t.Context(), dir); err == nil || m.Ready(dir) || !m.Cached(dir) {
 		t.Fatalf("corrupted model should be available for deletion only: %v", err)
+	}
+}
+
+func TestVerifyKeepsMarkerOnTemporaryReadFailure(t *testing.T) {
+	m := Model{"test", "owner/example", "pinned", []File{{"fixture", 4, fmt.Sprintf("%x", sha256.Sum256([]byte("good")))}}}
+	dir := t.TempDir()
+	if err := os.MkdirAll(m.Directory(dir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := m.Paths(dir)["fixture"]
+	if err := os.WriteFile(path, []byte("good"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(m.Directory(dir), ".verified")
+	if err := os.WriteFile(marker, []byte(m.Revision), 0600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A concurrent process can block the read without damaging a valid model.
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyErr := m.Verify(t.Context(), dir)
+	_ = windows.CloseHandle(handle)
+	if !errors.Is(verifyErr, windows.ERROR_SHARING_VIOLATION) || !m.Ready(dir) {
+		t.Fatalf("healthy model was invalidated after a temporary read error: %v", verifyErr)
+	}
+	if err := m.Verify(t.Context(), dir); err != nil {
+		t.Fatal(err)
 	}
 }
