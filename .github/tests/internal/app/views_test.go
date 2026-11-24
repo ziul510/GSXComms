@@ -20,6 +20,7 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
 	"github.com/ziul510/GSXCommsGo/internal/models"
+	"golang.org/x/sys/windows"
 )
 
 func TestMainMinimizeToTray(t *testing.T) {
@@ -688,6 +689,75 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 	return nil
 }
 func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture
+
+type overlayOpenTransport struct {
+	menuChoices
+	onOpen func() error
+}
+
+func (m *overlayOpenTransport) Set(ctx context.Context, name string, value float64) error {
+	if err := m.menuChoices.Set(ctx, name, value); err != nil {
+		return err
+	}
+	if name == gsx.MenuOpen && value == 1 {
+		return m.onOpen()
+	}
+	return nil
+}
+
+func TestOverlayRetriesLockedPanelBeforeShowingRows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	if err := os.WriteFile(path, []byte("Old ramp\nJetway"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce Couatl holding the previous panel exclusively during the first open.
+	lock, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if lock != 0 {
+			_ = windows.CloseHandle(lock)
+		}
+	}()
+
+	s := &state{ctx: t.Context(), ready: true, jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &overlayOpenTransport{onOpen: func() error {
+		return os.WriteFile(path, []byte("Fresh ramp\nRequest stairs"), 0600)
+	}}
+	session := gsx.New(transport, dir)
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.toggleMenu()
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !s.overlay || s.menuRetryAt.IsZero() || session.RemoteActive() || len(s.menu.Options) != 0 {
+		t.Fatalf("locked open: overlay=%t retry=%v remote=%t menu=%+v", s.overlay, s.menuRetryAt, session.RemoteActive(), s.menu)
+	}
+	if err := windows.CloseHandle(lock); err != nil {
+		t.Fatal(err)
+	}
+	lock = 0
+
+	// Unlocking makes the old file readable. A poll during cooldown still must skip it.
+	s.menuRetryAt = time.Now().Add(time.Hour)
+	if !s.retryOverlayMenu(session) || session.RemoteActive() || len(s.menu.Options) != 0 {
+		t.Fatal("overlay did not suppress the readable old panel during cooldown")
+	}
+	s.menuRetryAt = time.Now().Add(-time.Second)
+	if !s.retryOverlayMenu(session) {
+		t.Fatal("overlay did not retry the first open")
+	}
+	s.main.FrameFn()
+	if !s.menu.Same(gsx.ParseMenu("Fresh ramp\nRequest stairs")) || !session.RemoteActive() || s.retryOverlayMenu(session) {
+		t.Fatalf("retry did not publish the fresh panel and clear the retry: menu=%+v remote=%t", s.menu, session.RemoteActive())
+	}
+}
 
 func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	s := &state{dir: t.TempDir(), ctx: t.Context(), cfg: config.Defaults(), connected: true, speechReady: true,
