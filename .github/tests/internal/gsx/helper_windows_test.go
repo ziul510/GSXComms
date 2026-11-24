@@ -4,6 +4,7 @@
 package gsx
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,36 @@ import (
 	"testing"
 	"time"
 )
+
+// An earlier write warning must reach the app without invalidating current telemetry
+func TestHelperDeliversLateWriteWarningWithTelemetry(t *testing.T) {
+	const child = "GSXCOMMS_TEST_LATE_WRITE"
+	const warning = "SimConnect rejected an earlier write to MENU_CHOICE"
+	if os.Getenv(child) == "1" {
+		fmt.Println("{}")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			fmt.Printf(`{"value":12,"late_write_errors":[%q]}`+"\n", warning)
+		}
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestHelperDeliversLateWriteWarningWithTelemetry$")
+	cmd.Env = append(cmd.Environ(), child+"=1")
+	transport, err := connectHelper(t.Context(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	var reported string
+	transport.onLateWrite = func(message string) { reported = message }
+	if speed, err := transport.Get(t.Context(), Speed); speed != 12 || err != nil || reported != warning {
+		t.Fatalf("speed=%v, err=%v, warning=%q", speed, err, reported)
+	}
+}
 
 func TestHelperTimesOutWithoutCallerDeadline(t *testing.T) {
 	const child = "GSXCOMMS_TEST_STALLED_HELPER"

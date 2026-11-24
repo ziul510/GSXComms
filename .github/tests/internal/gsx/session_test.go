@@ -26,12 +26,16 @@ type fakeSim struct {
 	writes          []operation
 	closed          bool
 	onWrite         func(string, float64)
+	onRead          func(string)
 	failGet         int
 	missing         string
 	uncertainRemote bool
 }
 
 func (f *fakeSim) Get(ctx context.Context, key string) (float64, error) {
+	if f.onRead != nil {
+		f.onRead(key)
+	}
 	// Simulate a single unavailable variable without taking the whole transport offline
 	if key == f.missing {
 		return 0, errors.New("unavailable simulator variable")
@@ -83,11 +87,19 @@ func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
 		}
 		return page
 	}
-	// A lost reply leaves the selection unconfirmed, so the UI should get no callback.
+	// Start audio protection and settle without highlighting an unconfirmed selection.
+	protected, settled := false, false
 	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
-	session.AfterSelection = func() { t.Error("uncertain write triggered selection callback") }
+	session.OnSelectionSent = func() { protected = true }
+	session.Sleep = func(_ context.Context, d time.Duration) error {
+		settled = d == 300*time.Millisecond
+		return nil
+	}
 	if err := session.ChooseOn(t.Context(), page, 0); !errors.Is(err, ErrWriteUncertain) || transport.attempts != 1 {
 		t.Fatalf("choice error = %v, attempts = %d", err, transport.attempts)
+	}
+	if !protected || !settled {
+		t.Fatalf("uncertain choice left protected=%t, settled=%t", protected, settled)
 	}
 }
 
@@ -152,7 +164,7 @@ func TestScriptedSession(t *testing.T) {
 	}
 	selections := 0
 	// Notify after writing the service or operator choice, before the panel delay.
-	s.AfterSelection = func() {
+	s.OnSelectionSent = func() {
 		selections++
 		if page < 2 || clock != choiceAt {
 			t.Errorf("selection callback on page %d at %v, last write at %v", page, clock, choiceAt)
@@ -486,6 +498,205 @@ func TestReopenRequiresFreshPanelWhenAlreadyRemote(t *testing.T) {
 		if write.key == MenuChoice {
 			t.Fatal("sent a choice from the previous panel")
 		}
+	}
+}
+
+// A lock before any write should not hide a later menu opened by the pilot
+func TestReadoutReusesPilotMenuAfterAbandonedLockedOpen(t *testing.T) {
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, t.TempDir())
+	s.ReadMenu = func() Menu { return Menu{readErr: windows.ERROR_SHARING_VIOLATION} }
+	if err := s.Open(t.Context()); !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("open error = %v", err)
+	}
+	sim.values[MenuOpen] = 1
+	want := ParseMenu("Pilot ramp\nStairs")
+	s.ReadMenu = func() Menu { return want }
+	if page, err := s.ReadMenuPage(t.Context(), t.Context()); err != nil || !page.Same(want) || len(sim.writes) != 0 {
+		t.Fatalf("pilot menu = %+v, err = %v, writes = %v", page, err, sim.writes)
+	}
+}
+
+// Losing the readout's wait before it opens a menu should release only its flag
+func TestReadoutCancelBeforeOpenPreservesPilotMenu(t *testing.T) {
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, t.TempDir())
+	wait, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Sleep = func(ctx context.Context, _ time.Duration) error {
+		sim.values[MenuOpen] = 1
+		cancel()
+		return ctx.Err()
+	}
+	_, err := s.ReadMenuPage(t.Context(), wait)
+	wantWrites := []operation{{Remote, 1}, {Remote, 0}}
+	if !errors.Is(err, context.Canceled) || sim.values[MenuOpen] != 1 || !reflect.DeepEqual(sim.writes, wantWrites) {
+		t.Fatalf("cancel: err=%v, open=%v, writes=%v", err, sim.values[MenuOpen], sim.writes)
+	}
+}
+
+// A failed release must not change which simulator state shutdown can close
+func TestReadoutRetriesOnlyRemoteFlagOnShutdown(t *testing.T) {
+	sim := &uncertainFlagRelease{fakeSim: &fakeSim{values: make(map[string]float64)}}
+	s := New(sim, t.TempDir())
+	wait, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Sleep = func(ctx context.Context, _ time.Duration) error {
+		sim.values[MenuOpen] = 1
+		cancel()
+		return ctx.Err()
+	}
+	if _, err := s.ReadMenuPage(t.Context(), wait); !errors.Is(err, ErrWriteUncertain) {
+		t.Fatalf("first release error = %v", err)
+	}
+	if err := s.Close(); err != nil || sim.values[MenuOpen] != 1 ||
+		!reflect.DeepEqual(sim.writes, []operation{{Remote, 1}, {Remote, 0}}) {
+		t.Fatalf("shutdown err=%v, writes=%v, values=%v", err, sim.writes, sim.values)
+	}
+}
+
+// Fail once without confirming the remote flag was cleared
+type uncertainFlagRelease struct {
+	*fakeSim
+	rejected       bool
+	afterMenuClose bool
+}
+
+func (f *uncertainFlagRelease) Set(ctx context.Context, key string, value float64) error {
+	if key == Remote && value == 0 && !f.rejected && (!f.afterMenuClose || f.values[MenuOpen] == 0) {
+		f.rejected = true
+		return ErrWriteUncertain
+	}
+	return f.fakeSim.Set(ctx, key, value)
+}
+
+// A completed close leaves no authority to close a later pilot menu
+func TestReadoutAfterPartialReleaseLeavesNewPilotMenuOpen(t *testing.T) {
+	sim := &uncertainFlagRelease{fakeSim: &fakeSim{values: make(map[string]float64)}, afterMenuClose: true}
+	s := New(sim, t.TempDir())
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.ReadMenu = func() Menu {
+		if sim.values[MenuOpen] == 1 {
+			return ParseMenu("Ramp\nStairs")
+		}
+		return Menu{}
+	}
+	if _, err := s.ReadMenuPage(t.Context(), t.Context()); !errors.Is(err, ErrWriteUncertain) {
+		t.Fatalf("first release error = %v", err)
+	}
+	sim.values[MenuOpen] = 1
+	before := len(sim.writes)
+	if _, err := s.RefreshAndRelease(t.Context()); err != nil || sim.values[MenuOpen] != 1 ||
+		!reflect.DeepEqual(sim.writes[before:], []operation{{Remote, 0}}) {
+		t.Fatalf("idle cleanup: err=%v, values=%v, writes=%v", err, sim.values, sim.writes[before:])
+	}
+}
+
+// The transport health read can overlap a same-row rewrite before the pulse
+func TestIdleReopenRejectsRewriteDuringMenuFlagRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	if err := os.WriteFile(path, []byte("Ramp\nRequest stairs"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, dir)
+	shown := s.CurrentMenu()
+	sim.onRead = func(key string) {
+		if key == MenuOpen {
+			rewritten := time.Now().Add(time.Minute)
+			if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := s.ReopenMenuPage(t.Context(), shown); !errors.Is(err, ErrMenuChanged) || len(sim.writes) != 0 {
+		t.Fatalf("reopen: err=%v, writes=%v", err, sim.writes)
+	}
+}
+
+// A rewrite during remote acquisition is still earlier than the refresh write
+func TestIdleReopenRejectsRewriteBeforeOpeningWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	if err := os.WriteFile(path, []byte("Ramp\nRequest stairs"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, dir)
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	shown := s.CurrentMenu()
+	sim.onWrite = func(key string, value float64) {
+		if key == Remote && value == 1 {
+			rewritten := time.Now().Add(time.Minute)
+			if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := s.ReopenMenuPage(t.Context(), shown); !errors.Is(err, ErrMenuChanged) ||
+		!reflect.DeepEqual(sim.writes, []operation{{Remote, 1}, {Remote, 0}}) {
+		t.Fatalf("reopen: err=%v, writes=%v", err, sim.writes)
+	}
+}
+
+// A late first publication can arrive during the retry's simulator read
+func TestOpenAcceptsFreshPanelDuringRetryRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, dir)
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	reads := 0
+	sim.onRead = func(key string) {
+		if key == MenuOpen {
+			reads++
+			if reads == 2 {
+				if err := os.WriteFile(path, []byte("Late ramp\nRequest stairs"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if page, err := s.OpenMenuPage(t.Context()); err != nil || page.Title != "Late ramp" || len(sim.writes) != 4 {
+		t.Fatalf("open: page=%+v, err=%v, writes=%v", page, err, sim.writes)
+	}
+}
+
+// Recovery can wait for delayed pilot rows without taking remote control
+func TestRetryLeavesUnownedOpenMenuAlone(t *testing.T) {
+	sim := &fakeSim{values: map[string]float64{MenuOpen: 1}}
+	s := New(sim, t.TempDir())
+	var page Menu
+	s.ReadMenu = func() Menu { return page }
+	s.Sleep = func(ctx context.Context, _ time.Duration) error {
+		page = ParseMenu("Pilot ramp\nStairs")
+		return ctx.Err()
+	}
+	if got, err := s.RetryMenuPage(t.Context()); err != nil || got.Title != "Pilot ramp" || len(sim.writes) != 0 {
+		t.Fatalf("pilot menu: got=%+v, err=%v, writes=%v", got, err, sim.writes)
+	}
+}
+
+// Once recovery opened the menu, it can pulse it again if the first wait expires
+func TestRetryRepulsesMenuItOpened(t *testing.T) {
+	dir := t.TempDir()
+	sim := &fakeSim{values: make(map[string]float64)}
+	s := New(sim, dir)
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	enables := 0
+	sim.onWrite = func(key string, value float64) {
+		if key == Remote && value == 1 {
+			enables++
+			if enables == 3 {
+				if err := os.WriteFile(filepath.Join(dir, "menu"), []byte("Recovered ramp\nStairs"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if got, err := s.RetryMenuPage(t.Context()); err != nil || got.Title != "Recovered ramp" || enables != 3 {
+		t.Fatalf("recovery: got=%+v, err=%v, remote enables=%d", got, err, enables)
 	}
 }
 

@@ -12,7 +12,7 @@ use simconnect::{
     transport::{self, DEFAULT_PIPE_NAME, PREPAR3D_PIPE_NAMES, Transport},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, BufRead, Write},
     sync::Arc,
     time::Duration,
@@ -39,6 +39,8 @@ struct Reply {
     fatal: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     uncertain: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    late_write_errors: Vec<String>,
     #[serde(skip)]
     write_rejected: bool,
 }
@@ -47,6 +49,33 @@ enum Message {
     Value(u32, u32, f64),
     Exception(u32, String),
     Disconnected(String),
+}
+
+#[derive(Default)]
+struct WriteHistory {
+    pending: VecDeque<(u32, String)>,
+    late_errors: Vec<String>,
+}
+
+impl WriteHistory {
+    // Bound the history because accepted writes never send an acknowledgement
+    fn remember(&mut self, send_id: u32, name: &str) {
+        const MAX_PENDING_WRITES: usize = 128;
+        if self.pending.len() == MAX_PENDING_WRITES {
+            self.pending.pop_front();
+        }
+        self.pending.push_back((send_id, name.to_owned()));
+    }
+
+    // Carry a late rejection alongside the current reply, which belongs to another request
+    fn reject(&mut self, id: u32, reason: &str) {
+        if let Some(index) = self.pending.iter().position(|(send_id, _)| *send_id == id) {
+            let (_, name) = self.pending.remove(index).unwrap();
+            self.late_errors.push(format!(
+                "SimConnect rejected an earlier write to {name} (send ID {id}): {reason}"
+            ));
+        }
+    }
 }
 
 fn units(name: &str) -> Option<&'static str> {
@@ -121,6 +150,7 @@ async fn receive(sim: Arc<SimConnect>, messages: mpsc::Sender<Message>) {
 
 async fn wait_for_reply(
     messages: &mut mpsc::Receiver<Message>,
+    writes: &mut WriteHistory,
     definition: u32,
     registered: u32,
     read_sent: u32,
@@ -155,6 +185,10 @@ async fn wait_for_reply(
             Ok(Some(Message::Exception(id, reason))) if id == read_sent => {
                 error(format!("SimConnect request failed: {reason}"), false)
             }
+            Ok(Some(Message::Exception(id, reason))) => {
+                writes.reject(id, &reason);
+                continue;
+            }
             Ok(Some(Message::Disconnected(reason))) => return error(reason, true),
             Ok(None) => return error("SimConnect reader exited", true),
             Err(_) => {
@@ -184,6 +218,7 @@ async fn request(
     definitions: &mut HashMap<String, (u32, u32)>,
     next_id: &mut u32,
     messages: &mut mpsc::Receiver<Message>,
+    writes: &mut WriteHistory,
 ) -> Reply {
     let name = match &request {
         Request::Get { name, .. } | Request::Set { name, .. } => name,
@@ -258,6 +293,7 @@ async fn request(
     };
     let reply = wait_for_reply(
         messages,
+        writes,
         definition,
         registered,
         read_sent,
@@ -266,12 +302,13 @@ async fn request(
         wait,
     )
     .await;
-    let Some((_, value)) = write else {
+    let Some((sent, value)) = write else {
         return reply;
     };
     if reply.fatal || reply.write_rejected {
         return reply;
     }
+    writes.remember(sent, name);
     if reply.value == Some(value) {
         return Reply::default();
     }
@@ -338,12 +375,24 @@ async fn main() -> io::Result<()> {
     tokio::spawn(receive(Arc::clone(&sim), tx));
     let mut definitions = HashMap::new();
     let mut next_id = 0u32;
+    let mut writes = WriteHistory::default();
     // End the connection on EOF or a fatal reply
     while let Some(line) = input.recv().await {
-        let reply = match serde_json::from_str(&line) {
-            Ok(req) => request(req, &sim, &mut definitions, &mut next_id, &mut messages).await,
+        let mut reply = match serde_json::from_str(&line) {
+            Ok(req) => {
+                request(
+                    req,
+                    &sim,
+                    &mut definitions,
+                    &mut next_id,
+                    &mut messages,
+                    &mut writes,
+                )
+                .await
+            }
             Err(reason) => error(reason.to_string(), false),
         };
+        reply.late_write_errors = std::mem::take(&mut writes.late_errors);
         let fatal = reply.fatal;
         send_reply(reply)?;
         if fatal {
@@ -363,7 +412,17 @@ mod tests {
         tx.send(Message::Value(1, 4, 10.0)).await.unwrap();
         tx.send(Message::Value(2, 3, 20.0)).await.unwrap();
         tx.send(Message::Value(2, 4, 30.0)).await.unwrap();
-        let reply = wait_for_reply(&mut rx, 4, 6, 9, 2, None, Duration::from_millis(20)).await;
+        let reply = wait_for_reply(
+            &mut rx,
+            &mut WriteHistory::default(),
+            4,
+            6,
+            9,
+            2,
+            None,
+            Duration::from_millis(20),
+        )
+        .await;
         assert_eq!(reply.value, Some(30.0));
     }
 
@@ -381,10 +440,68 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let reply = wait_for_reply(&mut rx, 4, 6, 10, 2, Some(9), Duration::from_millis(350)).await;
+        let reply = wait_for_reply(
+            &mut rx,
+            &mut WriteHistory::default(),
+            4,
+            6,
+            10,
+            2,
+            Some(9),
+            Duration::from_millis(350),
+        )
+        .await;
         assert_eq!(
             reply.error.as_deref(),
             Some("SimConnect write failed: rejected")
         );
+    }
+
+    // Surface a late rejection once while preserving another request's result
+    #[tokio::test]
+    async fn late_rejection_is_correlated_after_equal_readback() {
+        let (tx, mut rx) = mpsc::channel(3);
+        let mut writes = WriteHistory::default();
+        tx.send(Message::Value(2, 4, 0.0)).await.unwrap();
+        let reply = wait_for_reply(
+            &mut rx,
+            &mut writes,
+            4,
+            6,
+            10,
+            2,
+            Some(9),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(reply.value, Some(0.0));
+        writes.remember(9, "MENU_CHOICE");
+        writes.remember(12, "MENU_OPEN");
+
+        tx.send(Message::Exception(9, "late rejection".into()))
+            .await
+            .unwrap();
+        tx.send(Message::Exception(9, "duplicate exception".into()))
+            .await
+            .unwrap();
+        tx.send(Message::Value(3, 4, 1.0)).await.unwrap();
+        let later = wait_for_reply(
+            &mut rx,
+            &mut writes,
+            4,
+            6,
+            11,
+            3,
+            None,
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(later.value, Some(1.0));
+        assert!(later.error.is_none());
+        assert_eq!(
+            writes.late_errors,
+            ["SimConnect rejected an earlier write to MENU_CHOICE (send ID 9): late rejection"]
+        );
+        assert_eq!(writes.pending.front().unwrap().0, 12);
     }
 }

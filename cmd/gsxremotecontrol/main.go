@@ -36,7 +36,7 @@ func main() {
 // Leave the current transport in place until the health loop closes it
 func connect(ctx context.Context, s *gsx.Session) {
 	if !s.Connected() {
-		s.Sim, _ = gsx.Connect(ctx)
+		s.Sim, _ = gsx.Connect(ctx, func(message string) { fmt.Fprintln(os.Stderr, message) })
 	}
 }
 

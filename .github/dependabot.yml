@@ -13,6 +13,8 @@ updates:
     ignore:
       # Update this binding with the bundled ONNX Runtime DLL
       - dependency-name: "github.com/yalue/onnxruntime_go"
+      # Update go-gui together with the Windows renderer patch
+      - dependency-name: "github.com/go-gui-org/go-gui"
     commit-message:
       prefix: "deps"
 

@@ -36,6 +36,22 @@ func TestPTTBindingChangeDiscardsCapture(t *testing.T) {
 	}
 }
 
+// A timed-out controller capture must give up ownership of the next press
+func TestPTTTimeoutClearsHeldInput(t *testing.T) {
+	s := &state{cfg: config.Defaults(), pttHeld: true, heldHIDPath: "fixture"}
+	capture, stop := context.WithCancelCause(t.Context())
+	s.recording = stop
+	stop(errPTTReleaseTimeout)
+	s.finishCapture(context.Cause(capture), nil, false)
+	if s.pttHeld || s.heldHIDPath != "" || s.recording != nil || s.processing || s.ptt != "Idle" {
+		t.Fatal("timed-out capture still owns PTT")
+	}
+	s.record(true)
+	if !s.pttHeld {
+		t.Fatal("next press did not reach PTT")
+	}
+}
+
 func TestWaitForPTTStatic(t *testing.T) {
 	// Use a fake clock so scheduler delays cannot hide a one millisecond regression.
 	synctest.Test(t, func(t *testing.T) {

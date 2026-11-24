@@ -98,15 +98,17 @@ func ParseMenu(raw string) Menu {
 
 // The transport carries simulator variables The panel file carries the menu text
 type Session struct {
-	Sim            Transport
-	ReadMenu       func() Menu
-	OnReadError    func(error)
-	OnChoice       func(Menu, int)
-	AfterSelection func()
-	BeforeChoice   func() error
-	Sleep          func(context.Context, time.Duration) error
-	remote         bool
-	pendingMenu    *Menu
+	Sim              Transport
+	ReadMenu         func() Menu
+	OnReadError      func(error)
+	OnChoice         func(Menu, int)
+	OnSelectionSent  func() // A possibly applied choice can make Couatl speak
+	OnManualOperator func(Menu)
+	BeforeChoice     func() error
+	Sleep            func(context.Context, time.Duration) error
+	remote           bool
+	remoteOnly       bool // remote flag acquired without opening a menu
+	pendingMenu      *Menu
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -184,16 +186,26 @@ func sameSource(a, b os.FileInfo) bool {
 // CurrentMenu hides the pre-open panel until Couatl publishes a fresh snapshot.
 func (s *Session) CurrentMenu() Menu {
 	menu := s.ReadMenu()
-	// In-memory menu sources provide snapshots directly and have no file metadata.
-	if s.pendingMenu != nil && (len(menu.Options) == 0 ||
-		sameSource(menu.source, s.pendingMenu.source) && (len(s.pendingMenu.Options) == 0 || menu.Same(*s.pendingMenu))) {
+	if !s.menuIsFresh(menu) {
 		return ParseMenu("")
 	}
 	return menu
 }
 
+// Judge a candidate against the outstanding open without rereading the file
+func (s *Session) menuIsFresh(menu Menu) bool {
+	// In-memory menu sources provide snapshots directly and have no file metadata.
+	return s.pendingMenu == nil || len(menu.Options) > 0 &&
+		!(sameSource(menu.source, s.pendingMenu.source) && (len(s.pendingMenu.Options) == 0 || menu.Same(*s.pendingMenu)))
+}
+
 func (m Menu) Same(other Menu) bool {
 	return m.Title == other.Title && slices.Equal(m.Options, other.Options)
+}
+
+// SameSnapshot includes the on-disk generation when the panel has one
+func (m Menu) SameSnapshot(other Menu) bool {
+	return m.Same(other) && (m.source == nil && other.source == nil || sameSource(m.source, other.source))
 }
 
 // Protocol delays should stop promptly when the app shuts down
@@ -303,6 +315,21 @@ func (s *Session) Status(ctx context.Context) (ready bool, speed float64, err er
 }
 
 func (s *Session) Open(ctx context.Context) error {
+	return s.open(ctx, ctx, nil)
+}
+
+// Track which operation may change ownership and which page it can replace
+type menuOpenRequest struct {
+	readout  bool
+	expected *Menu
+	retry    bool
+}
+
+// Let callers stop panel waits while keeping simulator exchanges intact
+func (s *Session) open(ctx, waitCtx context.Context, request *menuOpenRequest) error {
+	if err := waitCtx.Err(); err != nil {
+		return err
+	}
 	if !s.Connected() {
 		return ErrDisconnected
 	}
@@ -310,39 +337,107 @@ func (s *Session) Open(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A remote pulse requests a new panel even if the session already owns the menu.
-	previous := s.ReadMenu()
-	if previous.readErr != nil {
-		return fmt.Errorf("could not establish GSX menu freshness: %w", previous.readErr)
-	}
-	s.pendingMenu = &previous
-	if current < 0.5 {
-		if err := s.enableRemote(ctx); err != nil {
-			return err
-		}
-		if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
-			return err
-		}
-		// The closed menu needs the remote flag set before the open request
-		if err := s.set(ctx, MenuOpen, 1); err != nil {
-			return errors.Join(err, s.Release(ctx))
-		}
-		if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
-			return err
-		}
-	}
-	// Pulse the remote flag for both a fresh open and an existing menu
-	if err := s.set(ctx, Remote, 0); err != nil {
+	if err := waitCtx.Err(); err != nil {
 		return err
 	}
-	if err := s.Sleep(ctx, 100*time.Millisecond); err != nil {
+	// Readout can wait on the pilot's existing page without claiming it
+	readout := request != nil && request.readout
+	// A retry can pulse a menu it acquired on its first attempt
+	preserveOpen := readout || request != nil && request.retry && (!s.remote || s.remoteOnly)
+	if preserveOpen && current >= 0.5 {
+		return nil
+	}
+	// A remote pulse requests a new panel even if the session already owns the menu.
+	previous := s.ReadMenu()
+	if err := waitCtx.Err(); err != nil {
+		return err
+	}
+	if previous.readErr != nil {
+		// No request was sent, so the failed read cannot invalidate later pilot menus
+		return fmt.Errorf("could not establish GSX menu freshness: %w", previous.readErr)
+	}
+	// The first pulse can publish during the next MENU_OPEN round trip
+	if request != nil && request.retry && s.pendingMenu != nil && s.menuIsFresh(previous) {
+		return nil
+	}
+	// Validate the exact pre-pulse snapshot used for an idle numbered choice
+	if request != nil && request.expected != nil && len(previous.Options) > 0 && !request.expected.SameSnapshot(previous) {
+		return ErrMenuChanged
+	}
+	s.pendingMenu = &previous
+	var check func() error
+	if request != nil && request.expected != nil {
+		check = func() error {
+			// Check again under the write gate before the first refresh trigger
+			current := s.ReadMenu()
+			if current.readErr != nil {
+				return current.readErr
+			}
+			if len(current.Options) > 0 && !request.expected.SameSnapshot(current) {
+				return ErrMenuChanged
+			}
+			s.pendingMenu = &current
+			return nil
+		}
+	}
+	if current < 0.5 {
+		unowned := !s.remote
+		if err := s.enableRemote(ctx); err != nil {
+			if unowned && s.remote {
+				s.remoteOnly = true
+			}
+			return err
+		}
+		if unowned {
+			s.remoteOnly = true
+		}
+		if err := s.Sleep(waitCtx, 100*time.Millisecond); err != nil {
+			return err
+		}
+		if preserveOpen {
+			// The pilot can open the menu while the remote flag is being set
+			current, err := s.get(ctx, MenuOpen)
+			if err != nil {
+				return err
+			}
+			if current >= 0.5 && unowned && !readout {
+				// Recovery only acquired a flag, so return it to the pilot
+				return s.ReleaseOwned(ctx)
+			}
+			if current >= 0.5 || waitCtx.Err() != nil {
+				return waitCtx.Err()
+			}
+		}
+		// The closed menu needs the remote flag set before the open request
+		openErr := s.write(ctx, MenuOpen, 1, check)
+		if openErr == nil || errors.Is(openErr, ErrWriteUncertain) {
+			s.remoteOnly = false
+		}
+		if openErr != nil {
+			if readout {
+				return openErr
+			}
+			return errors.Join(openErr, s.Release(ctx))
+		}
+		if err := s.Sleep(waitCtx, 100*time.Millisecond); err != nil {
+			return err
+		}
+		// The open write was already the first refresh trigger
+		check = nil
+	}
+	// Pulse the remote flag for both a fresh open and an existing menu
+	if err := s.write(ctx, Remote, 0, check); err != nil {
+		return err
+	}
+	if err := s.Sleep(waitCtx, 100*time.Millisecond); err != nil {
 		return err
 	}
 	if err := s.enableRemote(ctx); err != nil {
 		return err
 	}
+	s.remoteOnly = false
 	// Let GSX apply remote control before callers read or select from the menu
-	return s.Sleep(ctx, 200*time.Millisecond)
+	return s.Sleep(waitCtx, 200*time.Millisecond)
 }
 
 // Track possible remote ownership so idle and shutdown cleanup release it.
@@ -367,20 +462,36 @@ func (s *Session) Toggle(ctx context.Context) error {
 }
 
 func (s *Session) Release(ctx context.Context) error {
+	if s.remoteOnly {
+		// This session may release its flag, but it never opened the menu
+		err := s.set(ctx, Remote, 0)
+		s.remote = err != nil && s.Connected()
+		s.remoteOnly = s.remote
+		return err
+	}
 	// Close the menu first, then attempt to release remote control even if closing failed
 	menuErr := s.set(ctx, MenuOpen, 0)
 	_ = s.Sleep(ctx, 100*time.Millisecond)
 	err := errors.Join(menuErr, s.set(ctx, Remote, 0))
 	// Keep tracking remote control after a failed release so idle cleanup can retry
 	s.remote = err != nil && s.Connected()
-	if !s.remote {
-		s.pendingMenu = nil
-	}
+	// A confirmed close leaves only the flag to release on the next attempt
+	s.remoteOnly = s.remote && menuErr == nil
 	return err
 }
 
 // Allow two write confirmations plus transport contention or a retry.
 const releaseTimeout = 2 * time.Second
+
+// ReleaseOwned gives a canceled operation time to relinquish its menu
+func (s *Session) ReleaseOwned(ctx context.Context) error {
+	if !s.RemoteActive() {
+		return nil
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	return s.Release(cleanup)
+}
 
 func (s *Session) Close() error {
 	if s.Sim == nil {
@@ -389,6 +500,7 @@ func (s *Session) Close() error {
 	defer func() {
 		s.Sim = nil
 		s.remote = false
+		s.remoteOnly = false
 		s.pendingMenu = nil
 	}()
 	// A monitoring session should leave a menu opened by the simulator alone
@@ -396,9 +508,7 @@ func (s *Session) Close() error {
 		return s.Sim.Close()
 	}
 	// Shutdown can cancel the caller before the menu has been released
-	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer cancel()
-	err := s.Release(ctx)
+	err := s.ReleaseOwned(context.Background())
 	return errors.Join(err, s.Sim.Close())
 }
 
@@ -414,88 +524,175 @@ func (s *Session) Choose(ctx context.Context, index int) error {
 
 // ChooseOn checks the page again because a GSX slot can change while a command waits
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
-	return s.chooseOn(ctx, page, index, s.AfterSelection)
+	return s.chooseOn(ctx, page, index, s.OnSelectionSent)
 }
 
 // Navigation can use the same checks without triggering command side effects
-func (s *Session) chooseOn(ctx context.Context, page Menu, index int, afterSelection func()) error {
+func (s *Session) chooseOn(ctx context.Context, page Menu, index int, onSelectionSent func()) error {
 	if index < 0 || index >= len(page.Options) {
 		return ErrMenuChanged
 	}
 	return s.choose(ctx, page, index, func() error {
-		if !page.Same(s.CurrentMenu()) {
+		if !page.SameSnapshot(s.CurrentMenu()) {
 			return ErrMenuChanged
 		}
 		if s.BeforeChoice != nil {
 			return s.BeforeChoice()
 		}
 		return nil
-	}, afterSelection)
+	}, onSelectionSent)
 }
 
-func (s *Session) choose(ctx context.Context, page Menu, index int, check func() error, afterSelection func()) error {
+func (s *Session) choose(ctx context.Context, page Menu, index int, check func() error, onSelectionSent func()) error {
 	if index < 0 || index >= maxMenuOptions {
 		return errors.New("invalid GSX item")
 	}
-	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
+	err := s.write(ctx, MenuChoice, float64(index), check)
+	if err != nil && !errors.Is(err, ErrWriteUncertain) {
 		// GSX or the pilot can change the panel independently of this write.
 		return err
 	}
-	s.remote = true
 	// Start command side effects before waiting for GSX to update the panel
-	if afterSelection != nil {
-		afterSelection()
+	if onSelectionSent != nil {
+		onSelectionSent()
 	}
+	// A lost reply can still mean Couatl acted, but the link cannot verify it
+	if errors.Is(err, ErrDisconnected) {
+		return err
+	}
+	s.remote = true
+	s.remoteOnly = false
 	// Only highlight a successful choice when the snapshot still contains that slot.
-	if s.OnChoice != nil && index < len(page.Options) {
+	if err == nil && s.OnChoice != nil && index < len(page.Options) {
 		s.OnChoice(page, index)
 	}
 	// Give GSX time to apply the choice before the next operation reads the panel.
-	return s.Sleep(ctx, 300*time.Millisecond)
+	settleErr := s.Sleep(ctx, 300*time.Millisecond)
+	if settleErr != nil && err != nil {
+		return errors.Join(err, settleErr)
+	}
+	if err != nil {
+		return err
+	}
+	return settleErr
 }
 
 // OpenMenuPage makes a second request if Couatl accepted the open but never supplied choices
 func (s *Session) OpenMenuPage(ctx context.Context) (Menu, error) {
+	return s.openMenuPage(ctx, ctx, nil)
+}
+
+// RetryMenuPage keeps the outstanding baseline through the next simulator read
+func (s *Session) RetryMenuPage(ctx context.Context) (Menu, error) {
+	// Background recovery has no authority to replace an open pilot menu
+	return s.openMenuPage(ctx, ctx, &menuOpenRequest{retry: true})
+}
+
+// ReopenMenuPage checks the displayed generation before sending a refresh pulse
+func (s *Session) ReopenMenuPage(ctx context.Context, expected Menu) (Menu, error) {
+	return s.openMenuPage(ctx, ctx, &menuOpenRequest{expected: &expected})
+}
+
+// Stop panel waits without canceling a request already sent to the simulator
+func (s *Session) openMenuPage(ctx, waitCtx context.Context, request *menuOpenRequest) (Menu, error) {
+	if request == nil {
+		request = &menuOpenRequest{}
+	}
 	var menu Menu
 	var err error
 	for range 2 {
-		if err = s.Open(ctx); err != nil {
+		if err = s.open(ctx, waitCtx, request); err != nil {
 			break
 		}
-		if menu, err = s.WaitMenu(ctx); err == nil || ctx.Err() != nil {
+		// The caller's own first pulse can change the baseline for any retry
+		request.expected = nil
+		request.retry = true
+		if menu, err = s.WaitMenu(waitCtx); err == nil || waitCtx.Err() != nil || ctx.Err() != nil {
 			break
 		}
+	}
+	return menu, err
+}
+
+// ReadMenuPage reuses an open menu and only releases ownership acquired for readout
+func (s *Session) ReadMenuPage(ctx, waitCtx context.Context) (Menu, error) {
+	if err := waitCtx.Err(); err != nil {
+		return Menu{}, err
+	}
+	owned := s.remote && !s.remoteOnly
+	request := &menuOpenRequest{readout: true}
+	menu, err := s.openMenuPage(ctx, waitCtx, request)
+	if !owned {
+		// Release a temporary menu even when Settings cancels the panel wait
+		err = errors.Join(err, s.ReleaseOwned(ctx))
 	}
 	return menu, err
 }
 
 // RefreshAndRelease takes a new page snapshot before handing the menu back to GSX
 func (s *Session) RefreshAndRelease(ctx context.Context) (Menu, error) {
+	// Flag-only recovery must not reopen and take over a pilot-owned page
+	if s.remoteOnly {
+		return s.CurrentMenu(), s.Release(ctx)
+	}
+	s.MarkMenuStale()
 	if err := s.Release(ctx); err != nil {
 		return Menu{}, err
 	}
 	menu, err := s.OpenMenuPage(ctx)
-	if s.RemoteActive() {
-		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-		defer cancel()
-		err = errors.Join(err, s.Release(closeCtx))
+	return menu, errors.Join(err, s.ReleaseOwned(ctx))
+}
+
+// Hide the last known panel after the simulator closes it
+func (s *Session) MarkMenuStale() {
+	// Partial release can make the current panel stale before the next open
+	if s.pendingMenu == nil {
+		previous := s.ReadMenu()
+		// The overlay retry suppresses rows while a locked file is unreadable
+		if previous.readErr == nil {
+			s.pendingMenu = &previous
+		}
 	}
-	return menu, err
+}
+
+// MenuOpened reads the live flag independently of the asynchronously updated file
+func (s *Session) MenuOpened(ctx context.Context) (bool, error) {
+	value, err := s.get(ctx, MenuOpen)
+	return value >= 0.5, err
 }
 
 // WaitMenu confirms the panel has updated after a new open.
 func (s *Session) WaitMenu(ctx context.Context) (Menu, error) {
-	return s.waitMenu(ctx, nil)
+	return s.waitMenu(ctx, nil, nil)
 }
 
-func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
+// TakeRefreshedMenu accepts a late publication before another pulse can hide it
+func (s *Session) TakeRefreshedMenu() Menu {
+	if s.pendingMenu == nil {
+		return Menu{}
+	}
+	menu := s.CurrentMenu()
+	if len(menu.Options) > 0 {
+		s.pendingMenu = nil
+	}
+	return menu
+}
+
+func (s *Session) waitMenu(ctx context.Context, previous *Menu, accept func(Menu) bool) (Menu, error) {
 	var menu Menu
-	for i := 0; i < 8; i++ {
+	// Read once after the final wait before the caller starts another open
+	for i := 0; i <= 8; i++ {
+		if err := ctx.Err(); err != nil {
+			return Menu{}, err
+		}
 		menu = s.CurrentMenu()
 		// The panel file can still show the parent menu after a submenu choice
-		if len(menu.Options) > 0 && (previous == nil || !menu.Same(*previous)) {
+		if len(menu.Options) > 0 && (previous == nil || !menu.Same(*previous)) && (accept == nil || accept(menu)) {
 			s.pendingMenu = nil
 			return menu, nil
+		}
+		if i == 8 {
+			break
 		}
 		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
 			return menu, err
@@ -578,17 +775,23 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	// Search the submenu only after the current page has no match
 	if extra := optionContaining(menu.Options, []string{"additional services"}); index < 0 && extra >= 0 {
 		parent := menu
-		if err := s.chooseOn(ctx, menu, extra, nil); err != nil {
-			return "", err
+		navigationErr := s.chooseOn(ctx, menu, extra, nil)
+		if navigationErr != nil && !canCheckChoice(ctx, navigationErr) {
+			return "", navigationErr
 		}
 		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
-			return "", err
+			return "", errors.Join(navigationErr, err)
+		}
+		var accept func(Menu) bool
+		if navigationErr != nil {
+			// An intermediate page cannot corroborate the consumed navigation slot
+			accept = func(page Menu) bool { return strings.Contains(menuLabel(page.Title), "additional services") }
 		}
 		var err error
-		menu, err = s.waitMenu(ctx, &menu)
+		menu, err = s.waitMenu(ctx, &menu, accept)
 		if err != nil {
 			_ = s.Release(ctx)
-			return "", err
+			return "", errors.Join(navigationErr, err)
 		}
 		if stuck(menu.Options) {
 			return "", ErrHotfix
@@ -599,9 +802,13 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			back := slices.IndexFunc(menu.Options, func(option string) bool {
 				return slices.Contains([]string{"back", "close", "cancel"}, menuLabel(option))
 			})
-			if back < 0 || s.chooseOn(ctx, menu, back, nil) != nil {
+			var backErr error
+			if back >= 0 {
+				backErr = s.chooseOn(ctx, menu, back, nil)
+			}
+			if back < 0 || backErr != nil && !canCheckChoice(ctx, backErr) {
 				_ = s.Release(ctx)
-			} else if page, err := s.waitMenu(ctx, &menu); err != nil || !page.Same(parent) {
+			} else if _, err := s.waitMenu(ctx, &menu, parent.Same); err != nil {
 				_ = s.Release(ctx)
 			}
 		}
@@ -612,39 +819,61 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		}
 		return "", ErrNoMenuMatch
 	}
-	var selected string
-	if err := s.chooseOn(ctx, menu, index, func() {
-		// Preserve an acknowledged choice even if settling or choosing the operator fails.
-		selected = menu.Options[index]
-		if s.AfterSelection != nil {
-			s.AfterSelection()
+	var sent bool
+	choiceErr := s.chooseOn(ctx, menu, index, func() {
+		sent = true
+		if s.OnSelectionSent != nil {
+			s.OnSelectionSent()
 		}
-	}); err != nil {
-		return selected, err
+	})
+	var selected string
+	// A confirmed service survives a later settling or operator error
+	if sent && !errors.Is(choiceErr, ErrWriteUncertain) {
+		selected = menu.Options[index]
+	}
+	// An uncertain choice can still open the operator page without a replay
+	if choiceErr != nil && (!sent || !canCheckChoice(ctx, choiceErr)) {
+		return selected, choiceErr
 	}
 	// Only a changed operator page can trigger an automatic selection
-	if autoOperator {
+	if autoOperator || choiceErr != nil || s.OnManualOperator != nil {
 		for range 6 {
 			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
-				return selected, err
+				return selected, errors.Join(choiceErr, err)
 			}
 			page := s.ReadMenu()
 			// GSX can briefly leave the old page in place or clear it while opening the next page.
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
 			}
+			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
+			operator := strings.Contains(title, " operator ") || strings.Contains(title, " operators ")
+			// Require the expected page before interpreting an uncertain service
+			if (choiceErr != nil || !autoOperator) && !operator {
+				continue
+			}
+			if !autoOperator {
+				if s.OnManualOperator != nil {
+					s.OnManualOperator(page)
+				}
+				return menu.Options[index], nil
+			}
 			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
 			if i >= 0 {
-				return selected, s.ChooseOn(ctx, page, i)
+				return menu.Options[index], s.ChooseOn(ctx, page, i)
 			}
-			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
-			if strings.Contains(title, " operator ") || strings.Contains(title, " operators ") {
-				return selected, s.dismissOperator(ctx, page)
+			if operator {
+				return menu.Options[index], s.dismissOperator(ctx, page)
 			}
 		}
 	}
 
-	return selected, nil
+	return selected, choiceErr
+}
+
+// Only a possibly applied write on a live link can be reconciled by reading the panel
+func canCheckChoice(ctx context.Context, err error) bool {
+	return errors.Is(err, ErrWriteUncertain) && !errors.Is(err, ErrDisconnected) && ctx.Err() == nil
 }
 
 // Read the aircraft position used by the offline accent lookup
@@ -663,7 +892,7 @@ func (s *Session) Altitude(ctx context.Context) (float64, error) {
 
 // Check the menu flag before falling back to the first row
 func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
-	if !page.Same(s.CurrentMenu()) {
+	if !page.SameSnapshot(s.CurrentMenu()) {
 		return ErrMenuChanged
 	}
 	err := s.Release(ctx)
@@ -677,7 +906,7 @@ func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
 	if readErr != nil || open < 0.5 {
 		return errors.Join(err, readErr)
 	}
-	if !page.Same(s.CurrentMenu()) {
+	if !page.SameSnapshot(s.CurrentMenu()) {
 		return ErrMenuChanged
 	}
 	if enableErr := s.enableRemote(ctx); enableErr != nil {

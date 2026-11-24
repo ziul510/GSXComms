@@ -44,6 +44,7 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) error {
 	peek := user.NewProc("PeekMessageW")
 	get := user.NewProc("GetMessageW")
 	post := user.NewProc("PostThreadMessageW")
+	keyState := user.NewProc("GetAsyncKeyState")
 	// The low level hook receives keyboard transitions even when another window has focus
 	callback := windows.NewCallback(func(code, wParam, lParam uintptr) uintptr {
 		if int32(code) >= 0 && lParam != 0 {
@@ -56,7 +57,11 @@ func listenKeyboard(ctx context.Context, apply func(uint32, bool)) error {
 			if key == captureKey.Load() || selectingKey.Load() {
 				switch wParam {
 				case 0x0100, 0x0104:
-					apply(key, true)
+					// The hook runs before Windows updates the state for this event
+					prior, _, _ := keyState.Call(uintptr(key))
+					if prior&0x8000 == 0 {
+						apply(key, true)
+					}
 				case 0x0101, 0x0105:
 					apply(key, false)
 				}

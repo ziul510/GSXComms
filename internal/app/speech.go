@@ -63,6 +63,22 @@ func (s *state) stopRecording(cause error) {
 	}
 }
 
+// Apply the capture result and free the held input after a missed release
+func (s *state) finishCapture(cause, captureErr error, usable bool) {
+	s.recording = nil
+	s.processing = usable
+	s.ptt = "Idle"
+	if captureErr != nil {
+		s.log("ERR", captureErr.Error())
+	} else if cause == errPTTReleaseTimeout {
+		s.stopRecording(cause)
+		s.log("SYS", "PTT release timed out. The recording was discarded.")
+	}
+	if usable {
+		s.ptt = "PROCESSING"
+	}
+}
+
 func (s *state) record(down bool) {
 	if !down {
 		s.stopRecording(errPTTReleased)
@@ -160,20 +176,7 @@ func (s *state) record(down bool) {
 		} else if !usable {
 			s.trace("PTT", fmt.Sprintf("Capture skipped: %.2fs of audio, too short or quiet", audioSeconds))
 		}
-		s.async(func() {
-			s.recording = nil
-			// Move the UI from recording to transcription only if audio will be submitted
-			s.processing = usable
-			s.ptt = "Idle"
-			if captureErr != nil {
-				s.log("ERR", captureErr.Error())
-			} else if cause == errPTTReleaseTimeout {
-				s.log("SYS", "PTT release timed out. The recording was discarded.")
-			}
-			if usable {
-				s.ptt = "PROCESSING"
-			}
-		})
+		s.async(func() { s.finishCapture(cause, captureErr, usable) })
 		if !usable {
 			return
 		}

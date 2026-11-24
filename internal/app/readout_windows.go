@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-gui-org/go-gui/gui"
 	"github.com/ziul510/GSXCommsGo/internal/config"
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
 	"github.com/ziul510/GSXCommsGo/internal/models"
@@ -85,7 +86,7 @@ func newReadoutScope(parent context.Context) readoutScope {
 	return readoutScope{ctx: ctx, cancel: cancel, speaking: make(chan struct{}, 1)}
 }
 
-func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.Values, generation uint64, scope readoutScope, onPresetQueued func()) bool {
+func (s *state) sayMenu(job context.Context, session *gsx.Session, prefs config.Values, generation uint64, scope readoutScope, onPresetQueued func()) bool {
 	if generation != s.readoutGeneration.Load() || scope.ctx.Err() != nil {
 		return false
 	}
@@ -99,14 +100,19 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 	if !s.menuReaderReady() {
 		return false
 	}
+	// Cancel the panel wait with either the settings scope or the simulator job
+	menuCtx, cancel := context.WithCancel(scope.ctx)
+	defer cancel()
+	stop := context.AfterFunc(job, cancel)
+	defer stop()
 	// Couatl can still be replacing the panel after a selection
 	if since := time.Since(s.menuActivity); since < 4*time.Second {
-		if err := session.Sleep(ctx, 4*time.Second-since); err != nil {
+		if err := session.Sleep(menuCtx, 4*time.Second-since); err != nil {
 			return false
 		}
 	}
 	// The setting can change while waiting for Couatl to settle.
-	if scope.ctx.Err() != nil {
+	if menuCtx.Err() != nil || job.Err() != nil {
 		return false
 	}
 	if !inPreset {
@@ -119,24 +125,18 @@ func (s *state) sayMenu(ctx context.Context, session *gsx.Session, prefs config.
 			return false
 		}
 	}
-	// Reuse the menu if it is already populated Open a temporary one only when needed
-	options := session.CurrentMenu().Options
-	if len(options) == 0 {
-		menu, err := session.OpenMenuPage(ctx)
-		// A failed pre-open check can leave the pilot's menu unowned.
-		if session.RemoteActive() {
-			_ = session.Release(ctx)
+	menu, err := session.ReadMenuPage(job, menuCtx)
+	if err != nil {
+		if !inPreset {
+			<-scope.speaking
 		}
-		if err != nil {
-			if !inPreset {
-				<-scope.speaking
-			}
-			s.traceFailure("TTS", "Could not open the menu for readout", err)
+		if scope.ctx.Err() == nil {
+			s.traceFailure("TTS", "Could not prepare the menu for readout", err)
 			log("ERR", err.Error())
-			return false
 		}
-		options = menu.Options
+		return false
 	}
+	options := menu.Options
 	text := formatReadout(options)
 	if inPreset {
 		// Queue through the same window thread as the neighboring service acknowledgments
@@ -169,10 +169,19 @@ func (s *state) menuReaderReady() bool {
 		return true
 	}
 	s.traceLevel("WARN", "TTS", "Menu readout blocked: Kokoro model unavailable")
-	s.async(func() {
-		s.log("ERR", "Kokoro menu-reader model is unavailable. Open Settings to download or repair it")
-	})
+	s.reportKokoroUnavailable("Kokoro menu-reader model is unavailable. Open Settings to download or repair it")
 	return false
+}
+
+// Refresh an open Settings dialog when Kokoro files or their marker changed
+func (s *state) reportKokoroUnavailable(message string) {
+	s.async(func() {
+		if s.speechChanged != nil {
+			s.speechChanged("kokoro")
+			s.host.Broadcast(func(w *gui.Window) { w.InvalidateLayout() })
+		}
+		s.log("ERR", message)
+	})
 }
 
 func (s *state) synthesizeReadout(ctx context.Context, text string, entries int) ([]byte, int) {
@@ -186,7 +195,7 @@ func (s *state) synthesizeReadout(ctx context.Context, text string, entries int)
 		// A settings change can cancel synthesis without an error for the user.
 		if !errors.Is(ctx.Err(), context.Canceled) {
 			s.traceFailure("TTS", "Could not load the Kokoro worker", err)
-			log("ERR", "GSX menu readout failed: "+err.Error())
+			s.reportKokoroUnavailable("GSX menu readout failed: " + err.Error())
 		}
 		return nil, 0
 	}

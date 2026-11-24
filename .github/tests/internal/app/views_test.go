@@ -960,7 +960,7 @@ func TestPresetQueuesReadoutBetweenServiceCues(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := gsx.ParseMenu("Ramp\nRefuel\nCatering")
-	transport := &menuChoices{}
+	transport := &pilotMenuTransport{}
 	session := gsx.New(transport, t.TempDir())
 	session.ReadMenu = func() gsx.Menu { return page }
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }

@@ -26,36 +26,43 @@ type helperRequest struct {
 }
 
 type helperReply struct {
-	Value     *float64 `json:"value"`
-	Error     string   `json:"error"`
-	Fatal     bool     `json:"fatal"`
-	Uncertain bool     `json:"uncertain"`
+	Value           *float64 `json:"value"`
+	Error           string   `json:"error"`
+	Fatal           bool     `json:"fatal"`
+	Uncertain       bool     `json:"uncertain"`
+	LateWriteErrors []string `json:"late_write_errors"`
 }
 
 // Serialize individual exchanges so telemetry can run between menu operations
 type helperTransport struct {
-	gate chan struct{}
-	cmd  *exec.Cmd
-	in   io.WriteCloser
-	out  io.ReadCloser
-	send *json.Encoder
-	recv *json.Decoder
+	gate        chan struct{}
+	cmd         *exec.Cmd
+	in          io.WriteCloser
+	out         io.ReadCloser
+	send        *json.Encoder
+	recv        *json.Decoder
+	onLateWrite func(string)
 }
 
 // ErrWriteUncertain means the simulator may already have acted on the write.
 var ErrWriteUncertain = errors.New("SimConnect write outcome unknown")
 
-func Connect(ctx context.Context) (Transport, error) {
+func Connect(ctx context.Context, onLateWrite func(string)) (Transport, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	// Resolve the helper beside the executable so the ZIP can launch from any working directory
 	cmd := exec.Command(filepath.Join(filepath.Dir(exe), "gsxsimconnect.exe"))
-	return connectHelper(ctx, cmd)
+	transport, err := connectHelper(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	transport.onLateWrite = onLateWrite
+	return transport, nil
 }
 
-func connectHelper(ctx context.Context, cmd *exec.Cmd) (Transport, error) {
+func connectHelper(ctx context.Context, cmd *exec.Cmd) (*helperTransport, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -153,6 +160,12 @@ func (t *helperTransport) exchange(ctx context.Context, req *helperRequest, chec
 	case result := <-sent:
 		if result.err != nil {
 			return fail(result.err)
+		}
+		// Report older write failures without retrying this request.
+		if t.onLateWrite != nil {
+			for _, warning := range result.reply.LateWriteErrors {
+				t.onLateWrite(warning)
+			}
 		}
 		if result.reply.Fatal {
 			return fail(errors.New(result.reply.Error))

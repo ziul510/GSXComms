@@ -25,7 +25,6 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/geo"
 	"github.com/ziul510/GSXCommsGo/internal/gsx"
 	"github.com/ziul510/GSXCommsGo/internal/speech"
-	"golang.org/x/sys/windows"
 )
 
 var (
@@ -94,8 +93,11 @@ type state struct {
 	ptt                                              string
 	connected, ready, busy, overlay                  bool
 	menu                                             gsx.Menu
+	overlayDismissal                                 uint64
 	menuWatch                                        bool // owned by the simulator loop
 	menuRetryAt                                      time.Time
+	operatorMenu                                     gsx.Menu // owned by the simulator loop
+	operatorSubmitted                                time.Time
 	menuActivity                                     time.Time
 	lastConnect                                      time.Time
 	servicesMu                                       sync.Mutex
@@ -467,6 +469,8 @@ func (s *state) simulator() {
 			lastMenu, lastReopen, s.menuActivity = gsx.Menu{}, time.Time{}, time.Time{}
 			s.menuWatch = false
 			s.menuRetryAt = time.Time{}
+			s.operatorMenu = gsx.Menu{}
+			s.operatorSubmitted = time.Time{}
 			s.resetServices()
 		default:
 		}
@@ -498,22 +502,55 @@ func (s *state) simulator() {
 			}
 			retrying := s.retryOverlayMenu(session)
 			var menu gsx.Menu
+			clearOverlay := false
 			if !retrying {
 				menu = session.CurrentMenu()
 			}
 			if session.RemoteActive() {
+				// Keep a manual prompt open through transient panel writes
+				if len(menu.Options) > 0 && !s.operatorMenu.Same(menu) {
+					s.operatorMenu = gsx.Menu{}
+					s.operatorSubmitted = time.Time{}
+				}
+				if !s.operatorSubmitted.IsZero() {
+					// A consumed choice can close GSX before the old file is cleared
+					ctx, cancel := context.WithTimeout(s.ctx, time.Second)
+					open, err := session.MenuOpened(ctx)
+					cancel()
+					expired := time.Since(s.operatorSubmitted) >= 4*time.Second
+					switch {
+					case err == nil && !open, err != nil && expired:
+						// A flag read failure must not hold the overlay forever
+						s.operatorMenu, s.operatorSubmitted = gsx.Menu{}, time.Time{}
+						s.menuActivity = time.Now()
+						session.MarkMenuStale()
+						cleanupErr := session.ReleaseOwned(s.ctx)
+						s.scheduleOverlayRetry(errors.Join(err, cleanupErr))
+						menu, clearOverlay = gsx.Menu{}, true
+						retrying = true // Let the scheduled recovery own the next open
+					case expired:
+						// A prompt that remains open can be tried again by the pilot
+						s.operatorSubmitted = time.Time{}
+					}
+					if !s.operatorSubmitted.IsZero() {
+						menu, clearOverlay = gsx.Menu{}, true
+					}
+				}
 				if len(menu.Options) > 0 && !menu.Same(lastMenu) {
 					lastMenu, s.menuActivity = menu, time.Now()
 				}
 				switch {
-				case time.Since(s.menuActivity) >= 10*time.Second:
+				case len(s.operatorMenu.Options) == 0 && time.Since(s.menuActivity) >= 10*time.Second:
 					s.trace("GSX", "Releasing the idle menu")
 					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
 					// Save a fresh page before releasing remote control so the overlay still has choices.
 					if s.menuWatch && !retrying {
 						page, err := session.RefreshAndRelease(ctx)
-						if len(page.Options) > 0 {
-							menu = page
+						menu = page
+						clearOverlay = len(page.Options) == 0
+						if clearOverlay {
+							// Flag-only cleanup can succeed with no rows to display
+							s.scheduleOverlayRetry(err)
 						}
 						if err != nil {
 							s.traceFailure("GSX", "Could not refresh and release the idle menu", err)
@@ -522,17 +559,15 @@ func (s *state) simulator() {
 						_ = session.Release(ctx)
 					}
 					cancel()
-				case s.menuWatch && !retrying && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
+				case s.menuWatch && !retrying && len(s.operatorMenu.Options) == 0 && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
 					// A closed menu can require four write checks before GSX publishes a panel.
 					ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
-					if page, err := session.OpenMenuPage(ctx); err == nil {
-						menu = page
-					}
+					clearOverlay = s.finishOverlayOpen(session.RetryMenuPage(ctx)) != nil
 					cancel()
 				}
 			}
-			if len(menu.Options) > 0 {
+			if len(menu.Options) > 0 || clearOverlay {
 				s.async(func() {
 					if s.overlay {
 						s.menu = menu
@@ -552,6 +587,7 @@ func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan 
 		if lost {
 			s.async(func() {
 				s.connected, s.ready, s.overlay = false, false, false
+				s.overlayDismissal++
 				s.menu, s.highlights = gsx.Menu{}, nil
 				s.log("SYS", "Disconnected from SimConnect")
 				if s.debugEnabled.Load() {
@@ -691,7 +727,10 @@ func (s *state) toggleConnect() {
 	s.busy = s.addJob(func(ctx context.Context, session *gsx.Session) {
 		start := time.Now()
 		s.trace("SIM", "Connecting to SimConnect")
-		sim, err := gsx.Connect(ctx)
+		sim, err := gsx.Connect(ctx, func(message string) {
+			s.traceLevel("WARN", "GSX", message)
+			s.async(func() { s.log("GSX", message) })
+		})
 		elapsed := time.Since(start).Round(time.Millisecond)
 		if err != nil {
 			s.traceFailure("SIM", fmt.Sprintf("SimConnect handshake failed after %s", elapsed), err)
@@ -709,31 +748,45 @@ func (s *state) toggleConnect() {
 	})
 }
 
-// Retry a locked panel even without remote ownership, and leave cached rows hidden while waiting.
+// Retry an unavailable panel even after an idle refresh released ownership
 func (s *state) retryOverlayMenu(session *gsx.Session) bool {
 	if s.menuRetryAt.IsZero() {
 		return false
 	}
+	// The previous request can publish after its wait expires
+	if menu := session.TakeRefreshedMenu(); len(menu.Options) > 0 {
+		s.publishOverlayMenu(menu)
+		return true
+	}
 	if !time.Now().Before(s.menuRetryAt) {
-		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
+		// Leave time for four write replies and the first complete panel wait
+		ctx, cancel := context.WithTimeout(s.ctx, 7*time.Second)
 		defer cancel()
-		_ = s.openOverlayMenu(ctx, session)
+		_ = s.finishOverlayOpen(session.RetryMenuPage(ctx))
 	}
 	return true
 }
 
 // Publish a page only after the session confirms that Couatl refreshed it.
 func (s *state) openOverlayMenu(ctx context.Context, session *gsx.Session) error {
+	return s.finishOverlayOpen(session.OpenMenuPage(ctx))
+}
+
+// Handle overlay recovery consistently for initial and retried opens
+func (s *state) finishOverlayOpen(menu gsx.Menu, err error) error {
 	s.menuRetryAt = time.Time{}
-	menu, err := session.OpenMenuPage(ctx)
 	if err != nil {
-		// Couatl can hold the file briefly while replacing it.
-		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			s.menuRetryAt = time.Now().Add(2 * time.Second)
-		}
+		s.scheduleOverlayRetry(err)
 		s.traceFailure("GSX", "Could not open the menu", err)
 		return err
 	}
+	s.publishOverlayMenu(menu)
+	return nil
+}
+
+// A verified menu ends recovery and replaces any cached overlay rows
+func (s *state) publishOverlayMenu(menu gsx.Menu) {
+	s.menuRetryAt = time.Time{}
 	s.menuActivity = time.Now()
 	s.trace("GSX", fmt.Sprintf("Menu opened with %d options", len(menu.Options)))
 	s.async(func() {
@@ -741,7 +794,13 @@ func (s *state) openOverlayMenu(ctx context.Context, session *gsx.Session) error
 			s.menu = menu
 		}
 	})
-	return nil
+}
+
+// Missing or locked panels may recover independently of simulator ownership
+func (s *state) scheduleOverlayRetry(err error) {
+	if s.menuWatch && s.ctx.Err() == nil && !errors.Is(err, gsx.ErrDisconnected) {
+		s.menuRetryAt = time.Now().Add(2 * time.Second)
+	}
 }
 
 func (s *state) toggleMenu() {
@@ -750,6 +809,8 @@ func (s *state) toggleMenu() {
 		if s.addJob(func(ctx context.Context, session *gsx.Session) {
 			s.menuWatch = false
 			s.menuRetryAt = time.Time{}
+			s.operatorMenu = gsx.Menu{}
+			s.operatorSubmitted = time.Time{}
 			if session.RemoteActive() {
 				if err := session.Release(ctx); err != nil {
 					s.traceFailure("GSX", "Could not release the menu", err)
@@ -757,6 +818,7 @@ func (s *state) toggleMenu() {
 			}
 		}) {
 			s.overlay = false
+			s.overlayDismissal++
 		}
 		return
 	}
@@ -779,6 +841,11 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	if !s.menuWatch {
 		return
 	}
+	operatorSelection := len(s.operatorMenu.Options) > 0 && s.operatorMenu.Same(page)
+	// A queued number may still carry the previously displayed operator snapshot
+	if operatorSelection && !s.operatorSubmitted.IsZero() {
+		return
+	}
 	if index < 0 || index >= len(page.Options) {
 		s.traceLevel("WARN", "GSX", fmt.Sprintf("Menu slot %d unavailable on a page with %d options", index+1, len(page.Options)))
 		s.async(func() {
@@ -790,8 +857,15 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	s.menuActivity = time.Now()
 	current := session.CurrentMenu()
 	var err error
-	if !session.RemoteActive() || len(current.Options) == 0 {
-		current, err = session.OpenMenuPage(ctx)
+	if !session.RemoteActive() {
+		current, err = session.ReopenMenuPage(ctx, page)
+		if errors.Is(err, gsx.ErrMenuChanged) {
+			current = session.CurrentMenu()
+		}
+		// An idle reopen intentionally creates a new snapshot of the displayed page
+		if err == nil && page.Same(current) {
+			page = current
+		}
 	}
 	if err == nil {
 		// Select against the page the user saw because reopening can return different choices.
@@ -803,11 +877,18 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	if err != nil {
 		s.traceFailure("GSX", fmt.Sprintf("Menu slot %d selection failed", index+1), err)
 	}
+	operatorPossiblyApplied := operatorSelection && (err == nil || errors.Is(err, gsx.ErrWriteUncertain))
+	if operatorPossiblyApplied {
+		s.operatorSubmitted = time.Now()
+	}
 	s.async(func() {
+		if operatorPossiblyApplied && s.overlay && s.menu.Same(page) {
+			s.menu = gsx.Menu{}
+		}
 		if err != nil {
 			s.log("GSX", err.Error())
 			s.cue(prefs, "error", "", true)
-			if s.overlay && (errors.Is(err, gsx.ErrMenuChanged) || len(current.Options) > 0) {
+			if !operatorPossiblyApplied && s.overlay && (errors.Is(err, gsx.ErrMenuChanged) || len(current.Options) > 0) {
 				s.menu = current
 			}
 			return
@@ -881,6 +962,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 	readoutGeneration := s.readoutGeneration.Load()
 	readouts := s.readouts
 	page, overlay := s.menu, s.overlay
+	dismissal := s.overlayDismissal
 	s.publishTransmissionPolicy()
 	fail := func(reason string) {
 		s.async(func() {
@@ -928,14 +1010,33 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		// Recheck live speed and speech readiness before writing a menu choice.
 		session.BeforeChoice = gate
 		// Start the mute on every sent selection, including each preset service.
-		session.AfterSelection = func() {
+		session.OnSelectionSent = func() {
 			_, release := s.muteCrew(s.ctx, prefs, 20*time.Second)
 			release()
+		}
+		manualOperator := false
+		session.OnManualOperator = func(page gsx.Menu) {
+			// GSX hides its native menu during remote control
+			manualOperator = true
+			s.menuWatch = true
+			s.menuRetryAt = time.Time{}
+			s.menuActivity = time.Now()
+			s.operatorMenu = page
+			s.operatorSubmitted = time.Time{}
+			s.async(func() {
+				// A Hide click after submission wins over the delayed prompt
+				if s.overlayDismissal != dismissal {
+					return
+				}
+				s.menu, s.highlights, s.overlay = page, nil, true
+				s.log("GSX", "Select an operator by menu number")
+			})
 		}
 		// Clear callbacks before the session runs another kind of job.
 		defer func() {
 			session.BeforeChoice = nil
-			session.AfterSelection = nil
+			session.OnSelectionSent = nil
+			session.OnManualOperator = nil
 		}()
 		if idx, ok := commands.Number(text); ok && overlay {
 			s.async(func() { s.log("CMD", input) })
@@ -1065,6 +1166,10 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 						done++
 					}
 					seen[service] = true
+				}
+				if manualOperator {
+					log("PRESET", "Preset stopped for manual operator selection")
+					break
 				}
 			}
 			s.async(func() {
