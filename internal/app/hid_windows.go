@@ -219,14 +219,14 @@ func (s *state) listenHID(ctx context.Context) {
 			return
 		}
 		switch msg.msg {
-		// On device removal, release held buttons and discard the cached preparsed data
+		// Discard any active capture and cached data for an unplugged controller.
 		case 0x00fe:
 			if msg.wParam == 2 {
 				if d := known[msg.lParam]; d != nil {
 					path := d.path
 					s.async(func() {
 						if strings.EqualFold(s.heldHIDPath, path) {
-							s.record(false)
+							s.stopRecording(errPTTInputLost)
 						}
 					})
 				}

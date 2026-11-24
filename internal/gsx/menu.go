@@ -310,15 +310,12 @@ func (s *Session) Open(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if current < 0.5 || !s.remote {
-		// Couatl's panel file can outlive the previous menu or simulator session.
-		previous := s.ReadMenu()
-		// Without a pre-open snapshot, a readable panel could still be stale.
-		if previous.readErr != nil {
-			return fmt.Errorf("could not establish GSX menu freshness: %w", previous.readErr)
-		}
-		s.pendingMenu = &previous
+	// A remote pulse requests a new panel even if the session already owns the menu.
+	previous := s.ReadMenu()
+	if previous.readErr != nil {
+		return fmt.Errorf("could not establish GSX menu freshness: %w", previous.readErr)
 	}
+	s.pendingMenu = &previous
 	if current < 0.5 {
 		if err := s.enableRemote(ctx); err != nil {
 			return err
@@ -382,6 +379,9 @@ func (s *Session) Release(ctx context.Context) error {
 	return err
 }
 
+// Allow two write confirmations plus transport contention or a retry.
+const releaseTimeout = 2 * time.Second
+
 func (s *Session) Close() error {
 	if s.Sim == nil {
 		return nil
@@ -396,7 +396,7 @@ func (s *Session) Close() error {
 		return s.Sim.Close()
 	}
 	// Shutdown can cancel the caller before the menu has been released
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer cancel()
 	err := s.Release(ctx)
 	return errors.Join(err, s.Sim.Close())
@@ -476,7 +476,7 @@ func (s *Session) RefreshAndRelease(ctx context.Context) (Menu, error) {
 	}
 	menu, err := s.OpenMenuPage(ctx)
 	if s.RemoteActive() {
-		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 		defer cancel()
 		err = errors.Join(err, s.Release(closeCtx))
 	}
@@ -612,9 +612,15 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		}
 		return "", ErrNoMenuMatch
 	}
-	selected := menu.Options[index]
-	if err := s.ChooseOn(ctx, menu, index); err != nil {
-		return "", err
+	var selected string
+	if err := s.chooseOn(ctx, menu, index, func() {
+		// Preserve an acknowledged choice even if settling or choosing the operator fails.
+		selected = menu.Options[index]
+		if s.AfterSelection != nil {
+			s.AfterSelection()
+		}
+	}); err != nil {
+		return selected, err
 	}
 	// Only a changed operator page can trigger an automatic selection
 	if autoOperator {

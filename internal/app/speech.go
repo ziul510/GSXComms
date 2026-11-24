@@ -18,7 +18,12 @@ import (
 	"github.com/ziul510/GSXCommsGo/internal/speech"
 )
 
-var errPTTReleaseTimeout = errors.New("PTT release timed out")
+var (
+	errPTTReleased       = errors.New("PTT released")
+	errPTTReleaseTimeout = errors.New("PTT release timed out")
+	errPTTInputLost      = errors.New("PTT input lost")
+	errPTTBindingChanged = errors.New("PTT binding changed")
+)
 
 // Share PTT readiness between the status row and the microphone gate
 func (s *state) pttAvailable() bool {
@@ -49,14 +54,18 @@ func (s *state) pttBlock() string {
 	return s.speedBlock(simulation, config.Get[bool](s.cfg, "ignore_speed_restriction"))
 }
 
+// Clear the held input and tell capture whether the user released it.
+func (s *state) stopRecording(cause error) {
+	s.pttHeld = false
+	s.heldHIDPath = ""
+	if s.recording != nil {
+		s.recording(cause)
+	}
+}
+
 func (s *state) record(down bool) {
-	// A release ends capture The collected audio still has to pass the speech gate
 	if !down {
-		s.pttHeld = false
-		s.heldHIDPath = ""
-		if s.recording != nil {
-			s.recording(nil)
-		}
+		s.stopRecording(errPTTReleased)
 		return
 	}
 	// Ignore repeated key press events while PTT is held
@@ -140,11 +149,14 @@ func (s *state) record(down bool) {
 		if s.ctx.Err() != nil {
 			return
 		}
-		// Skip recognition for empty, quiet, or failed captures
-		usable := captureErr == nil && context.Cause(capctx) == context.Canceled && speech.Usable(pcm)
+		cause := context.Cause(capctx)
+		// Only a deliberate release can submit audio for transcription.
+		usable := captureErr == nil && cause == errPTTReleased && speech.Usable(pcm)
 		audioSeconds := float64(len(pcm)) / 32000 // 16 kHz mono PCM16
 		if captureErr != nil {
 			s.traceFailure("AUDIO", "Microphone capture failed", captureErr)
+		} else if cause != errPTTReleased {
+			s.trace("PTT", "Recording discarded without a release")
 		} else if !usable {
 			s.trace("PTT", fmt.Sprintf("Capture skipped: %.2fs of audio, too short or quiet", audioSeconds))
 		}
@@ -155,7 +167,7 @@ func (s *state) record(down bool) {
 			s.ptt = "Idle"
 			if captureErr != nil {
 				s.log("ERR", captureErr.Error())
-			} else if errors.Is(context.Cause(capctx), errPTTReleaseTimeout) {
+			} else if cause == errPTTReleaseTimeout {
 				s.log("SYS", "PTT release timed out. The recording was discarded.")
 			}
 			if usable {

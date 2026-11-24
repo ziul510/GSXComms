@@ -279,9 +279,12 @@ func (s *state) pollController(ctx context.Context) {
 		case <-t.C:
 		}
 		for i, prev := range last {
-			// A disconnected XInput slot starts with no buttons held
 			var current xinputState
-			_, _, _ = proc.Call(uintptr(i), uintptr(unsafe.Pointer(&current)))
+			status, _, _ := proc.Call(uintptr(i), uintptr(unsafe.Pointer(&current)))
+			if status != 0 {
+				// Clear previous buttons but distinguish input loss from a release.
+				current.buttons = 0
+			}
 			last[i] = current.buttons
 			if prev == current.buttons {
 				continue
@@ -292,7 +295,6 @@ func (s *state) pollController(ctx context.Context) {
 				if (prev & bit) == (current.buttons & bit) {
 					continue
 				}
-				// A cleared bit on a disconnected controller can release an active recording.
 				isDown := current.buttons&bit != 0
 				s.async(func() {
 					if s.binding != nil && isDown {
@@ -304,7 +306,11 @@ func (s *state) pollController(ctx context.Context) {
 					b := config.Get[config.Binding](s.cfg, "ptt_bind")
 					var slot int
 					if b.Type == "joystick" && b.JoyButton != nil && strings.HasPrefix(b.JoyName, "XInput Controller ") && json.Unmarshal(b.JoyID, &slot) == nil && slot == i && *b.JoyButton == button {
-						s.record(isDown)
+						if status != 0 {
+							s.stopRecording(errPTTInputLost)
+						} else {
+							s.record(isDown)
+						}
 					}
 				})
 			}

@@ -122,13 +122,11 @@ func (n *sessionNotifications) register(manager *com, id string) error {
 // Process the exact interface from the callback even if enumeration missed it.
 func (n *sessionNotifications) drain(fn func(audioSession) error) error {
 	var failures error
-	if n.closed {
-		// An enumerator can omit a session delivered by notification, even on recovery.
-		for _, event := range n.held {
-			failures = errors.Join(failures, visitSession(event.control, event.endpoint, fn))
-		}
-		return failures
+	// Retry a held session even if subsequent enumerations omit it.
+	for _, event := range n.held {
+		failures = errors.Join(failures, visitSession(event.control, event.endpoint, fn))
 	}
+	// stop drains pending references before recovery starts.
 	for range len(n.pending) {
 		event := <-n.pending
 		held := false

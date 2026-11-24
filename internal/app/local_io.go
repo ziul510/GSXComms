@@ -85,8 +85,8 @@ func (s *state) finishSave(req *saveRequest, err error) {
 			}
 		}
 		if !bytes.Equal(previous["ptt_bind"], s.cfg["ptt_bind"]) {
-			// Stop recording before changing which key release the hook listens for
-			s.record(false)
+			// Replacing a binding discards any capture started with it.
+			s.stopRecording(errPTTBindingChanged)
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
 		}
 		// Enabling or disabling debug output needs an event even when no log text changed

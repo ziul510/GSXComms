@@ -192,11 +192,7 @@ func Run(dir string) {
 					s.async(func() {
 						s.keyboardUnavailable = true
 						if config.Get[config.Binding](s.cfg, "ptt_bind").Type == "key" {
-							s.pttHeld = false
-							// Losing the hook is not a user release, so discard the capture.
-							if s.recording != nil {
-								s.recording(err)
-							}
+							s.stopRecording(err)
 						}
 						s.traceFailure("PTT", "Keyboard hook stopped", err)
 						s.log("ERR", "Keyboard push-to-talk unavailable. Restart GSXComms or bind a controller button.")
@@ -521,7 +517,8 @@ func (s *state) simulator() {
 					cancel()
 				case s.menuWatch && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
-					ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+					// A closed menu can require four write checks before GSX publishes a panel.
+					ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 					if page, err := session.OpenMenuPage(ctx); err == nil {
 						menu = page
 					}
@@ -1002,8 +999,8 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				return false
 			}
 			if err != nil {
-				// An unconfirmed write can already have taken effect, so skip preset duplicates.
-				if errors.Is(err, gsx.ErrWriteUncertain) {
+				// A follow-up can fail after the service choice has already taken effect.
+				if selected != "" || errors.Is(err, gsx.ErrWriteUncertain) {
 					seen[service] = true
 				}
 				if errors.Is(err, gsx.ErrMenuChanged) {

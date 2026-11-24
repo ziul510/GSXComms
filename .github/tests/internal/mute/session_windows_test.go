@@ -9,7 +9,33 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
+
+func TestRetainedNotificationSessionIsRevisited(t *testing.T) {
+	var visits int
+	vtable := &[32]uintptr{}
+	// Track attempts to query the retained control, with no native audio changes.
+	vtable[0] = windows.NewCallback(func(_ *com, _ *windows.GUID, _ **com) uintptr {
+		visits++
+		return 0x80004002 // E_NOINTERFACE
+	})
+	control := &com{vtable: vtable}
+	notifications := &sessionNotifications{held: map[identity]notifiedSession{
+		{Endpoint: "fixture"}: {control: control, endpoint: "fixture"},
+	}}
+	for _, closed := range []bool{false, true} {
+		notifications.closed = closed
+		before := visits
+		if err := notifications.drain(func(audioSession) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if visits != before+1 {
+			t.Errorf("held control was not revisited with closed=%v", closed)
+		}
+	}
+}
 
 // Activate each render endpoint's session manager without changing audio
 func TestLiveAudioSessionEnumeration(t *testing.T) {

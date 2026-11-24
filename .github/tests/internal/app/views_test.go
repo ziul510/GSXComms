@@ -660,6 +660,7 @@ func TestOfflineAutoConnectWaitsAndQueuesOneAttempt(t *testing.T) {
 type menuChoices struct {
 	selected    []int
 	afterChoice func()
+	choiceError func(int) error
 	open        bool
 }
 
@@ -671,6 +672,11 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 	}
 	// Record only choices Remote and open flag writes aren't part of this assertion
 	if name == gsx.MenuChoice {
+		if m.choiceError != nil {
+			if err := m.choiceError(int(value)); err != nil {
+				return err
+			}
+		}
 		m.selected = append(m.selected, int(value))
 		if m.afterChoice != nil {
 			m.afterChoice()
@@ -770,6 +776,45 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	(<-s.jobs)(outer, session)
 	if !slices.Equal(tr.selected, []int{1, 2, 0}) {
 		t.Fatalf("preset choices=%v", tr.selected)
+	}
+}
+
+func TestPresetDoesNotRepeatServiceAfterOperatorFailure(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 1)}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", true)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true,
+		Services: []string{"JETWAY", "JETWAY"}}})
+	ramp := gsx.ParseMenu("Ramp\nJetway")
+	page := ramp
+	var rejectedOperators int
+	transport := &menuChoices{
+		afterChoice: func() { page = gsx.ParseMenu("Choose operator\nDefault operator\nGSX choice") },
+		choiceError: func(index int) error {
+			if index == 1 {
+				rejectedOperators++
+				return errors.New("operator selection rejected")
+			}
+			return nil
+		},
+	}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error {
+		// Let a retry see the original service again after GSX dismisses the operator page.
+		if rejectedOperators >= 3 {
+			page = ramp
+		}
+		return ctx.Err()
+	}
+	s.submit("prepare ramp")
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !slices.Equal(transport.selected, []int{0}) || rejectedOperators == 0 {
+		t.Fatalf("primary selections=%v, rejected operators=%d", transport.selected, rejectedOperators)
 	}
 }
 

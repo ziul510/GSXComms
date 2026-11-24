@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -464,4 +465,74 @@ func TestFreshOpenRejectsPreviousPanel(t *testing.T) {
 	if _, err := s.WaitMenu(t.Context()); err != nil {
 		t.Fatalf("identical but newer panel: %v", err)
 	}
+}
+
+func TestReopenRequiresFreshPanelWhenAlreadyRemote(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "menu")
+	if err := os.WriteFile(path, []byte("Ramp\nJetway"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sim := &fakeSim{values: map[string]float64{MenuOpen: 1, Remote: 1}}
+	s := New(sim, dir)
+	s.remote = true
+	s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+	// A service requests a refresh even though the session already owns the menu.
+	if _, err := s.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, false); !errors.Is(err, ErrMenuInactive) {
+		t.Fatalf("unchanged panel after reopening: %v", err)
+	}
+	for _, write := range sim.writes {
+		if write.key == MenuChoice {
+			t.Fatal("sent a choice from the previous panel")
+		}
+	}
+}
+
+func TestExecuteReportsConfirmedChoiceWhenSettleFails(t *testing.T) {
+	sim := &fakeSim{values: map[string]float64{MenuOpen: 1, Remote: 1}}
+	s := New(sim, t.TempDir())
+	s.remote = true
+	s.ReadMenu = func() Menu { return ParseMenu("Ramp\nJetway") }
+	s.Sleep = func(ctx context.Context, delay time.Duration) error {
+		if delay == 300*time.Millisecond {
+			return context.DeadlineExceeded
+		}
+		return ctx.Err()
+	}
+	selected, err := s.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, false)
+	if selected != "Jetway" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("confirmed choice lost after settle failure: %q, %v", selected, err)
+	}
+}
+
+type delayedReleaseSim struct {
+	*fakeSim
+	rejected bool
+}
+
+func (f *delayedReleaseSim) Set(ctx context.Context, key string, value float64) error {
+	// Model a definite rejection followed by full confirmation windows.
+	if key == MenuOpen && !f.rejected {
+		f.rejected = true
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return err
+		}
+		return errors.New("menu close rejected")
+	}
+	if err := wait(ctx, 350*time.Millisecond); err != nil {
+		return err
+	}
+	return f.fakeSim.Set(ctx, key, value)
+}
+
+func TestCloseAllowsReleaseRetryWithFullWriteWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &delayedReleaseSim{fakeSim: &fakeSim{values: map[string]float64{MenuOpen: 1, Remote: 1}}}
+		s := New(f, t.TempDir())
+		s.remote = true
+		if err := s.Close(); err != nil || f.values[MenuOpen] != 0 || f.values[Remote] != 0 || !f.closed {
+			t.Fatalf("release did not finish after a retry: %v, values=%v, closed=%v", err, f.values, f.closed)
+		}
+	})
 }

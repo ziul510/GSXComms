@@ -128,8 +128,7 @@ async fn wait_for_reply(
     write_sent: Option<u32>,
     wait: Duration,
 ) -> Reply {
-    let started = Instant::now();
-    let mut deadline = started + wait;
+    let deadline = Instant::now() + wait;
     let mut read_reply = None;
     loop {
         // Match late reads by request and definition IDs and exceptions by send ID.
@@ -166,11 +165,8 @@ async fn wait_for_reply(
         if write_sent.is_none() {
             return reply;
         }
-        // A readback can arrive before a write exception, including for an unchanged value.
-        if read_reply.is_none() {
-            read_reply = Some(reply);
-            deadline = deadline.min(started + Duration::from_millis(100));
-        }
+        // Keep waiting for a write exception even if the value already matches.
+        read_reply.get_or_insert(reply);
     }
 }
 
@@ -380,7 +376,7 @@ mod tests {
         // An early readback must leave time to receive the matching write exception.
         tx.send(Message::Value(2, 4, 0.0)).await.unwrap();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(60)).await;
+            tokio::time::sleep(Duration::from_millis(150)).await;
             tx.send(Message::Exception(9, "rejected".into()))
                 .await
                 .unwrap();
