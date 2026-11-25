@@ -102,7 +102,7 @@ type Session struct {
 	ReadMenu         func() Menu
 	OnReadError      func(error)
 	OnChoice         func(Menu, int)
-	OnSelectionSent  func() // A possibly applied choice can make Couatl speak
+	OnOptionMatched  func() // Start audio protection before sending the choice
 	OnManualOperator func(Menu)
 	BeforeChoice     func() error
 	Sleep            func(context.Context, time.Duration) error
@@ -526,46 +526,55 @@ func (s *Session) Choose(ctx context.Context, index int) error {
 	if s.pendingMenu != nil && len(page.Options) == 0 {
 		return ErrMenuInactive
 	}
-	return s.choose(ctx, page, index, nil, nil)
+	_, err := s.choose(ctx, page, index, nil)
+	return err
 }
 
 // ChooseOn checks the page again because a GSX slot can change while a command waits
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
-	return s.chooseOn(ctx, page, index, s.OnSelectionSent)
+	_, err := s.chooseOn(ctx, page, index, s.OnOptionMatched)
+	return err
 }
 
 // Navigation can use the same checks without triggering command side effects
-func (s *Session) chooseOn(ctx context.Context, page Menu, index int, onSelectionSent func()) error {
+func (s *Session) chooseOn(ctx context.Context, page Menu, index int, onMatch func()) (bool, error) {
 	if index < 0 || index >= len(page.Options) {
-		return ErrMenuChanged
+		return false, ErrMenuChanged
 	}
 	return s.choose(ctx, page, index, func() error {
 		if !page.SameSnapshot(s.CurrentMenu()) {
 			return ErrMenuChanged
 		}
 		if s.BeforeChoice != nil {
-			return s.BeforeChoice()
+			if err := s.BeforeChoice(); err != nil {
+				return err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Start protection before Couatl can speak, once even if the write retries
+		if onMatch != nil {
+			onMatch()
+			onMatch = nil
 		}
 		return nil
-	}, onSelectionSent)
+	})
 }
 
-func (s *Session) choose(ctx context.Context, page Menu, index int, check func() error, onSelectionSent func()) error {
+// Report whether GSX could have applied the choice even if settling fails.
+func (s *Session) choose(ctx context.Context, page Menu, index int, check func() error) (bool, error) {
 	if index < 0 || index >= maxMenuOptions {
-		return errors.New("invalid GSX item")
+		return false, errors.New("invalid GSX item")
 	}
 	err := s.write(ctx, MenuChoice, float64(index), check)
 	if err != nil && !errors.Is(err, ErrWriteUncertain) {
 		// GSX or the pilot can change the panel independently of this write.
-		return err
-	}
-	// Start command side effects before waiting for GSX to update the panel
-	if onSelectionSent != nil {
-		onSelectionSent()
+		return false, err
 	}
 	// A lost reply can still mean Couatl acted, but the link cannot verify it
 	if errors.Is(err, ErrDisconnected) {
-		return err
+		return true, err
 	}
 	s.remote = true
 	s.remoteOnly = false
@@ -576,12 +585,12 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 	// Give GSX time to apply the choice before the next operation reads the panel.
 	settleErr := s.Sleep(ctx, 300*time.Millisecond)
 	if settleErr != nil && err != nil {
-		return errors.Join(err, settleErr)
+		return true, errors.Join(err, settleErr)
 	}
 	if err != nil {
-		return err
+		return true, err
 	}
-	return settleErr
+	return true, settleErr
 }
 
 // OpenMenuPage makes a second request if Couatl accepted the open but never supplied choices
@@ -782,7 +791,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	// Search the submenu only after the current page has no match
 	if extra := optionContaining(menu.Options, []string{"additional services"}); index < 0 && extra >= 0 {
 		parent := menu
-		navigationErr := s.chooseOn(ctx, menu, extra, nil)
+		_, navigationErr := s.chooseOn(ctx, menu, extra, nil)
 		if navigationErr != nil && !canCheckChoice(ctx, navigationErr) {
 			return "", navigationErr
 		}
@@ -811,7 +820,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			})
 			var backErr error
 			if back >= 0 {
-				backErr = s.chooseOn(ctx, menu, back, nil)
+				_, backErr = s.chooseOn(ctx, menu, back, nil)
 			}
 			if back < 0 || backErr != nil && !canCheckChoice(ctx, backErr) {
 				_ = s.Release(ctx)
@@ -826,13 +835,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		}
 		return "", ErrNoMenuMatch
 	}
-	var sent bool
-	choiceErr := s.chooseOn(ctx, menu, index, func() {
-		sent = true
-		if s.OnSelectionSent != nil {
-			s.OnSelectionSent()
-		}
-	})
+	sent, choiceErr := s.chooseOn(ctx, menu, index, s.OnOptionMatched)
 	var selected string
 	// A confirmed service survives a later settling or operator error
 	if sent && !errors.Is(choiceErr, ErrWriteUncertain) {

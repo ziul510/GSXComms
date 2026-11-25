@@ -90,7 +90,7 @@ func TestSelectionDoesNotReplayAnUncertainWrite(t *testing.T) {
 	// Start audio protection and settle without highlighting an unconfirmed selection.
 	protected, settled := false, false
 	session.OnChoice = func(Menu, int) { t.Error("uncertain write was highlighted") }
-	session.OnSelectionSent = func() { protected = true }
+	session.OnOptionMatched = func() { protected = true }
 	session.Sleep = func(_ context.Context, d time.Duration) error {
 		settled = d == 300*time.Millisecond
 		return nil
@@ -155,21 +155,17 @@ func TestScriptedSession(t *testing.T) {
 	}
 	page := 0
 	s.ReadMenu = func() Menu { return menus[min(page, len(menus)-1)] }
-	var choiceAt time.Duration
+	selections := 0
 	f.onWrite = func(key string, value float64) {
 		if key == MenuChoice {
+			if selections != page {
+				t.Errorf("writing a choice on page %d with %d match callbacks, want %d", page, selections, page)
+			}
 			page++
-			choiceAt = clock
 		}
 	}
-	selections := 0
-	// Notify after writing the service or operator choice, before the panel delay.
-	s.OnSelectionSent = func() {
-		selections++
-		if page < 2 || clock != choiceAt {
-			t.Errorf("selection callback on page %d at %v, last write at %v", page, clock, choiceAt)
-		}
-	}
+	// Notify before writing the matched service or operator choice
+	s.OnOptionMatched = func() { selections++ }
 	if ready, speed, err := s.Status(context.Background()); !ready || speed != 12 || err != nil {
 		t.Fatalf("status = %v, %v, %v", ready, speed, err)
 	}

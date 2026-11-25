@@ -66,17 +66,22 @@ func TestConsumedNavigationStillFindsService(t *testing.T) {
 	}
 }
 
-func TestLostReplyStillStartsAudioProtection(t *testing.T) {
+func TestAudioProtectionStartsBeforeSelectionWrite(t *testing.T) {
 	page := gsx.ParseMenu("Ramp\nOperate jetway")
 	lostReply := errors.Join(gsx.ErrWriteUncertain, gsx.ErrDisconnected)
-	transport := &menuChoices{choiceError: func(int) error { return lostReply }}
+	protected := false
+	transport := &menuChoices{choiceError: func(int) error {
+		if !protected {
+			t.Error("audio protection had not started when the choice was sent")
+		}
+		return lostReply
+	}}
 	session := gsx.New(transport, t.TempDir())
 	session.ReadMenu = func() gsx.Menu { return page }
-	protected := false
-	session.OnSelectionSent = func() { protected = true }
+	session.OnOptionMatched = func() { protected = true }
 	err := session.ChooseOn(t.Context(), page, 0)
-	if !errors.Is(err, gsx.ErrWriteUncertain) || !protected {
-		t.Fatalf("possibly applied choice with lost reply left protected=%t; err=%v", protected, err)
+	if !errors.Is(err, gsx.ErrWriteUncertain) {
+		t.Fatalf("choice with lost reply returned %v", err)
 	}
 }
 

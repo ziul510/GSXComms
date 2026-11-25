@@ -1037,8 +1037,8 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		}
 		// Recheck live speed and speech readiness before writing a menu choice.
 		session.BeforeChoice = gate
-		// Start the mute on every sent selection, including each preset service.
-		session.OnSelectionSent = func() {
+		// Start the mute timer as soon as each matching option is validated
+		session.OnOptionMatched = func() {
 			_, release := s.muteCrew(s.ctx, prefs, 20*time.Second)
 			release()
 		}
@@ -1063,7 +1063,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		// Clear callbacks before the session runs another kind of job.
 		defer func() {
 			session.BeforeChoice = nil
-			session.OnSelectionSent = nil
+			session.OnOptionMatched = nil
 			session.OnManualOperator = nil
 		}()
 		if idx, ok := commands.Number(text); ok && overlay {
