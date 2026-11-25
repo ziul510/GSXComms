@@ -690,6 +690,94 @@ func (m *menuChoices) Set(ctx context.Context, name string, value float64) error
 }
 func (*menuChoices) Close() error { return nil } // There is no native simulator handle in this fixture
 
+// Show what GSX publishes when a remote pulse replaces an open operator menu
+type operatorPromptTransport struct {
+	menuChoices
+	page gsx.Menu
+}
+
+// Report the actual open flag so a second command takes the remote pulse path
+func (m *operatorPromptTransport) Get(ctx context.Context, name string) (float64, error) {
+	if name == gsx.MenuOpen && m.open {
+		return 1, ctx.Err()
+	}
+	return m.menuChoices.Get(ctx, name)
+}
+
+// Publish the ramp page each time the session enables remote control on an open menu
+func (m *operatorPromptTransport) Set(ctx context.Context, name string, value float64) error {
+	if err := m.menuChoices.Set(ctx, name, value); err != nil {
+		return err
+	}
+	if name == gsx.Remote && value == 1 && m.open {
+		m.page = gsx.ParseMenu("Ramp\nOperate jetway\nRequest stairs")
+	}
+	return nil
+}
+
+// Cover queued commands and both ways to leave the manual operator prompt
+func TestManualOperatorPromptSurvivesOtherCommands(t *testing.T) {
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), 2), services: make(map[string]bool)}
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.cfg.Put("enable_menu_matching", true)
+	s.cfg.Put("presets", []config.Preset{{Name: "Ramp preset", Codeword: "ramp preset", Enabled: true, Services: []string{"STAIRS"}}})
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &operatorPromptTransport{}
+	operator := gsx.ParseMenu("Select operator\nGSX choice")
+	transport.afterChoice = func() {
+		// Only the initial jetway request needs a manual operator
+		if len(transport.selected) == 1 {
+			transport.page = operator
+		}
+	}
+	session := gsx.New(transport, s.dir)
+	session.ReadMenu = func() gsx.Menu { return transport.page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	runJob := func() {
+		// Fail promptly if a submission never reached the simulator queue
+		select {
+		case job := <-s.jobs:
+			job(s.ctx, session)
+		default:
+			t.Fatal("expected a simulator job")
+		}
+	}
+
+	s.submit("request jetway")
+	s.submit("request stairs") // Queued before the window knows about the operator menu
+	runJob()
+	runJob()
+	s.main.FrameFn()
+	if !s.overlay || !s.menu.Same(operator) || !transport.page.Same(operator) || !slices.Equal(transport.selected, []int{0}) {
+		t.Fatalf("queued service replaced operator prompt: overlay=%t, window=%q, simulator=%q, slots=%v",
+			s.overlay, s.menu.Title, transport.page.Title, transport.selected)
+	}
+	// Presets and broader-mode choices can also change the current menu
+	for _, command := range []string{"ramp preset", "GSX choice"} {
+		s.submit(command)
+		runJob()
+		if !transport.page.Same(operator) || !slices.Equal(transport.selected, []int{0}) {
+			t.Fatalf("%q changed the pending operator menu: page=%q, slots=%v", command, transport.page.Title, transport.selected)
+		}
+	}
+	s.submit("option one")
+	runJob()
+	s.main.FrameFn()
+	if !slices.Equal(transport.selected, []int{0, 0}) {
+		t.Fatalf("explicit number could not select the operator: slots=%v", transport.selected)
+	}
+	s.toggleMenu()
+	runJob()
+	s.submit("request stairs")
+	runJob()
+	if !slices.Equal(transport.selected, []int{0, 0, 1}) {
+		t.Fatalf("new service blocked after hiding the menu: slots=%v", transport.selected)
+	}
+}
+
 type overlayOpenTransport struct {
 	menuChoices
 	onOpen func() error

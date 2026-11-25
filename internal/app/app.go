@@ -1054,6 +1054,11 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 			s.selectNumber(ctx, session, page, explicitIndex, prefs)
 			return
 		}
+		// Protect the simulator's operator menu even before the window displays it
+		if len(s.operatorMenu.Options) > 0 && (action.Kind == "service" || action.Kind == "preset" || action.Kind == "menu") {
+			fail("Finish operator selection or hide the GSX menu before starting another command")
+			return
+		}
 		corrected := false
 		// Apply menu correction only after routing known commands
 		if action.Kind == "menu" && !explicitNumber && session.Connected() {
