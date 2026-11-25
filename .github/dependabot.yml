@@ -6,7 +6,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "saturday"
+      day: "sunday"
       time: "13:00"
       timezone: "Etc/GMT+4"
     open-pull-requests-limit: 10

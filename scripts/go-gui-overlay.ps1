@@ -3,10 +3,11 @@
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
-$module = go list -m -f '{{.Dir}}' github.com/go-gui-org/go-gui
-$version = go list -m -f '{{.Version}}' github.com/go-gui-org/go-gui
-# Stop if the selected module differs from the source these patches target
-if ($version -ne 'v0.98.0' -or !$module) { throw 'The Windows software adapter targets go-gui v0.98.0' }
+# Use the module selected by Go so dependency updates also reach the adapter
+$goGui = go list -m -json github.com/go-gui-org/go-gui | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or !$goGui.Dir -or !$goGui.Version) { throw 'Could not locate the selected go-gui module' }
+$module = $goGui.Dir
+$version = $goGui.Version
 # Hide the copy from Go package discovery while it is being staged
 $destination = Join-Path $PWD 'build/.go-gui-win32'
 $copy = Join-Path $destination "module-$version"
