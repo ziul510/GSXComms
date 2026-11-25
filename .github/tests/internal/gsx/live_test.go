@@ -1,0 +1,42 @@
+// Copyright 2026 ziul510
+// SPDX-License-Identifier: Apache-2.0
+
+package gsx
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestLiveSimConnect(t *testing.T) {
+	// Reserve this test for a machine with the simulator running.
+	if os.Getenv("GSXCOMMS_TEST_LIVE_MSFS") != "1" {
+		t.Skip("enable with GSXCOMMS_TEST_LIVE_MSFS=1 while MSFS is running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Use the built helper to exercise the same process boundary as the app.
+	helper, err := filepath.Abs(filepath.Join("..", "..", "build", "gsxsimconnect.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sim, err := connectHelper(ctx, exec.Command(helper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+	session := New(sim, Panel())
+	// The handshake can succeed before Couatl is ready in a loaded flight
+	ready, speed, err := session.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("SimConnect handshake succeeded. GSX ready=%v, groundspeed=%.1f kt", ready, speed)
+	if !ready {
+		t.Skip("GSX readiness requires a loaded flight")
+	}
+}

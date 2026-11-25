@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.ico binary
+*.png binary
+cmd/gsxspeech/c-api.h whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
+THIRD_PARTY_NOTICES whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

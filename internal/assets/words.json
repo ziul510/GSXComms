@@ -1,0 +1,241 @@
+{
+    "GPU": {
+        "keywords": [
+            "gpu",
+            "power",
+            "external",
+            "cable",
+            "plug",
+            "electric",
+            "unit",
+            "volt"
+        ],
+        "bias_variants": [
+            "gpu",
+            "ground power",
+            "ground power unit",
+            "power unit",
+            "power cart",
+            "power supply",
+            "power cable",
+            "power cord",
+            "power truck",
+            "external power",
+            "electrical power",
+            "gpu cart"
+        ]
+    },
+    "DEBOARDING": {
+        "keywords": [
+            "deboard"
+        ],
+        "bias_variants": [
+            "deboard",
+            "deboarding",
+            "deplane",
+            "deplaning",
+            "disembark",
+            "disembarking",
+            "offload",
+            "offloading",
+            "unloading",
+            "passengers off"
+        ]
+    },
+    "BOARDING": {
+        "keywords": [
+            "board"
+        ],
+        "bias_variants": [
+            "board",
+            "boarding",
+            "embark",
+            "embarking",
+            "embarkation",
+            "load passengers",
+            "passengers on"
+        ]
+    },
+    "CATERING": {
+        "keywords": [
+            "cater"
+        ],
+        "bias_variants": [
+            "cater",
+            "catering",
+            "catering truck",
+            "catering service",
+            "caterer",
+            "caterers",
+            "food",
+            "food service",
+            "food truck",
+            "meal",
+            "meals",
+            "meal service",
+            "galley",
+            "refreshments",
+            "snacks"
+        ]
+    },
+    "REFUELING": {
+        "keywords": [
+            "fuel",
+            "refuel"
+        ],
+        "bias_variants": [
+            "refuel",
+            "refueling",
+            "refuelling",
+            "fuel",
+            "fueling",
+            "fuelling",
+            "fuel truck",
+            "fuel service",
+            "gasoline",
+            "petrol",
+            "kerosene",
+            "jet fuel",
+            "avgas",
+            "bowser",
+            "tanker",
+            "tanker truck"
+        ]
+    },
+    "PUSHBACK": {
+        "keywords": [
+            "push"
+        ],
+        "bias_variants": [
+            "push",
+            "pushback",
+            "push back",
+            "pushback truck",
+            "push truck",
+            "tug",
+            "tug truck",
+            "tow",
+            "tow truck",
+            "towing",
+            "tractor"
+        ]
+    },
+    "JETWAY": {
+        "keywords": [
+            "jetway"
+        ],
+        "bias_variants": [
+            "jetway",
+            "jet bridge",
+            "jetbridge",
+            "airbridge",
+            "air bridge",
+            "aerobridge",
+            "aero bridge",
+            "passenger bridge",
+            "boarding bridge",
+            "gangway"
+        ]
+    },
+    "STAIRS": {
+        "keywords": [
+            "stair",
+            "step"
+        ],
+        "bias_variants": [
+            "stair",
+            "stairs",
+            "stairway",
+            "steps",
+            "airstair",
+            "airstairs",
+            "air stairs",
+            "air stair",
+            "front stairs",
+            "rear stairs",
+            "boarding stairs"
+        ]
+    },
+    "DEICE": {
+        "keywords": [
+            "deice",
+            "icing"
+        ],
+        "bias_variants": [
+            "deice",
+            "de-ice",
+            "de-icing",
+            "deicing",
+            "de ice",
+            "de-icer",
+            "deicer",
+            "anti-ice",
+            "anti-icing",
+            "anti ice",
+            "anti icing",
+            "icing",
+            "icing truck",
+            "ice truck",
+            "defrost",
+            "defrosting",
+            "snow removal"
+        ]
+    },
+    "LAVATORY": {
+        "keywords": [
+            "lav",
+            "toilet"
+        ],
+        "bias_variants": [
+            "lav",
+            "lav truck",
+            "lav service",
+            "lavatory",
+            "lavatory service",
+            "toilet",
+            "toilets",
+            "toilet service",
+            "restroom",
+            "washroom"
+        ]
+    },
+    "WATER": {
+        "keywords": [
+            "water"
+        ],
+        "bias_variants": [
+            "water",
+            "water truck",
+            "water service",
+            "water cart",
+            "potable water",
+            "drinking water",
+            "fresh water"
+        ]
+    },
+    "CLEANING": {
+        "keywords": [
+            "clean"
+        ],
+        "bias_variants": [
+            "clean",
+            "cleaning",
+            "cleaning service",
+            "cleaning crew",
+            "cleaning truck",
+            "cleanup",
+            "clean up",
+            "cleaners",
+            "cleaner"
+        ]
+    },
+    "GREETING": {
+        "keywords": [
+            "cockpit",
+            "ground"
+        ],
+        "bias_variants": [
+            "flight deck"
+        ]
+    }
+}
