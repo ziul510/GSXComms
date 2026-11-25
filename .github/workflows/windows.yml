@@ -48,9 +48,6 @@ jobs:
           $env:CGO_ENABLED = '0'
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Compile the patched renderer used by the portable build
-          $modfile = & scripts/go-gui-overlay.ps1
-          go build -modfile $modfile ./...
       - name: Check SimConnect helper
         shell: pwsh
         run: |

@@ -48,9 +48,7 @@ go build -trimpath -o (Join-Path $tts 'gsxspeech.exe') ./cmd/gsxkokoro
 if ($LASTEXITCODE -ne 0) { throw 'Kokoro worker build failed' }
 # Native model libraries run in the workers, so the main executable can build without CGO
 $env:CGO_ENABLED = '0'
-# Use the patched Windows renderer only for the main application build
-$modfile = & "$PSScriptRoot/go-gui-overlay.ps1"
-go build -modfile $modfile -trimpath -ldflags '-H windowsgui' -o 'build/GSXComms.exe' ./cmd/gsxcomms
+go build -trimpath -ldflags '-H windowsgui' -o 'build/GSXComms.exe' ./cmd/gsxcomms
 if ($LASTEXITCODE -ne 0) { throw 'Main executable build failed' }
 go build -trimpath -o 'build/gsxremotecontrol.exe' ./cmd/gsxremotecontrol
 if ($LASTEXITCODE -ne 0) { throw 'GSX console build failed' }
