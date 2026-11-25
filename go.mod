@@ -3,7 +3,7 @@ module github.com/ziul510/GSXCommsGo
 go 1.27.0
 
 require (
-	github.com/go-gui-org/go-gui v0.98.0
+	github.com/go-gui-org/go-gui v0.99.1
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/yalue/onnxruntime_go v1.32.0 // ONNX Runtime API 28 matches the bundled DLL
 	golang.org/x/sys v0.50.0
@@ -12,9 +12,9 @@ require (
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
+	github.com/dlclark/regexp2/v2 v2.13.2 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
-	github.com/go-gui-org/go-glyph v1.28.0 // indirect
+	github.com/go-gui-org/go-glyph v1.29.2 // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/godbus/dbus/v5 v5.2.4 // indirect
