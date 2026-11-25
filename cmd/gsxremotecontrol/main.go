@@ -124,7 +124,13 @@ func ipc(ctx context.Context, s *gsx.Session, in io.Reader, out io.Writer, conne
 					msg(map[string]any{"status": "error", "message": "Invalid SELECT command: " + line})
 					continue
 				}
-				msg(map[string]any{"status": "ok", "selected": n, "success": s.Choose(ctx, n) == nil})
+				err = s.Choose(ctx, n)
+				reply := map[string]any{"status": "ok", "selected": n, "success": err == nil}
+				// Give existing clients the same success field and expose unsafe retries
+				if errors.Is(err, gsx.ErrWriteUncertain) {
+					reply["uncertain"] = true
+				}
+				msg(reply)
 			case line == "SHUTDOWN":
 				msg(map[string]any{"status": "ok", "shutdown": true})
 				return

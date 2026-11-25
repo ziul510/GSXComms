@@ -141,6 +141,49 @@ func TestIPCReconnectsAfterEstablishedTransportFails(t *testing.T) {
 	}
 }
 
+// Track a consumed selection whose result the simulator could not confirm
+type uncertainIPCTransport struct {
+	ipcTestTransport
+	choices int
+}
+
+// Only the first selection loses its confirmation
+func (sim *uncertainIPCTransport) Set(ctx context.Context, name string, _ float64) error {
+	if name == gsx.MenuChoice {
+		sim.choices++
+		if sim.choices == 1 {
+			return gsx.ErrWriteUncertain
+		}
+	}
+	return ctx.Err()
+}
+
+// IPC must distinguish an uncertain write, a definite failure, and a success
+func TestIPCReportsSelectionOutcome(t *testing.T) {
+	sim := &uncertainIPCTransport{}
+	session := gsx.New(sim, t.TempDir())
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	var out bytes.Buffer
+	ipc(t.Context(), session, strings.NewReader("SELECT:0\nSELECT:99\nSELECT:0\nSHUTDOWN\n"), &out, connect)
+	decoder := json.NewDecoder(&out)
+	var ready map[string]any
+	if err := decoder.Decode(&ready); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ success, uncertain bool }{{false, true}, {false, false}, {true, false}} {
+		var reply map[string]any
+		if err := decoder.Decode(&reply); err != nil {
+			t.Fatal(err)
+		}
+		if reply["success"] != want.success || (reply["uncertain"] == true) != want.uncertain {
+			t.Fatalf("selection reply = %v, want success=%t uncertain=%t", reply, want.success, want.uncertain)
+		}
+	}
+	if sim.choices != 2 {
+		t.Fatalf("simulator saw %d writes, want 2", sim.choices)
+	}
+}
+
 func TestIPCReportsMenuReadiness(t *testing.T) {
 	for _, tc := range []struct {
 		name, menu string

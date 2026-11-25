@@ -156,6 +156,20 @@ func TestPlaybackQueueCapsAndCoalescesPriority(t *testing.T) {
 	}
 }
 
+// A preset inherits cancellation without cutting the worker's synthesis budget
+func TestPresetReadoutInheritsDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	s := &state{ctx: ctx, dir: t.TempDir()}
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	job := s.prepareReadout(playback{readoutCtx: ctx})
+	defer func() { job.cancel(); <-job.done }()
+	want, _ := ctx.Deadline()
+	if got, ok := job.ctx.Deadline(); !ok || got != want {
+		t.Fatalf("preset deadline = %v, want %v", got, want)
+	}
+}
+
 func TestDisablingMenuReaderDiscardsQueuedReadouts(t *testing.T) {
 	s := &state{ctx: t.Context(), cfg: config.Defaults()}
 	s.cfg.Put(config.MenuReadoutSetting, true)

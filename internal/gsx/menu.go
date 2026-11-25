@@ -483,6 +483,13 @@ func (s *Session) Release(ctx context.Context) error {
 // Allow two write confirmations plus transport contention or a retry.
 const releaseTimeout = 2 * time.Second
 
+// Release only the flag when the live menu has already closed
+func (s *Session) ReleaseClosedMenu(ctx context.Context) error {
+	// A later menu may belong to the pilot
+	s.remoteOnly = s.remote
+	return s.ReleaseOwned(ctx)
+}
+
 // ReleaseOwned gives a canceled operation time to relinquish its menu
 func (s *Session) ReleaseOwned(ctx context.Context) error {
 	if !s.RemoteActive() {

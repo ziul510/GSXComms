@@ -512,20 +512,16 @@ func (s *state) simulator() {
 					s.operatorMenu = gsx.Menu{}
 					s.operatorSubmitted = time.Time{}
 				}
-				if !s.operatorSubmitted.IsZero() {
-					// A consumed choice can close GSX before the old file is cleared
+				if len(s.operatorMenu.Options) > 0 {
+					// GSX can close the prompt before the panel file changes
 					ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 					open, err := session.MenuOpened(ctx)
 					cancel()
-					expired := time.Since(s.operatorSubmitted) >= 4*time.Second
+					expired := !s.operatorSubmitted.IsZero() && time.Since(s.operatorSubmitted) >= 4*time.Second
 					switch {
 					case err == nil && !open, err != nil && expired:
 						// A flag read failure must not hold the overlay forever
-						s.operatorMenu, s.operatorSubmitted = gsx.Menu{}, time.Time{}
-						s.menuActivity = time.Now()
-						session.MarkMenuStale()
-						cleanupErr := session.ReleaseOwned(s.ctx)
-						s.scheduleOverlayRetry(errors.Join(err, cleanupErr))
+						s.clearOperatorPrompt(session, err)
 						menu, clearOverlay = gsx.Menu{}, true
 						retrying = true // Let the scheduled recovery own the next open
 					case expired:
@@ -836,6 +832,27 @@ func (s *state) toggleMenu() {
 	}
 }
 
+// Discard cached operator rows and release the closed or unresponsive prompt
+func (s *state) clearOperatorPrompt(session *gsx.Session, flagErr error) {
+	page := s.operatorMenu
+	s.operatorMenu, s.operatorSubmitted = gsx.Menu{}, time.Time{}
+	s.menuActivity = time.Now()
+	session.MarkMenuStale()
+	var cleanupErr error
+	if flagErr == nil {
+		// A new pilot menu can appear before the remote flag is released
+		cleanupErr = session.ReleaseClosedMenu(s.ctx)
+	} else {
+		cleanupErr = session.ReleaseOwned(s.ctx)
+	}
+	s.scheduleOverlayRetry(errors.Join(flagErr, cleanupErr))
+	s.async(func() {
+		if s.overlay && s.menu.Same(page) {
+			s.menu = gsx.Menu{}
+		}
+	})
+}
+
 // selectNumber runs on the simulator loop so it can reacquire the same page after idle release
 func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx.Menu, index int, prefs config.Values) {
 	if !s.menuWatch {
@@ -857,7 +874,18 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	s.menuActivity = time.Now()
 	current := session.CurrentMenu()
 	var err error
-	if !session.RemoteActive() {
+	if operatorSelection {
+		// The old panel can outlive the live menu even between polling ticks
+		open, flagErr := session.MenuOpened(ctx)
+		err = flagErr
+		if err == nil && !open {
+			s.clearOperatorPrompt(session, nil)
+			current, err = gsx.Menu{}, gsx.ErrMenuChanged
+		}
+	} else if !s.menuRetryAt.IsZero() {
+		// A queued number must wait for the replacement panel to be published
+		current, err = gsx.Menu{}, gsx.ErrMenuChanged
+	} else if !session.RemoteActive() {
 		current, err = session.ReopenMenuPage(ctx, page)
 		if errors.Is(err, gsx.ErrMenuChanged) {
 			current = session.CurrentMenu()
@@ -1056,8 +1084,13 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		}
 		// Protect the simulator's operator menu even before the window displays it
 		if len(s.operatorMenu.Options) > 0 && (action.Kind == "service" || action.Kind == "preset" || action.Kind == "menu") {
-			fail("Finish operator selection or hide the GSX menu before starting another command")
-			return
+			open, err := session.MenuOpened(ctx)
+			if err != nil || open {
+				fail("Finish operator selection or hide the GSX menu before starting another command")
+				return
+			}
+			// A command can reach the simulator before the next poll clears the prompt
+			s.clearOperatorPrompt(session, nil)
 		}
 		corrected := false
 		// Apply menu correction only after routing known commands

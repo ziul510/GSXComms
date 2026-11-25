@@ -122,12 +122,20 @@ func (*stalledPanelTransport) Close() error { return nil }
 type consumedChoiceTransport struct {
 	count int
 	page  gsx.Menu
+	open  bool
 }
 
-func (*consumedChoiceTransport) Get(ctx context.Context, _ string) (float64, error) {
+func (a *consumedChoiceTransport) Get(ctx context.Context, key string) (float64, error) {
+	// The open flag can change independently of the panel the test published
+	if key == gsx.MenuOpen && a.open {
+		return 1, ctx.Err()
+	}
 	return 0, ctx.Err()
 }
 func (a *consumedChoiceTransport) Set(ctx context.Context, key string, value float64) error {
+	if key == gsx.MenuOpen {
+		a.open = value == 1
+	}
 	if key == gsx.MenuChoice {
 		a.count++
 		if a.count == 1 {

@@ -238,13 +238,13 @@ func (s *state) playbackLoop() {
 	}
 }
 
-// Start Kokoro outside playback and bound how long an ordered request can hold its place.
+// Start Kokoro outside playback and use the worker's synthesis deadline
 func (s *state) prepareReadout(next playback) *readoutPreparation {
 	parent := s.ctx
 	if next.readoutCtx != nil {
 		parent = next.readoutCtx
 	}
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	ctx, cancel := context.WithCancel(parent)
 	job := &readoutPreparation{ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(job.done)

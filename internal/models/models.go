@@ -62,14 +62,19 @@ func (m Model) Paths(data string) map[string]string {
 }
 
 func (m Model) Ready(data string) bool {
+	dir := m.Directory(data)
+	// A locked verification marker cannot override a known integrity failure
+	if _, err := os.Stat(filepath.Join(dir, ".invalid")); !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
 	for _, f := range m.Files {
-		stat, err := os.Stat(filepath.Join(m.Directory(data), filepath.FromSlash(f.Path)))
+		stat, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f.Path)))
 		if err != nil || !stat.Mode().IsRegular() || stat.Size() != f.Bytes {
 			return false
 		}
 	}
 	// Use the download's verification marker to avoid hashing models on every redraw
-	mark, err := os.ReadFile(filepath.Join(m.Directory(data), ".verified"))
+	mark, err := os.ReadFile(filepath.Join(dir, ".verified"))
 	return err == nil && strings.TrimSpace(string(mark)) == m.Revision
 }
 
@@ -89,8 +94,14 @@ func (m Model) Verify(ctx context.Context, data string) error {
 		}
 		if !match {
 			// Remove the marker so Settings offers deletion and a verified download.
-			_ = os.Remove(filepath.Join(dir, ".verified"))
-			return errors.New("model failed integrity verification. Delete the model in Settings and download it again")
+			integrityErr := errors.New("model failed integrity verification. Delete the model in Settings and download it again")
+			if err := os.Remove(filepath.Join(dir, ".verified")); err != nil && !errors.Is(err, os.ErrNotExist) {
+				// Windows readers can block deletion while allowing a separate marker
+				if markErr := config.WriteAtomic(filepath.Join(dir, ".invalid"), []byte(m.Revision)); markErr != nil {
+					return errors.Join(integrityErr, fmt.Errorf("could not invalidate verification marker: %w", errors.Join(err, markErr)))
+				}
+			}
+			return integrityErr
 		}
 	}
 	return nil

@@ -232,8 +232,19 @@ func TestVerifyRejectsSameSizeModelCorruption(t *testing.T) {
 	if !m.Ready(dir) {
 		t.Fatal("fixture should pass the lightweight UI readiness check")
 	}
-	if err := m.Verify(t.Context(), dir); err == nil || m.Ready(dir) || !m.Cached(dir) {
-		t.Fatalf("corrupted model should be available for deletion only: %v", err)
+	// A Windows reader can temporarily block removal of the verification marker
+	marker := windows.StringToUTF16Ptr(filepath.Join(m.Directory(dir), ".verified"))
+	handle, err := windows.CreateFile(marker, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyErr := m.Verify(t.Context(), dir)
+	_ = windows.CloseHandle(handle)
+	if verifyErr == nil || m.Ready(dir) || !m.Cached(dir) {
+		t.Fatalf("corrupted model should be available for deletion only: %v", verifyErr)
+	}
+	if err := m.Delete(dir); err != nil || m.Cached(dir) {
+		t.Fatalf("deletion should clear the invalid bundle: %v", err)
 	}
 }
 

@@ -693,7 +693,8 @@ func (*menuChoices) Close() error { return nil } // There is no native simulator
 // Show what GSX publishes when a remote pulse replaces an open operator menu
 type operatorPromptTransport struct {
 	menuChoices
-	page gsx.Menu
+	page   gsx.Menu
+	closes int
 }
 
 // Report the actual open flag so a second command takes the remote pulse path
@@ -708,6 +709,9 @@ func (m *operatorPromptTransport) Get(ctx context.Context, name string) (float64
 func (m *operatorPromptTransport) Set(ctx context.Context, name string, value float64) error {
 	if err := m.menuChoices.Set(ctx, name, value); err != nil {
 		return err
+	}
+	if name == gsx.MenuOpen && value == 0 {
+		m.closes++
 	}
 	if name == gsx.Remote && value == 1 && m.open {
 		m.page = gsx.ParseMenu("Ramp\nOperate jetway\nRequest stairs")
@@ -775,6 +779,56 @@ func TestManualOperatorPromptSurvivesOtherCommands(t *testing.T) {
 	runJob()
 	if !slices.Equal(transport.selected, []int{0, 0, 1}) {
 		t.Fatalf("new service blocked after hiding the menu: slots=%v", transport.selected)
+	}
+}
+
+// Exercise both command paths before the simulator's next polling tick
+func TestClosedManualOperatorPrompt(t *testing.T) {
+	t.Run("reject stale numbers", func(t *testing.T) {
+		testClosedOperatorCommands(t, "one", "one", "request stairs")
+	})
+	t.Run("accept new service", func(t *testing.T) {
+		testClosedOperatorCommands(t, "request stairs")
+	})
+}
+
+// Run queued commands with a stale operator panel and a closed live flag
+func testClosedOperatorCommands(t *testing.T, commands ...string) {
+	t.Helper()
+	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+		jobs: make(chan func(context.Context, *gsx.Session), len(commands)), services: make(map[string]bool)}
+	s.cfg.Put("simulation_mode", true)
+	s.cfg.Put("auto_select_operator", false)
+	s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+	s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+	transport := &operatorPromptTransport{}
+	transport.afterChoice = func() {
+		if len(transport.selected) == 1 {
+			transport.page = gsx.ParseMenu("Select operator\nOperator A")
+		}
+	}
+	session := gsx.New(transport, s.dir)
+	session.ReadMenu = func() gsx.Menu { return transport.page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	s.submit("request jetway")
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	if !s.overlay || s.menu.Title != "Select operator" {
+		t.Fatalf("fixture did not display operator prompt: %v", s.lines)
+	}
+	transport.open = false
+	for _, command := range commands {
+		s.submit(command)
+	}
+	for range commands {
+		(<-s.jobs)(s.ctx, session)
+	}
+	s.main.FrameFn()
+	if !slices.Equal(transport.selected, []int{0, 1}) {
+		t.Fatalf("expected jetway and stairs only, sent %v: %v", transport.selected, s.lines)
+	}
+	if transport.closes != 0 {
+		t.Fatalf("already closed prompt received %d close writes", transport.closes)
 	}
 }
 
