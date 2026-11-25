@@ -187,7 +187,8 @@ func TestScriptedSession(t *testing.T) {
 	if !reflect.DeepEqual(f.writes, want) {
 		t.Errorf("writes = %+v, want %+v", f.writes, want)
 	}
-	if clock != 2580*time.Millisecond {
+	// The operator page is already visible after the service choice settles.
+	if clock != 2080*time.Millisecond {
 		t.Errorf("clock = %v", clock)
 	}
 	s.Sim = &fakeSim{values: map[string]float64{Started: 1}}
@@ -389,20 +390,20 @@ func TestStatusRejectsNonFiniteGroundSpeed(t *testing.T) {
 
 type operatorSim struct {
 	*fakeSim
-	failClose bool
+	closeErr error
 }
 
 func (f *operatorSim) Set(ctx context.Context, key string, value float64) error {
 	// Fail only the close write so the test still reaches the operator menu.
-	if key == MenuOpen && value == 0 && f.failClose {
-		return errors.New("menu could not close")
+	if key == MenuOpen && value == 0 && f.closeErr != nil {
+		return f.closeErr
 	}
 	return f.fakeSim.Set(ctx, key, value)
 }
 
-func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
-	for _, failClose := range []bool{false, true} {
-		f := &operatorSim{fakeSim: &fakeSim{values: map[string]float64{}}, failClose: failClose}
+func TestOperatorWithoutGSXChoiceAttemptsClose(t *testing.T) {
+	for _, closeErr := range []error{nil, errors.New("menu could not close")} {
+		f := &operatorSim{fakeSim: &fakeSim{values: map[string]float64{}}, closeErr: closeErr}
 		menu := ParseMenu("Ramp\nRequest Jetway\nClose")
 		f.onWrite = func(key string, value float64) {
 			if key == MenuChoice {
@@ -412,18 +413,19 @@ func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
 		session := New(f, "")
 		session.ReadMenu = func() Menu { return menu }
 		session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-		if _, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true); err != nil {
-			t.Fatal(err)
+		selected, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true)
+		if selected != "Request Jetway" || !errors.Is(err, closeErr) {
+			t.Fatalf("close error = %v, selected = %q, want error %v and Request Jetway", err, selected, closeErr)
 		}
 		choices := 0
 		for _, write := range f.writes {
-			if write.key == MenuChoice && write.value == 0 {
+			if write.key == MenuChoice {
 				choices++
 			}
 		}
-		// Select the first operator only if the attempt to close that menu failed.
-		if (choices == 2) != failClose || (f.values[MenuOpen] == 1) != failClose {
-			t.Fatalf("failedClose=%t open=%v choices=%d", failClose, f.values[MenuOpen], choices)
+		// Auto mode sends only the service choice and releases the remote flag.
+		if choices != 1 || f.values[Remote] != 0 || (f.values[MenuOpen] == 1) != (closeErr != nil) {
+			t.Fatalf("close error = %v, open = %v, remote = %v, choices = %d", closeErr, f.values[MenuOpen], f.values[Remote], choices)
 		}
 	}
 }
