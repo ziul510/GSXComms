@@ -844,17 +844,21 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	// Only a changed operator page can trigger an automatic selection
 	if autoOperator || choiceErr != nil || s.OnManualOperator != nil {
-		for range 6 {
-			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
-				return selected, errors.Join(choiceErr, err)
+		for attempt := range 7 {
+			// The service choice already allowed GSX time to publish its next page
+			if attempt > 0 {
+				if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
+					return selected, errors.Join(choiceErr, err)
+				}
 			}
 			page := s.ReadMenu()
 			// GSX can briefly leave the old page in place or clear it while opening the next page.
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
 			}
+			i := optionContaining(page.Options, []string{"gsx choice"})
 			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
-			operator := strings.Contains(title, " operator ") || strings.Contains(title, " operators ")
+			operator := i >= 0 || strings.Contains(title, " operator ") || strings.Contains(title, " operators ")
 			// Require the expected page before interpreting an uncertain service
 			if (choiceErr != nil || !autoOperator) && !operator {
 				continue
@@ -865,12 +869,16 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 				}
 				return menu.Options[index], nil
 			}
-			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
 			if i >= 0 {
 				return menu.Options[index], s.ChooseOn(ctx, page, i)
 			}
-			if operator {
-				return menu.Options[index], s.dismissOperator(ctx, page)
+			// A service can open a follow-up with a title that never says operator
+			if operator || service != "" {
+				// Leave any page that replaced the inspected snapshot alone
+				if !page.SameSnapshot(s.CurrentMenu()) {
+					return menu.Options[index], ErrMenuChanged
+				}
+				return menu.Options[index], s.Release(ctx)
 			}
 		}
 	}
@@ -895,29 +903,4 @@ func (s *Session) Location(ctx context.Context) (float64, float64, error) {
 
 func (s *Session) Altitude(ctx context.Context) (float64, error) {
 	return s.get(ctx, "PLANE ALTITUDE")
-}
-
-// Check the menu flag before falling back to the first row
-func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
-	if !page.SameSnapshot(s.CurrentMenu()) {
-		return ErrMenuChanged
-	}
-	err := s.Release(ctx)
-	if errors.Is(err, ErrWriteUncertain) || errors.Is(err, ErrDisconnected) {
-		return err
-	}
-	if waitErr := s.Sleep(ctx, 200*time.Millisecond); waitErr != nil {
-		return errors.Join(err, waitErr)
-	}
-	open, readErr := s.get(ctx, MenuOpen)
-	if readErr != nil || open < 0.5 {
-		return errors.Join(err, readErr)
-	}
-	if !page.SameSnapshot(s.CurrentMenu()) {
-		return ErrMenuChanged
-	}
-	if enableErr := s.enableRemote(ctx); enableErr != nil {
-		return errors.Join(err, enableErr)
-	}
-	return s.ChooseOn(ctx, page, 0)
 }
