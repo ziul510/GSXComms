@@ -29,6 +29,11 @@ pwsh -File scripts/package.ps1
 
 Find the ZIP at `dist/release/GSXComms-Windows-x64.zip`. You can also download it as an artifact after running the [Build Windows release workflow](.github/workflows/build.yml) manually. See the [verification matrix](docs/parity.md) for simulator test coverage.
 
+## Special thanks
+A special thanks to:
+- Aviationist101, for providing me with the icon for the app
+- ilanoboy, for helping me with testing on earlier versions
+
 ## License
 
 Copyright 2026 ziul510. GSXComms code is licensed under [Apache 2.0](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES) for component licenses.
