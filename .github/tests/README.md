@@ -10,4 +10,4 @@ The runner uses a temporary Go overlay to run the tests in their original packag
 
 Set `GSXCOMMS_TEST_ASR_MODEL` to the absolute path to a verified Parakeet or Orukeet model directory. The restart test uses `build/workers/sherpa/gsxspeech.exe` with its adjacent runtime DLLs. Set `GSXCOMMS_TEST_ASR_WORKER` to an absolute executable path to test another installation.
 
-Set `GSXCOMMS_TEST_LIVE_WINDOWS_UI=1` on an interactive Windows desktop to check dialog placement against the first rendered layout. Run once with `GOGUI_RENDERER=gl` and once with `GOGUI_RENDERER=soft` to cover both renderers.
+Set `GSXCOMMS_TEST_LIVE_WINDOWS_UI=1` on an interactive Windows desktop to check dialog placement against the first rendered layout and dark title bars at first show. Run once with `GOGUI_RENDERER=gl` and once with `GOGUI_RENDERER=soft` to cover both renderers.

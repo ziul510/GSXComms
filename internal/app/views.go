@@ -273,6 +273,7 @@ func (s *state) dialog(cfg gui.WindowCfg, busy func() bool, onClose func(), view
 			w.Close()
 			return
 		}
+		// Keep the backend's dark caption request if the native hook was unavailable
 		w.TitlebarDark(true)
 		w.SetView(view)
 		if onInit != nil {

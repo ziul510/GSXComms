@@ -22,9 +22,12 @@ const (
 	swpNoActivate    = 0x0010
 	dpiPerMonitor    = 2
 	defaultDPI       = 96
+	// Windows 10 versions 1809 and 1909 use the older DWM attribute number
+	dwmImmersiveDarkMode    = 20
+	dwmImmersiveDarkModeOld = 19
 )
 
-// The app's window thread owns the placement hook and its target
+// The app's window thread owns the creation hook and its target
 var dialogPlacement struct {
 	main, class uintptr
 }
@@ -73,12 +76,13 @@ var (
 	isWindowVisible     = user.NewProc("IsWindowVisible")
 	isIconic            = user.NewProc("IsIconic")
 	callNextHookEx      = user.NewProc("CallNextHookEx")
+	dwmSetAttribute     = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	dialogCreateHook    = windows.NewCallback(afterDialogCreate)
 	monitorCallback     = windows.NewCallback(collectWorkArea)
 )
 
 // Install on the GUI thread before go-gui creates any secondary windows
-func installDialogPlacement() func() {
+func installDialogWindowHook() func() {
 	main := windowByTitle("GSXComms")
 	class, _, _ := getClassLong.Call(main, gclAtom)
 	// A missing native handle leaves Windows' default placement available
@@ -97,17 +101,31 @@ func installDialogPlacement() func() {
 	}
 }
 
-// Position dialogs before go-gui reads the client size or shows the window
+// Set the title bar and position before go-gui sizes or shows the dialog
 func afterDialogCreate(code int32, sentByThread uintptr, msg *windowMessageResult) uintptr {
 	// Other messages and helper windows from different classes use default placement
 	if code == 0 && msg.message == wmCreate && msg.result == 0 && msg.hwnd != dialogPlacement.main {
 		class, _, _ := getClassLong.Call(msg.hwnd, gclAtom)
 		if class != 0 && class == dialogPlacement.class {
+			setInitialDialogTitlebarDark(msg.hwnd)
 			placeDialogWindow(msg.hwnd, dialogPlacement.main)
 		}
 	}
 	result, _, _ := callNextHookEx.Call(0, uintptr(code), sentByThread, uintptr(unsafe.Pointer(msg)))
 	return result
+}
+
+// Set the caption while the dialog is hidden, before go-gui calls OnInit
+func setInitialDialogTitlebarDark(hwnd uintptr) {
+	// Leave the caption to Windows if DWM is unavailable
+	if dwmSetAttribute.Find() != nil {
+		return
+	}
+	dark := int32(1)
+	if hr, _, _ := dwmSetAttribute.Call(hwnd, dwmImmersiveDarkMode, uintptr(unsafe.Pointer(&dark)), unsafe.Sizeof(dark)); hr != 0 {
+		// Older Windows 10 builds may reject the current attribute number
+		dwmSetAttribute.Call(hwnd, dwmImmersiveDarkModeOld, uintptr(unsafe.Pointer(&dark)), unsafe.Sizeof(dark))
+	}
 }
 
 // Collect current work areas so placement can use any connected display

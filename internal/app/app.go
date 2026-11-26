@@ -167,7 +167,7 @@ func Run(dir string) {
 		s.traceFailure("AUDIO", "Accent pack check failed", err)
 		s.log("ERR", err.Error())
 	}
-	var stopDialogPlacement func()
+	var stopDialogHook func()
 	w := gui.NewWindow(gui.WindowCfg{
 		Title: "GSXComms", Width: 420, Height: 680, MinWidth: 380, MinHeight: 560, State: s, IconPNG: icon,
 		OnInit: func(w *gui.Window) {
@@ -178,7 +178,7 @@ func Run(dir string) {
 			s.prepareSpeech(true, false)
 			s.configureTray()
 			s.setTopmost()
-			stopDialogPlacement = installDialogPlacement()
+			stopDialogHook = installDialogWindowHook()
 			// Load the active PTT key before the keyboard hook starts listening
 			captureKey.Store(bindingKey(config.Get[config.Binding](s.cfg, "ptt_bind")))
 			go listenKeyboard(ctx, s.keyboardEvent)
@@ -199,10 +199,10 @@ func Run(dir string) {
 	})
 	// Request a dark caption before the backend shows the window
 	w.TitlebarDark(true)
-	// Keep the native placement hook scoped to the main window's event loop
+	// Keep the native dialog hook scoped to the main window's event loop
 	defer func() {
-		if stopDialogPlacement != nil {
-			stopDialogPlacement()
+		if stopDialogHook != nil {
+			stopDialogHook()
 		}
 	}()
 	backend.RunApp(s.host, w)

@@ -32,7 +32,7 @@ func TestLiveDialogPlacementSize(t *testing.T) {
 	main = gui.NewWindow(gui.WindowCfg{
 		Title: "GSXComms", Width: 280, Height: 220,
 		OnInit: func(*gui.Window) {
-			stopPlacement = installDialogPlacement()
+			stopPlacement = installDialogWindowHook()
 			if stopPlacement == nil {
 				t.Error("could not install dialog placement")
 				return
