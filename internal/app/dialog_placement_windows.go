@@ -160,8 +160,8 @@ func placeDialogWindow(hwnd, mainHWND uintptr) {
 	if placed != intended {
 		moved, _, _ := setWindowPos.Call(hwnd, 0, uintptr(placed.Min.X), uintptr(placed.Min.Y),
 			uintptr(placed.Dx()), uintptr(placed.Dy()), swpNoZOrder|swpNoActivate)
-		// Let go-gui read the final client size after it attaches the window
 		if moved != 0 {
+			// go-gui may cache the placed size before it updates the logical size
 			user.NewProc("PostMessageW").Call(hwnd, wmSize, 0, 0)
 		}
 	}

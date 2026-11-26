@@ -5,8 +5,76 @@ package app
 
 import (
 	"image"
+	"os"
 	"testing"
+	"time"
+	"unsafe"
+
+	"github.com/go-gui-org/go-gui/gui"
+	"github.com/go-gui-org/go-gui/gui/backend"
 )
+
+// Check that the first layout uses the client size after native placement
+func TestLiveDialogPlacementSize(t *testing.T) {
+	if os.Getenv("GSXCOMMS_TEST_LIVE_WINDOWS_UI") != "1" {
+		t.Skip("enable with GSXCOMMS_TEST_LIVE_WINDOWS_UI=1 on an interactive Windows desktop")
+	}
+	t.Setenv("GOGUI_DEVICE_SCALE", "1")
+	host := gui.NewApp()
+	// Let the backend destroy both native windows before leaving the test
+	host.ExitMode = gui.ExitOnTrayRemoved
+	const title = "GSXComms dialog placement test"
+	const requestedHeight = 16000
+	var client screenRect
+	var got image.Point
+	var stopPlacement func()
+	var main *gui.Window
+	main = gui.NewWindow(gui.WindowCfg{
+		Title: "GSXComms", Width: 280, Height: 220,
+		OnInit: func(*gui.Window) {
+			stopPlacement = installDialogPlacement()
+			if stopPlacement == nil {
+				t.Error("could not install dialog placement")
+				return
+			}
+			host.OpenWindow(gui.WindowCfg{
+				Title: title, Width: 280, Height: requestedHeight,
+				OnInit: func(w *gui.Window) {
+					hwnd := windowByTitle(title)
+					ok, _, _ := user.NewProc("GetClientRect").Call(hwnd, uintptr(unsafe.Pointer(&client)))
+					if ok == 0 {
+						t.Error("could not read the dialog client size")
+					}
+					w.SetView(func(w *gui.Window) gui.View {
+						// Capture the first layout, before a later resize can repair it
+						if got == (image.Point{}) {
+							got.X, got.Y = w.WindowSize()
+							w.Close()
+							main.Close()
+						}
+						return gui.Label(title, gui.TextStyle{})
+					})
+				},
+			})
+		},
+	})
+	// Close every remaining window even when the dialog fails to open or paint
+	timeout := time.AfterFunc(3*time.Second, func() {
+		host.Broadcast(func(w *gui.Window) { w.Close() })
+	})
+	defer timeout.Stop()
+	backend.RunApp(host, main)
+	if stopPlacement != nil {
+		stopPlacement()
+	}
+	want := client.rectangle().Size()
+	if want.Y <= 0 || want.Y >= requestedHeight {
+		t.Fatalf("dialog did not shrink to the work area: client size %v", want)
+	}
+	if got != want {
+		t.Fatalf("first dialog layout used %v, want native client size %v", got, want)
+	}
+}
 
 // Cover window placement inside a work area, across monitors, and in tight spaces
 func TestDialogPosition(t *testing.T) {
