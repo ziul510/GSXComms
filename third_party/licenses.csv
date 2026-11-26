@@ -3,11 +3,11 @@ Go,github.com/alecthomas/assert/v2,v2.11.0,MIT,6c4d41af4ae6d2509db1349d66b7bde06
 Go,github.com/alecthomas/chroma/v2,v2.27.0,MIT,0e4d7020384571b1bb5578defee4484f918858749511dd03005d2651f818edaf
 Go,github.com/alecthomas/repr,v0.5.2,MIT,95785f68b44a6f49a4b567955bca503daa2e832d5367b53c4114cc7b7cd8db85
 Go,github.com/boombuler/barcode,v1.0.1,MIT,5cbc9d0ca8feb55c8dff8cf4e75dfadb312ef0b9109cac052e2dddd42adb9fb1
-Go,github.com/dlclark/regexp2/v2,v2.2.2,MIT,ea375a1b438ac693f61d13fcc07bada43e26b6167e67c01015c69c1955e0af38
-Go,github.com/ebitengine/oto/v3,v3.3.2,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
+Go,github.com/dlclark/regexp2/v2,v2.13.2,MIT,ea375a1b438ac693f61d13fcc07bada43e26b6167e67c01015c69c1955e0af38
+Go,github.com/ebitengine/oto/v3,v3.5.1,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
 Go,github.com/ebitengine/purego,v0.11.3,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f7ba3756dc1ffc05bfe912875fee73f505a5
-Go,github.com/go-gui-org/go-glyph,v1.28.0,MIT,a5f7f560f7406ecf4ac147909bb1074dfefee346e580ef77e4d23dbcb7990764
-Go,github.com/go-gui-org/go-gui,v0.98.0,MIT,e894092ed118a24588c49b0c9db58956834cdcca91b4dc2fef77355f9d16eb73
+Go,github.com/go-gui-org/go-glyph,v1.29.2,MIT,a5f7f560f7406ecf4ac147909bb1074dfefee346e580ef77e4d23dbcb7990764
+Go,github.com/go-gui-org/go-gui,v0.99.1,MIT,e894092ed118a24588c49b0c9db58956834cdcca91b4dc2fef77355f9d16eb73
 Go,github.com/go-pdf/fpdf,v0.9.0,MIT,6524a5eb749053c4d04482a67331b044ab1555abe058627b35ddca1b300e145e
 Go,github.com/go-text/typesetting,v0.3.5,BSD-3-Clause (chosen from Unlicense OR BSD-3-Clause),b792d2c1e241ea37735f580ab6812cc8409ca98314e46db2ffc762420f22faaf
 Go,github.com/go-text/typesetting-utils,v0.0.0-20260419141703-4ffe8874dabc,Unlicense OR BSD-3-Clause,1cbb0acc808c76d131c4f21ed607c4afd7966b4308fdfce81d45a9275ae448ac
@@ -18,11 +18,11 @@ Go,github.com/hajimehoshi/oto/v2,v2.3.1,Apache-2.0,9717f191ee48efb7453c4cfdd1c7f
 Go,github.com/hexops/gotextdiff,v1.0.3,BSD-3-Clause,888a00ca938af439fa00f3616e920712ac0b6017120434b034b93c51b10aba3e
 Go,github.com/icza/bitio,v1.1.0,Apache-2.0,dfdafd57185de8c19b89f9e68d38f891218b854ed89d5300e39d9c5f17816a23
 Go,github.com/jezek/xgb,v1.3.1,BSD-3-Clause,75bcaaae1860dcda9887ac55829ccaddd48aa4f3f085854fe19db13be5d41dd4
-Go,github.com/jfreymuth/oggvorbis,v1.0.5,MIT,f1f0f839c5141eedcdc9c2bba172d8d3f265a2ecf3e3acd4bdd27ae014b2a131
+Go,github.com/jfreymuth/oggvorbis,v1.0.6,MIT,f1f0f839c5141eedcdc9c2bba172d8d3f265a2ecf3e3acd4bdd27ae014b2a131
 Go,github.com/jfreymuth/pulse,v0.1.3,MIT,f3e51db2216b7b6b6b09255212ea36ac0bf03e911fe6a18c0c0683b9955ec130
-Go,github.com/jfreymuth/vorbis,v1.0.2,MIT,f1f0f839c5141eedcdc9c2bba172d8d3f265a2ecf3e3acd4bdd27ae014b2a131
-Go,github.com/mewkiz/flac,v1.0.12,Unlicense,ca1305a6206d1517dfd19d7369ea0e69f151d1e5c2e6cd1e86a0182b3815f1cc
-Go,github.com/mewkiz/pkg,v0.0.0-20230226050401-4010bf0fec14,Unlicense,4cea191fd2b740f867de5fdac317d866c29acb4706b6912d0d8b2544b065254c
+Go,github.com/mewkiz/flac,v1.0.14,Unlicense,ca1305a6206d1517dfd19d7369ea0e69f151d1e5c2e6cd1e86a0182b3815f1cc
+Go,github.com/mewkiz/pkg,v0.0.0-20260703220044-4fb89b18cc87,Unlicense,4cea191fd2b740f867de5fdac317d866c29acb4706b6912d0d8b2544b065254c
+Go,github.com/mewpkg/term,v0.0.0-20241026122259-37a80af23985,Unlicense,4cea191fd2b740f867de5fdac317d866c29acb4706b6912d0d8b2544b065254c
 Go,github.com/phpdave11/gofpdi,v1.0.13,MIT,34c2ed270ec2354c76815ce281eb3237b48dba09ba02c8fce9f56b5bedbdb664
 Go,github.com/pkg/errors,v0.9.1,BSD-2-Clause,61ad9c27af5c1e014a5952afbfb06cd2f59fa93565cb400cd516fed98a7fe7ee
 Go,github.com/rivo/uniseg,v0.4.7,MIT,7370dd2e90a1a7a8db1f785c548eb9f9d91982bbe25887b896fe82fa8fc5ed52
