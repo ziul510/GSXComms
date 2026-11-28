@@ -598,7 +598,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	if err := s.ChooseOn(ctx, menu, index); err != nil {
 		return "", err
 	}
-	// Only a changed operator page can trigger an automatic selection
+	// Wait for GSX to show the page opened by the service choice
 	if autoOperator {
 		for attempt := range 7 {
 			// Check the page immediately, then keep the existing polling window
@@ -612,17 +612,11 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
 			}
-			// Fuel quantities need a user choice even when an operator was automatic
-			if page.IsFuelQuantity() {
-				break
-			}
 			if index := operatorChoice(page); index >= 0 {
 				return selected, s.chooseOperator(ctx, page, index)
 			}
-			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
-			if strings.Contains(title, " operator ") || strings.Contains(title, " operators ") {
-				return selected, s.dismissOperator(ctx, page)
-			}
+			// Leave the first populated page to the idle timeout if nothing matches
+			break
 		}
 	}
 
@@ -641,30 +635,4 @@ func (s *Session) Location(ctx context.Context) (float64, float64, error) {
 
 func (s *Session) Altitude(ctx context.Context) (float64, error) {
 	return s.get(ctx, "PLANE ALTITUDE")
-}
-
-// Check the menu flag before falling back to the first row
-func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
-	if !page.Same(s.ReadMenu()) {
-		return ErrMenuChanged
-	}
-	err := s.Release(ctx)
-	if errors.Is(err, errWriteUncertain) || errors.Is(err, ErrDisconnected) {
-		return err
-	}
-	if waitErr := s.Sleep(ctx, 200*time.Millisecond); waitErr != nil {
-		return errors.Join(err, waitErr)
-	}
-	open, readErr := s.get(ctx, MenuOpen)
-	if readErr != nil || open < 0.5 {
-		return errors.Join(err, readErr)
-	}
-	if !page.Same(s.ReadMenu()) {
-		return ErrMenuChanged
-	}
-	if enableErr := s.set(ctx, Remote, 1); enableErr != nil {
-		return errors.Join(err, enableErr)
-	}
-	s.remote = true
-	return s.chooseOperator(ctx, page, 0)
 }

@@ -787,15 +787,15 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	}
 }
 
-// Automatic operator clicks are logged without a service or error cue
+// One automatic click ends the command and leaves the menu to its close timer
 func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 	for _, test := range []struct {
 		name, initial, command, outcome string
 		choices                         []int
 		waitError                       bool
 	}{
-		{"pending operator", "", "prepare ramp", "0/1 services ok", []int{1}, false},
-		{"service then operator", "Ramp\nRequest refueling", "prepare ramp", "1/1 services ok", []int{0, 1}, false},
+		{"pending operator", "", "prepare ramp", "0/2 services ok", []int{1}, false},
+		{"service then operator", "Ramp\nRequest refueling", "prepare ramp", "1/2 services ok", []int{0, 1}, false},
 		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", []int{0, 1}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -806,7 +806,7 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			s.cfg.Put("simulation_mode", true)
 			s.cfg.Put("auto_select_operator", true)
 			s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
-			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING"}}})
+			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING", "JETWAY"}}})
 			operator := gsx.ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
 			page := operator
 			// The service choice advances the fake panel to the operator prompt
@@ -816,10 +816,16 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			transport := &menuChoices{}
 			transport.afterChoice = func() { page = operator }
 			session := gsx.New(transport, t.TempDir())
-			session.ReadMenu = func() gsx.Menu { return page }
-			session.Sleep = func(ctx context.Context, _ time.Duration) error {
+			session.ReadMenu = func() gsx.Menu {
+				// A second page could contain another GSX Choice or a preset match
+				if len(transport.selected) == len(test.choices) {
+					t.Fatal("read the page after the automatic click")
+				}
+				return page
+			}
+			session.Sleep = func(ctx context.Context, delay time.Duration) error {
 				// The audit event must survive a wait failure after the write succeeds
-				if test.waitError && len(transport.selected) == len(test.choices) {
+				if test.waitError && delay == 300*time.Millisecond && len(transport.selected) == len(test.choices) {
 					return errors.New(test.outcome)
 				}
 				return ctx.Err()
@@ -830,6 +836,13 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			s.main.FrameFn()
 			if !slices.Equal(transport.selected, test.choices) || len(s.audioQueue) != 0 {
 				t.Fatalf("GSX choices = %v, audio = %v", transport.selected, s.audioQueue)
+			}
+			closeAt := s.operatorCloseAt
+			if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, closeAt.Add(-time.Nanosecond)) || !transport.open {
+				t.Fatal("GSX menu did not stay open until the close deadline")
+			}
+			if !s.handleOperatorMenuTimeout(session, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
+				t.Fatal("GSX menu did not close at the deadline")
 			}
 			message := `Auto-selected menu option "GSX Choice – Menzies"`
 			console := strings.Join(s.lines, "\n")

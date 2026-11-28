@@ -414,49 +414,32 @@ func TestStatusRejectsNonFiniteGroundSpeed(t *testing.T) {
 	}
 }
 
-type operatorSim struct {
-	*fakeSim
-	failClose bool
-}
-
-func (f *operatorSim) Set(ctx context.Context, key string, value float64) error {
-	// Fail only the close write so the test still reaches the operator menu.
-	if key == MenuOpen && value == 0 && f.failClose {
-		return errors.New("menu could not close")
+// The first visible page without a GSX Choice stays open for the idle timer
+func TestOperatorWithoutGSXChoiceLeavesMenuOpen(t *testing.T) {
+	f := &fakeSim{values: map[string]float64{}}
+	menu := ParseMenu("Ramp\nRequest Jetway\nClose")
+	f.onWrite = func(key string, _ float64) {
+		if key == MenuChoice {
+			menu = ParseMenu("Choose your operator\nSwissport\nMenzies")
+		}
 	}
-	return f.fakeSim.Set(ctx, key, value)
-}
-
-func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
-	for _, failClose := range []bool{false, true} {
-		f := &operatorSim{fakeSim: &fakeSim{values: map[string]float64{}}, failClose: failClose}
-		menu := ParseMenu("Ramp\nRequest Jetway\nClose")
-		f.onWrite = func(key string, value float64) {
-			if key == MenuChoice {
-				menu = ParseMenu("Choose your operator\nSwissport\nMenzies")
-			}
+	session := New(f, "")
+	operatorReads := 0
+	session.ReadMenu = func() Menu {
+		// Each read of the new page would give automation another chance to click
+		if menu.Title == "Choose your operator" {
+			operatorReads++
 		}
-		session := New(f, "")
-		session.ReadMenu = func() Menu { return menu }
-		session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-		var autoSelections []string
-		session.OnAutoSelection = func(label string) { autoSelections = append(autoSelections, label) }
-		if _, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true); err != nil {
-			t.Fatal(err)
-		}
-		choices := 0
-		for _, write := range f.writes {
-			if write.key == MenuChoice && write.value == 0 {
-				choices++
-			}
-		}
-		// Select the first operator only if the attempt to close that menu failed.
-		if (choices == 2) != failClose || (f.values[MenuOpen] == 1) != failClose {
-			t.Fatalf("failedClose=%t open=%v choices=%d", failClose, f.values[MenuOpen], choices)
-		}
-		if (!failClose && len(autoSelections) != 0) || (failClose && !reflect.DeepEqual(autoSelections, []string{"Swissport"})) {
-			t.Fatalf("failedClose=%t auto-selections = %q", failClose, autoSelections)
-		}
+		return menu
+	}
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	session.OnAutoSelection = func(label string) { t.Errorf("clicked nonmatching option %q", label) }
+	if _, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true); err != nil {
+		t.Fatal(err)
+	}
+	want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}}
+	if !reflect.DeepEqual(f.writes, want) || !session.RemoteActive() || operatorReads != 1 {
+		t.Fatalf("writes = %v, remote active = %t, operator reads = %d", f.writes, session.RemoteActive(), operatorReads)
 	}
 }
 
