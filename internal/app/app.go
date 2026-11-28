@@ -490,7 +490,8 @@ func (s *state) simulator() {
 					lastMenu, s.menuActivity = menu, time.Now()
 				}
 				switch {
-				case time.Since(s.menuActivity) >= 10*time.Second:
+				// Idle cleanup would close a fuel prompt while the pilot is deciding
+				case time.Since(s.menuActivity) >= 10*time.Second && !menu.IsFuelQuantity():
 					s.trace("GSX", "Releasing the idle menu")
 					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
 					// The cache already contains the latest page, including across release.
@@ -839,16 +840,48 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 			session.BeforeChoice = nil
 			session.AfterSelection = nil
 		}()
-		if idx, ok := commands.Number(text); ok && overlay {
+		idx, numbered := commands.Number(text)
+		explicitIndex, explicitNumber := commands.ExplicitNumber(text)
+		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
+		// A pending fuel prompt has its own choices, including in the native GSX panel
+		if session.Connected() && (!slices.Contains([]string{"preset", "ambiguous", "greeting"}, action.Kind) || numbered && overlay) {
+			live := session.ReadMenu()
+			if live.IsFuelQuantity() {
+				spoken := raw
+				if numbered || explicitNumber {
+					spoken = text
+				}
+				index := live.FuelChoice(spoken)
+				err := gsx.ErrNoMenuMatch
+				switch {
+				// A numbered command still refers to the rows shown in the app overlay
+				case (numbered || explicitNumber) && overlay && len(page.Options) > 0 && !page.Same(live):
+					err = gsx.ErrMenuChanged
+				case index >= 0:
+					s.menuActivity = time.Now()
+					// Reopening or pulsing remote control can dismiss the GSX prompt
+					err = session.ChooseOn(ctx, live, index)
+				}
+				if err != nil {
+					s.traceFailure("GSX", "Fuel quantity selection failed", err)
+					fail(err.Error())
+				} else {
+					s.async(func() {
+						s.log("CMD", input)
+						s.log("GSX", fmt.Sprintf("Fuel option %q selected", live.Options[index]))
+					})
+				}
+				return
+			}
+		}
+		if numbered && overlay {
 			s.async(func() { s.log("CMD", input) })
 			s.selectNumber(ctx, session, page, idx, prefs)
 			return
 		}
 		s.menuActivity = time.Now()
 		log := func(sender, msg string) { s.async(func() { s.log(sender, msg) }) }
-		action := words.Route(text, raw, config.Get[[]config.Preset](prefs, "presets"), config.Get[bool](prefs, "enable_menu_matching"))
 		s.trace("CMD", fmt.Sprintf("Route=%s, services=%d", action.Kind, len(action.Services)))
-		explicitIndex, explicitNumber := commands.ExplicitNumber(text)
 		// Select a visible slot by number even with Broader Mode disabled
 		if overlay && explicitNumber && explicitIndex >= 0 && action.Kind != "preset" {
 			log("CMD", input)

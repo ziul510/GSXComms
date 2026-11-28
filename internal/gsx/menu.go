@@ -344,10 +344,11 @@ func (s *Session) Close() error {
 
 // Let GSX process the slot before the next choice
 func (s *Session) Choose(ctx context.Context, index int) error {
-	return s.choose(ctx, s.ReadMenu(), index, nil, nil)
+	// Keep console selection cleanup for callers that manage the menu directly
+	return s.choose(ctx, s.ReadMenu(), index, nil, func() { s.remote = true })
 }
 
-// ChooseOn checks the page again because a GSX slot can change while a command waits
+// ChooseOn validates the page without taking ownership of a native GSX prompt
 func (s *Session) ChooseOn(ctx context.Context, page Menu, index int) error {
 	return s.chooseOn(ctx, page, index, s.AfterSelection)
 }
@@ -375,7 +376,6 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
 		return err
 	}
-	s.remote = true
 	// Start command side effects before waiting for GSX to update the panel
 	if afterSelection != nil {
 		afterSelection()
@@ -565,6 +565,10 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			// GSX can briefly leave the old page in place or clear it while opening the next page.
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
+			}
+			// Fuel quantities need a user choice even when an operator was automatic
+			if page.IsFuelQuantity() {
+				break
 			}
 			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
 			if i >= 0 {
