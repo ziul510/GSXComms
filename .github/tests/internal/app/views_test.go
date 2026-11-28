@@ -651,8 +651,13 @@ type menuChoices struct {
 	open        bool
 }
 
-// Zero lets the session exercise its normal closed menu sequence in tests
-func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
+// Keep the simulator flag in sync with menu open and close writes
+func (m *menuChoices) Get(ctx context.Context, name string) (float64, error) {
+	if name == gsx.MenuOpen && m.open {
+		return 1, ctx.Err()
+	}
+	return 0, ctx.Err()
+}
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -784,6 +789,124 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	(<-s.jobs)(s.ctx, session)
 	if !slices.Equal(transport.selected, []int{1}) {
 		t.Fatalf("GSX choices = %v, want [1] for Jetway", transport.selected)
+	}
+}
+
+// An automatic click ends its step silently and only presets keep executing
+func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
+	for _, test := range []struct {
+		name, initial, command, outcome, cue string
+		choices                              []int
+		waitError, fuel                      bool
+	}{
+		{"pending operator", "", "request refueling", "request refueling", "", []int{1}, false, false},
+		{"service then operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false, false},
+		{"fuel after operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false, true},
+		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", "", []int{0, 1}, true, false},
+		{"preset after pending operator", "", "prepare ramp", "1/2 services ok", "catering", []int{1, 0}, false, false},
+		{"preset after service operator", "Ramp\nRequest refueling", "prepare ramp", "2/2 services ok", "catering", []int{0, 1, 0}, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+				jobs: make(chan func(context.Context, *gsx.Session), 1), debug: make(chan debugEvent, 10)}
+			s.debugEnabled.Store(true)
+			s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+			s.cfg.Put("simulation_mode", true)
+			s.cfg.Put("auto_select_operator", true)
+			s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING", "CATERING"}}})
+			operator := gsx.ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
+			page := operator
+			// The service choice advances the fake panel to the operator prompt
+			if test.initial != "" {
+				page = gsx.ParseMenu(test.initial)
+			}
+			transport := &menuChoices{open: test.initial == ""}
+			fuel := gsx.ParseMenu("Select refueling level\n50%\n100%")
+			transport.afterChoice = func() {
+				// Fuel prompts replace the operator page once GSX chooses the provider
+				if test.fuel && len(transport.selected) == len(test.choices) {
+					page = fuel
+				} else if test.cue == "" || len(transport.selected) < len(test.choices)-1 {
+					page = operator
+				}
+			}
+			session := gsx.New(transport, t.TempDir())
+			session.ReadMenu = func() gsx.Menu {
+				// Standalone commands must never read back after the automatic click
+				if test.cue == "" && len(transport.selected) == len(test.choices) {
+					t.Fatal("read the page after the automatic click")
+				}
+				return page
+			}
+			var operatorWait time.Duration
+			session.Sleep = func(ctx context.Context, delay time.Duration) error {
+				// Couatl can leave the operator page visible beyond the click's 300 ms wait
+				if test.cue != "" && len(transport.selected) == len(test.choices)-1 {
+					operatorWait += delay
+					if operatorWait >= 400*time.Millisecond {
+						page = gsx.ParseMenu("Ramp\nRequest catering")
+					}
+				}
+				// The audit event must survive a wait failure after the write succeeds
+				if test.waitError && delay == 300*time.Millisecond && len(transport.selected) == len(test.choices) {
+					return errors.New(test.outcome)
+				}
+				return ctx.Err()
+			}
+
+			s.submit(test.command)
+			(<-s.jobs)(s.ctx, session)
+			s.main.FrameFn()
+			if !slices.Equal(transport.selected, test.choices) {
+				t.Fatalf("GSX choices = %v, want %v", transport.selected, test.choices)
+			}
+			// Only the later preset step may respond and supersede the operator timeout
+			if test.cue != "" {
+				if len(s.audioQueue) != 1 || s.audioQueue[0].cue != test.cue || !s.operatorCloseAt.IsZero() {
+					t.Fatalf("audio = %v, operator deadline = %v", s.audioQueue, s.operatorCloseAt)
+				}
+			} else {
+				if len(s.audioQueue) != 0 {
+					t.Fatalf("unexpected audio = %v", s.audioQueue)
+				}
+				closeAt := s.operatorCloseAt
+				if test.fuel {
+					if closeAt.IsZero() || !page.IsFuelQuantity() || s.handleOperatorMenuTimeout(session, page, closeAt) || !transport.open || !s.operatorCloseAt.IsZero() {
+						t.Fatal("automatic operator close dismissed the fuel quantity prompt")
+					}
+				} else if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, page, closeAt.Add(-time.Nanosecond)) || !transport.open {
+					t.Fatal("GSX menu did not stay open until the close deadline")
+				} else if !s.handleOperatorMenuTimeout(session, page, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
+					t.Fatal("GSX menu did not close at the deadline")
+				}
+			}
+			message := `Auto-selected menu option "GSX Choice – Menzies"`
+			console := strings.Join(s.lines, "\n")
+			if !strings.Contains(console, test.outcome) {
+				t.Fatalf("unexpected console: %s", console)
+			}
+			var consoleTimestamp string
+			for _, line := range s.lines {
+				if timestamp, ok := strings.CutSuffix(strings.TrimPrefix(line, "[GSX]: "), "  "+message); ok {
+					consoleTimestamp = timestamp
+					break
+				}
+			}
+			if _, err := time.Parse("2006-01-02 15:04:05.000", consoleTimestamp); err != nil {
+				t.Fatalf("missing timestamped auto-selection in console: %s", console)
+			}
+			for len(s.debug) != 0 {
+				line := (<-s.debug).line
+				if timestamp, _, _ := strings.Cut(line, "  "); strings.Contains(line, message) {
+					if _, err := time.Parse("2006-01-02 15:04:05.000", timestamp); err != nil {
+						t.Fatalf("invalid debug timestamp: %s", line)
+					}
+					return
+				}
+			}
+			t.Fatal("auto-selection missing from debug log")
+		})
 	}
 }
 

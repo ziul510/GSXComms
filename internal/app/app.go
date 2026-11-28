@@ -96,6 +96,7 @@ type state struct {
 	menuWatch                                        bool      // owned by the simulator loop
 	menuOpened                                       bool      // the overlay acquired remote control
 	menuActivity                                     time.Time
+	operatorCloseAt                                  time.Time // owned by the simulator loop
 	lastConnect                                      time.Time
 	servicesMu                                       sync.Mutex
 	services                                         map[string]bool
@@ -423,6 +424,8 @@ func (s *state) simulator() {
 	session.OnChoice = func(page gsx.Menu, index int) {
 		s.trace("GSX", fmt.Sprintf("Selected slot %d of %d", index+1, len(page.Options)))
 		s.menuActivity = time.Now()
+		// A new explicit choice supersedes an earlier automatic close
+		s.operatorCloseAt = time.Time{}
 		// The choice can open another prompt, so hiding the overlay should leave it alone.
 		s.menuOpened = false
 		cache := s.menuCache.Load()
@@ -449,6 +452,7 @@ func (s *state) simulator() {
 			pollDone = nil
 			s.location.Store(nil)
 			lastMenu, lastReopen, s.menuActivity = gsx.Menu{}, time.Time{}, time.Time{}
+			s.operatorCloseAt = time.Time{}
 			s.menuWatch, s.menuOpened = false, false
 			s.resetServices()
 		default:
@@ -481,26 +485,22 @@ func (s *state) simulator() {
 				s.async(s.retryConnection)
 				continue
 			}
-			if session.RemoteActive() {
+			if session.RemoteActive() || !s.operatorCloseAt.IsZero() {
 				// Idle polls only count as interaction when GSX supplies a changed page.
 				cache := s.menuCache.Load()
 				menu := readMenu()
-				s.rememberMenu(cache, menu, time.Now(), false)
+				now := time.Now()
+				s.rememberMenu(cache, menu, now, false)
 				if len(menu.Options) > 0 && !menu.Same(lastMenu) {
-					lastMenu, s.menuActivity = menu, time.Now()
+					lastMenu, s.menuActivity = menu, now
+				}
+				if s.handleOperatorMenuTimeout(session, menu, now) || !session.RemoteActive() {
+					continue
 				}
 				switch {
 				// Idle cleanup would close a fuel prompt while the pilot is deciding
-				case time.Since(s.menuActivity) >= 10*time.Second && !menu.IsFuelQuantity():
-					s.trace("GSX", "Releasing the idle menu")
-					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
-					// The cache already contains the latest page, including across release.
-					if err := session.Release(ctx); err != nil {
-						s.traceFailure("GSX", "Could not release the idle menu", err)
-					} else {
-						s.menuOpened = false
-					}
-					cancel()
+				case time.Since(s.menuActivity) >= idleMenuTimeout && !menu.IsFuelQuantity():
+					s.releaseIdleMenu(session)
 				case s.menuOpened && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
 					ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
@@ -918,19 +918,21 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		}
 		auto := config.Get[bool](prefs, "auto_select_operator")
 		queuedReadouts := 0
-		execute := func(service string) bool {
+		execute := func(service string) (completed, playErrorCue bool) {
 			// Each preset service gets its own deadline even if earlier ones ran long
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 			defer cancel()
 			if err := gate(); err != nil {
 				log("SYS", err.Error())
-				return false
+				return false, true
 			}
 			if action.Kind == "preset" && service == config.ReadMenuAction {
 				return config.Get[bool](prefs, config.MenuReadoutSetting) && s.sayMenu(serviceCtx, session, prefs, func() {
 					queuedReadouts++
-				})
+				}), false
 			}
+			// A new menu command starts its own idle timeout
+			s.operatorCloseAt = time.Time{}
 			start := time.Now()
 			keywords := words.Keywords(service)
 			customText, custom := strings.CutPrefix(service, config.CustomServicePrefix)
@@ -941,7 +943,22 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 					keywords = []string{customText}
 				}
 			}
+			// Track the click per step so later preset services keep their normal cues
+			var autoSelectedAt time.Time
+			session.OnAutoSelection = func(label string) {
+				autoSelectedAt = time.Now()
+				at := autoSelectedAt.Format("2006-01-02 15:04:05.000")
+				message := fmt.Sprintf("Auto-selected menu option %q", label)
+				s.trace("GSX", message)
+				log("GSX", at+"  "+message)
+			}
 			selected, err := session.Execute(serviceCtx, text, service, keywords, auto)
+			session.OnAutoSelection = nil
+			autoSelected := !autoSelectedAt.IsZero()
+			// Start the close countdown at the click, independent of panel updates
+			if autoSelected {
+				s.operatorCloseAt = autoSelectedAt.Add(idleMenuTimeout)
+			}
 			if action.Kind == "preset" {
 				s.menuActivity = time.Now()
 			}
@@ -956,22 +973,27 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				if matched == "" || custom {
 					matched = menuService(selected)
 				}
-				s.acknowledge(prefs, matched, selected, service != "" || corrected)
+				// Update service state without a voice response after an automatic click
+				s.acknowledge(prefs, matched, selected, !autoSelected && (service != "" || corrected))
 			}
 			// The stuck navigation menu needs the GSX hotfix prompt
 			if errors.Is(err, gsx.ErrHotfix) {
 				s.async(func() { s.showHotfix() })
-				return false
+				return false, !autoSelected
 			}
 			if err != nil {
-				if errors.Is(err, gsx.ErrMenuChanged) {
+				// Refresh stale choices only when no automatic click was sent
+				if !autoSelected && errors.Is(err, gsx.ErrMenuChanged) {
 					session.ReadMenu()
 				}
 				log("GSX", err.Error())
-				return false
+				return false, !autoSelected
 			}
-			log("GSX", fmt.Sprintf("Menu option %q matched and selected", selected))
-			return true
+			// A pending operator click has its own log and does not complete a requested service
+			if selected != "" {
+				log("GSX", fmt.Sprintf("Menu option %q matched and selected", selected))
+			}
+			return selected != "", false
 		}
 		switch action.Kind {
 		case "preset":
@@ -986,7 +1008,10 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				if service == config.ReadMenuAction {
 					readouts++
 				}
-				if !seen[service] && execute(service) {
+				if seen[service] {
+					continue
+				}
+				if completed, _ := execute(service); completed {
 					if service != config.ReadMenuAction {
 						done++
 					}
@@ -1003,7 +1028,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				s.trace("CMD", "Preset completed: "+result)
 			})
 		case "service":
-			if !execute(action.Services[0]) {
+			if _, playErrorCue := execute(action.Services[0]); playErrorCue {
 				s.async(func() { s.cue(prefs, "error", "", true) })
 			}
 		case "menu":

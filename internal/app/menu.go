@@ -22,6 +22,39 @@ type menuSnapshot struct {
 	at   time.Time
 }
 
+const idleMenuTimeout = 10 * time.Second
+
+// Keep the automatic close deadline unless GSX asks for a manual fuel quantity
+func (s *state) handleOperatorMenuTimeout(session *gsx.Session, menu gsx.Menu, now time.Time) bool {
+	if s.operatorCloseAt.IsZero() {
+		return false
+	}
+	// Leave fuel prompts available even when the pilot takes longer than the deadline
+	if menu.IsFuelQuantity() {
+		s.operatorCloseAt = time.Time{}
+		return false
+	}
+	// The deadline is based on the confirmed click, even if GSX changes the page
+	if !now.Before(s.operatorCloseAt) {
+		s.releaseIdleMenu(session)
+	}
+	return true
+}
+
+// Close idle menus without reading another page
+func (s *state) releaseIdleMenu(session *gsx.Session) {
+	s.trace("GSX", "Releasing the idle menu")
+	ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+	defer cancel()
+	// Keep the pending close on failure so the next tick can retry
+	if err := session.Release(ctx); err != nil {
+		s.traceFailure("GSX", "Could not release the idle menu", err)
+		return
+	}
+	s.menuOpened = false
+	s.operatorCloseAt = time.Time{}
+}
+
 // The displayed page is reusable for less than 15 seconds after interaction
 func (m *menuSnapshot) fresh(now time.Time) bool {
 	return m != nil && now.Sub(m.at) < 15*time.Second
@@ -112,6 +145,8 @@ func (s *state) toggleMenu() {
 		if len(session.ReadOpenMenu(ctx).Options) != 0 {
 			return
 		}
+		// An overlay that opens a new menu starts a separate idle period
+		s.operatorCloseAt = time.Time{}
 		menu, err := session.OpenMenuPage(ctx)
 		s.menuOpened = session.RemoteActive()
 		if err != nil {

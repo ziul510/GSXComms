@@ -95,14 +95,16 @@ func ParseMenu(raw string) Menu {
 
 // The transport carries simulator variables The panel file carries the menu text
 type Session struct {
-	Sim            Transport
-	ReadMenu       func() Menu
-	OnReadError    func(error)
-	OnChoice       func(Menu, int)
-	AfterSelection func()
-	BeforeChoice   func() error
-	Sleep          func(context.Context, time.Duration) error
-	remote         bool
+	Sim             Transport
+	ReadMenu        func() Menu
+	OnReadError     func(error)
+	OnChoice        func(Menu, int)
+	OnAutoSelection func(string)
+	AfterSelection  func()
+	BeforeChoice    func() error
+	Sleep           func(context.Context, time.Duration) error
+	remote          bool
+	lastOperator    *Menu
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -326,6 +328,9 @@ func (s *Session) Release(ctx context.Context) error {
 	menuErr := s.set(ctx, MenuOpen, 0)
 	_ = s.Sleep(ctx, 100*time.Millisecond)
 	err := errors.Join(menuErr, s.set(ctx, Remote, 0))
+	if err == nil {
+		s.lastOperator = nil
+	}
 	// Keep tracking remote control after a failed release so idle cleanup can retry
 	s.remote = err != nil && s.Connected()
 	return err
@@ -338,6 +343,7 @@ func (s *Session) Close() error {
 	defer func() {
 		s.Sim = nil
 		s.remote = false
+		s.lastOperator = nil
 	}()
 	// A monitoring session should leave a menu opened by the simulator alone
 	if !s.remote {
@@ -383,6 +389,10 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 	}
 	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
 		return err
+	}
+	// A choice on a different page confirms the previous prompt advanced
+	if s.lastOperator != nil && !page.Same(*s.lastOperator) {
+		s.lastOperator = nil
 	}
 	// Start command side effects before waiting for GSX to update the panel
 	if afterSelection != nil {
@@ -484,11 +494,69 @@ func stuck(options []string) bool {
 	return a != b && slices.Contains(navigation, a) && slices.Contains(navigation, b)
 }
 
+// Report a confirmed click before the panel delay can be interrupted
+func (s *Session) chooseOperator(ctx context.Context, page Menu, index int) error {
+	return s.chooseOn(ctx, page, index, func() {
+		s.lastOperator = &page
+		if s.OnAutoSelection != nil {
+			s.OnAutoSelection(page.Options[index])
+		}
+		if s.AfterSelection != nil {
+			s.AfterSelection()
+		}
+	})
+}
+
+// Wait for Couatl to advance or close a confirmed operator prompt
+func (s *Session) waitAfterOperator(ctx context.Context, previous Menu) (Menu, error) {
+	for range 8 {
+		open, err := s.get(ctx, MenuOpen)
+		if err != nil || open < 0.5 {
+			return Menu{}, err
+		}
+		page := s.ReadMenu()
+		if len(page.Options) != 0 && !page.Same(previous) {
+			return page, nil
+		}
+		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
+			return Menu{}, err
+		}
+	}
+	return Menu{}, ErrMenuChanged
+}
+
 func (s *Session) Execute(ctx context.Context, text, service string, keywords []string, autoOperator bool) (string, error) {
 	if !s.Connected() {
 		return "", ErrDisconnected
 	}
+	// Fuel quantity prompts must stay available for the pilot's choice
+	operatorChoice := func(page Menu) int {
+		if !autoOperator || page.IsFuelQuantity() {
+			return -1
+		}
+		return optionContaining(page.Options, []string{"gsx choice"}, "")
+	}
 	menu := s.ReadMenu()
+	stale := s.lastOperator
+	if stale != nil && (len(menu.Options) == 0 || menu.Same(*stale)) {
+		var err error
+		menu, err = s.waitAfterOperator(ctx, *stale)
+		if err != nil {
+			return "", err
+		}
+	}
+	// Select on a live prompt before reopening the menu can dismiss it
+	if operatorChoice(menu) >= 0 {
+		previous := menu
+		menu = s.ReadOpenMenu(ctx)
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
+		}
+		// The old file can outlive a closed menu and linger after reopening
+		if len(menu.Options) == 0 {
+			stale = &previous
+		}
+	}
 	// Start services by opening the menu A text choice can use the current page
 	if service != "" || !s.RemoteActive() || len(menu.Options) == 0 {
 		var err error
@@ -496,7 +564,21 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		if err != nil {
 			return "", err
 		}
+		if stale != nil && menu.Same(*stale) {
+			menu, err = s.waitMenu(ctx, stale)
+			if errors.Is(err, ErrAdditionalMenuInactive) {
+				return "", ErrMenuChanged
+			}
+			if err != nil {
+				return "", err
+			}
+		}
+		// The newly opened page can also have an operator choice
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
+		}
 	}
+	s.lastOperator = nil
 	find := func(options []string) int {
 		if service != "" {
 			if strings.HasPrefix(service, config.CustomServicePrefix) && len(keywords) == 1 {
@@ -537,6 +619,10 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			_ = s.Release(ctx)
 			return "", err
 		}
+		// A submenu can present an operator choice before any service match
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
+		}
 		if stuck(menu.Options) {
 			return "", ErrHotfix
 		}
@@ -563,29 +649,25 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	if err := s.ChooseOn(ctx, menu, index); err != nil {
 		return "", err
 	}
-	// Only a changed operator page can trigger an automatic selection
+	// Wait for GSX to show the page opened by the service choice
 	if autoOperator {
-		for range 6 {
-			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
-				return selected, err
+		for attempt := range 7 {
+			// Check the page immediately, then keep the existing polling window
+			if attempt > 0 {
+				if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
+					return selected, err
+				}
 			}
 			page := s.ReadMenu()
 			// GSX can briefly leave the old page in place or clear it while opening the next page.
 			if page.Same(menu) || len(page.Options) == 0 {
 				continue
 			}
-			// Fuel quantities need a user choice even when an operator was automatic
-			if page.IsFuelQuantity() {
-				break
+			if index := operatorChoice(page); index >= 0 {
+				return selected, s.chooseOperator(ctx, page, index)
 			}
-			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
-			if i >= 0 {
-				return selected, s.ChooseOn(ctx, page, i)
-			}
-			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
-			if strings.Contains(title, " operator ") || strings.Contains(title, " operators ") {
-				return selected, s.dismissOperator(ctx, page)
-			}
+			// Leave the first populated page to the idle timeout if nothing matches
+			break
 		}
 	}
 
@@ -604,30 +686,4 @@ func (s *Session) Location(ctx context.Context) (float64, float64, error) {
 
 func (s *Session) Altitude(ctx context.Context) (float64, error) {
 	return s.get(ctx, "PLANE ALTITUDE")
-}
-
-// Check the menu flag before falling back to the first row
-func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
-	if !page.Same(s.ReadMenu()) {
-		return ErrMenuChanged
-	}
-	err := s.Release(ctx)
-	if errors.Is(err, errWriteUncertain) || errors.Is(err, ErrDisconnected) {
-		return err
-	}
-	if waitErr := s.Sleep(ctx, 200*time.Millisecond); waitErr != nil {
-		return errors.Join(err, waitErr)
-	}
-	open, readErr := s.get(ctx, MenuOpen)
-	if readErr != nil || open < 0.5 {
-		return errors.Join(err, readErr)
-	}
-	if !page.Same(s.ReadMenu()) {
-		return ErrMenuChanged
-	}
-	if enableErr := s.set(ctx, Remote, 1); enableErr != nil {
-		return errors.Join(err, enableErr)
-	}
-	s.remote = true
-	return s.ChooseOn(ctx, page, 0)
 }
