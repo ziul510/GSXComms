@@ -917,7 +917,6 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 		}
 		auto := config.Get[bool](prefs, "auto_select_operator")
 		queuedReadouts := 0
-		var autoSelectedAt time.Time
 		execute := func(service string) (completed, playErrorCue bool) {
 			// Each preset service gets its own deadline even if earlier ones ran long
 			serviceCtx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
@@ -943,7 +942,8 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 					keywords = []string{customText}
 				}
 			}
-			// Capture a confirmed click before the panel wait and console redraw
+			// Track the click per step so later preset services keep their normal cues
+			var autoSelectedAt time.Time
 			session.OnAutoSelection = func(label string) {
 				autoSelectedAt = time.Now()
 				at := autoSelectedAt.Format("2006-01-02 15:04:05.000")
@@ -1007,8 +1007,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 				if service == config.ReadMenuAction {
 					readouts++
 				}
-				// Count preset entries without running later steps after an auto-click
-				if seen[service] || !autoSelectedAt.IsZero() {
+				if seen[service] {
 					continue
 				}
 				if completed, _ := execute(service); completed {

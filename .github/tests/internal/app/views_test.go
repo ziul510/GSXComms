@@ -787,16 +787,18 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	}
 }
 
-// One automatic click ends the command and leaves the menu to its close timer
+// An automatic click ends its step silently and only presets keep executing
 func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 	for _, test := range []struct {
-		name, initial, command, outcome string
-		choices                         []int
-		waitError                       bool
+		name, initial, command, outcome, cue string
+		choices                              []int
+		waitError                            bool
 	}{
-		{"pending operator", "", "prepare ramp", "0/2 services ok", []int{1}, false},
-		{"service then operator", "Ramp\nRequest refueling", "prepare ramp", "1/2 services ok", []int{0, 1}, false},
-		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", []int{0, 1}, true},
+		{"pending operator", "", "request refueling", "request refueling", "", []int{1}, false},
+		{"service then operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false},
+		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", "", []int{0, 1}, true},
+		{"preset after pending operator", "", "prepare ramp", "1/2 services ok", "catering", []int{1, 0}, false},
+		{"preset after service operator", "Ramp\nRequest refueling", "prepare ramp", "2/2 services ok", "catering", []int{0, 1, 0}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
@@ -806,7 +808,7 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			s.cfg.Put("simulation_mode", true)
 			s.cfg.Put("auto_select_operator", true)
 			s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
-			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING", "JETWAY"}}})
+			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING", "CATERING"}}})
 			operator := gsx.ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
 			page := operator
 			// The service choice advances the fake panel to the operator prompt
@@ -814,11 +816,18 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 				page = gsx.ParseMenu(test.initial)
 			}
 			transport := &menuChoices{}
-			transport.afterChoice = func() { page = operator }
+			transport.afterChoice = func() {
+				// The preset's next service uses the ramp menu after the operator click
+				if test.cue != "" && len(transport.selected) >= len(test.choices)-1 {
+					page = gsx.ParseMenu("Ramp\nRequest catering")
+					return
+				}
+				page = operator
+			}
 			session := gsx.New(transport, t.TempDir())
 			session.ReadMenu = func() gsx.Menu {
-				// A second page could contain another GSX Choice or a preset match
-				if len(transport.selected) == len(test.choices) {
+				// Standalone commands must never read back after the automatic click
+				if test.cue == "" && len(transport.selected) == len(test.choices) {
 					t.Fatal("read the page after the automatic click")
 				}
 				return page
@@ -834,15 +843,25 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			s.submit(test.command)
 			(<-s.jobs)(s.ctx, session)
 			s.main.FrameFn()
-			if !slices.Equal(transport.selected, test.choices) || len(s.audioQueue) != 0 {
-				t.Fatalf("GSX choices = %v, audio = %v", transport.selected, s.audioQueue)
+			if !slices.Equal(transport.selected, test.choices) {
+				t.Fatalf("GSX choices = %v, want %v", transport.selected, test.choices)
 			}
-			closeAt := s.operatorCloseAt
-			if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, closeAt.Add(-time.Nanosecond)) || !transport.open {
-				t.Fatal("GSX menu did not stay open until the close deadline")
-			}
-			if !s.handleOperatorMenuTimeout(session, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
-				t.Fatal("GSX menu did not close at the deadline")
+			// Only the later preset step may respond and supersede the operator timeout
+			if test.cue != "" {
+				if len(s.audioQueue) != 1 || s.audioQueue[0].cue != test.cue || !s.operatorCloseAt.IsZero() {
+					t.Fatalf("audio = %v, operator deadline = %v", s.audioQueue, s.operatorCloseAt)
+				}
+			} else {
+				if len(s.audioQueue) != 0 {
+					t.Fatalf("unexpected audio = %v", s.audioQueue)
+				}
+				closeAt := s.operatorCloseAt
+				if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, closeAt.Add(-time.Nanosecond)) || !transport.open {
+					t.Fatal("GSX menu did not stay open until the close deadline")
+				}
+				if !s.handleOperatorMenuTimeout(session, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
+					t.Fatal("GSX menu did not close at the deadline")
+				}
 			}
 			message := `Auto-selected menu option "GSX Choice – Menzies"`
 			console := strings.Join(s.lines, "\n")
