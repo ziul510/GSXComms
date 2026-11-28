@@ -787,6 +787,79 @@ func TestLocalSpeechKeepsOriginalPresetCodeword(t *testing.T) {
 	}
 }
 
+// Automatic operator clicks are logged without a service or error cue
+func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
+	for _, test := range []struct {
+		name, initial, command, outcome string
+		choices                         []int
+		waitError                       bool
+	}{
+		{"pending operator", "", "prepare ramp", "0/1 services ok", []int{1}, false},
+		{"service then operator", "Ramp\nRequest refueling", "prepare ramp", "1/1 services ok", []int{0, 1}, false},
+		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", []int{0, 1}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
+				jobs: make(chan func(context.Context, *gsx.Session), 1), debug: make(chan debugEvent, 10)}
+			s.debugEnabled.Store(true)
+			s.main = gui.NewTestWindow(t, gui.WindowCfg{State: s})
+			s.cfg.Put("simulation_mode", true)
+			s.cfg.Put("auto_select_operator", true)
+			s.cfg.Put("mute_gsx_audio_during_crew_voice", false)
+			s.cfg.Put("presets", []config.Preset{{Name: "Ramp", Codeword: "prepare ramp", Enabled: true, Services: []string{"REFUELING"}}})
+			operator := gsx.ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
+			page := operator
+			// The service choice advances the fake panel to the operator prompt
+			if test.initial != "" {
+				page = gsx.ParseMenu(test.initial)
+			}
+			transport := &menuChoices{}
+			transport.afterChoice = func() { page = operator }
+			session := gsx.New(transport, t.TempDir())
+			session.ReadMenu = func() gsx.Menu { return page }
+			session.Sleep = func(ctx context.Context, _ time.Duration) error {
+				// The audit event must survive a wait failure after the write succeeds
+				if test.waitError && len(transport.selected) == len(test.choices) {
+					return errors.New(test.outcome)
+				}
+				return ctx.Err()
+			}
+
+			s.submit(test.command)
+			(<-s.jobs)(s.ctx, session)
+			s.main.FrameFn()
+			if !slices.Equal(transport.selected, test.choices) || len(s.audioQueue) != 0 {
+				t.Fatalf("GSX choices = %v, audio = %v", transport.selected, s.audioQueue)
+			}
+			message := `Auto-selected menu option "GSX Choice – Menzies"`
+			console := strings.Join(s.lines, "\n")
+			if !strings.Contains(console, test.outcome) {
+				t.Fatalf("unexpected console: %s", console)
+			}
+			var consoleTimestamp string
+			for _, line := range s.lines {
+				if timestamp, ok := strings.CutSuffix(strings.TrimPrefix(line, "[GSX]: "), "  "+message); ok {
+					consoleTimestamp = timestamp
+					break
+				}
+			}
+			if _, err := time.Parse("2006-01-02 15:04:05.000", consoleTimestamp); err != nil {
+				t.Fatalf("missing timestamped auto-selection in console: %s", console)
+			}
+			for len(s.debug) != 0 {
+				line := (<-s.debug).line
+				if timestamp, _, _ := strings.Cut(line, "  "); strings.Contains(line, message) {
+					if _, err := time.Parse("2006-01-02 15:04:05.000", timestamp); err != nil {
+						t.Fatalf("invalid debug timestamp: %s", line)
+					}
+					return
+				}
+			}
+			t.Fatal("auto-selection missing from debug log")
+		})
+	}
+}
+
 func TestTypedReadoutPrecedesTransmissionGates(t *testing.T) {
 	s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(),
 		jobs: make(chan func(context.Context, *gsx.Session), 1)}

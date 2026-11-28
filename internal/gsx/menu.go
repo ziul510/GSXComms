@@ -95,14 +95,15 @@ func ParseMenu(raw string) Menu {
 
 // The transport carries simulator variables The panel file carries the menu text
 type Session struct {
-	Sim            Transport
-	ReadMenu       func() Menu
-	OnReadError    func(error)
-	OnChoice       func(Menu, int)
-	AfterSelection func()
-	BeforeChoice   func() error
-	Sleep          func(context.Context, time.Duration) error
-	remote         bool
+	Sim             Transport
+	ReadMenu        func() Menu
+	OnReadError     func(error)
+	OnChoice        func(Menu, int)
+	OnAutoSelection func(string)
+	AfterSelection  func()
+	BeforeChoice    func() error
+	Sleep           func(context.Context, time.Duration) error
+	remote          bool
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -484,17 +485,47 @@ func stuck(options []string) bool {
 	return a != b && slices.Contains(navigation, a) && slices.Contains(navigation, b)
 }
 
+// Report a confirmed click before the panel delay can be interrupted
+func (s *Session) chooseOperator(ctx context.Context, page Menu, index int) error {
+	return s.chooseOn(ctx, page, index, func() {
+		if s.OnAutoSelection != nil {
+			s.OnAutoSelection(page.Options[index])
+		}
+		if s.AfterSelection != nil {
+			s.AfterSelection()
+		}
+	})
+}
+
 func (s *Session) Execute(ctx context.Context, text, service string, keywords []string, autoOperator bool) (string, error) {
 	if !s.Connected() {
 		return "", ErrDisconnected
 	}
+	// Fuel quantity prompts must stay available for the pilot's choice
+	operatorChoice := func(page Menu) int {
+		if !autoOperator || page.IsFuelQuantity() {
+			return -1
+		}
+		return optionContaining(page.Options, []string{"gsx choice"}, "")
+	}
 	menu := s.ReadMenu()
+	// Select on a live prompt before reopening the menu can dismiss it
+	if operatorChoice(menu) >= 0 {
+		menu = s.ReadOpenMenu(ctx)
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
+		}
+	}
 	// Start services by opening the menu A text choice can use the current page
 	if service != "" || !s.RemoteActive() || len(menu.Options) == 0 {
 		var err error
 		menu, err = s.OpenMenuPage(ctx)
 		if err != nil {
 			return "", err
+		}
+		// The newly opened page can also have an operator choice
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
 		}
 	}
 	find := func(options []string) int {
@@ -537,6 +568,10 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			_ = s.Release(ctx)
 			return "", err
 		}
+		// A submenu can present an operator choice before any service match
+		if index := operatorChoice(menu); index >= 0 {
+			return "", s.chooseOperator(ctx, menu, index)
+		}
 		if stuck(menu.Options) {
 			return "", ErrHotfix
 		}
@@ -565,9 +600,12 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 	}
 	// Only a changed operator page can trigger an automatic selection
 	if autoOperator {
-		for range 6 {
-			if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
-				return selected, err
+		for attempt := range 7 {
+			// Check the page immediately, then keep the existing polling window
+			if attempt > 0 {
+				if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
+					return selected, err
+				}
 			}
 			page := s.ReadMenu()
 			// GSX can briefly leave the old page in place or clear it while opening the next page.
@@ -578,9 +616,8 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 			if page.IsFuelQuantity() {
 				break
 			}
-			i := slices.IndexFunc(page.Options, func(label string) bool { return menuLabel(label) == "gsx choice" })
-			if i >= 0 {
-				return selected, s.ChooseOn(ctx, page, i)
+			if index := operatorChoice(page); index >= 0 {
+				return selected, s.chooseOperator(ctx, page, index)
 			}
 			title := " " + strings.Join(commands.Tokens(page.Title), " ") + " "
 			if strings.Contains(title, " operator ") || strings.Contains(title, " operators ") {
@@ -629,5 +666,5 @@ func (s *Session) dismissOperator(ctx context.Context, page Menu) error {
 		return errors.Join(err, enableErr)
 	}
 	s.remote = true
-	return s.ChooseOn(ctx, page, 0)
+	return s.chooseOperator(ctx, page, 0)
 }

@@ -85,7 +85,7 @@ func TestScriptedSession(t *testing.T) {
 	menus := []Menu{
 		ParseMenu("<b>Ramp Services</b><br>[1] Additional Services<br>2. Close"),
 		ParseMenu("Additional Services\r\n# ignored\r\n1: Request potable water\r\n2) Back"),
-		ParseMenu("Choose your operator\n1. GSX Choice\n2. Swissport"),
+		ParseMenu("Choose your operator\n1. Swissport\n2. GSX Choice – Menzies"),
 	}
 	page := 0
 	s.ReadMenu = func() Menu { return menus[min(page, len(menus)-1)] }
@@ -97,6 +97,14 @@ func TestScriptedSession(t *testing.T) {
 		}
 	}
 	selections := 0
+	var autoSelections []string
+	// The audit event must correspond to the confirmed write before the panel delay
+	s.OnAutoSelection = func(label string) {
+		autoSelections = append(autoSelections, label)
+		if page != 3 || clock != choiceAt {
+			t.Errorf("auto-selection at %v on page %d, last write at %v", clock, page, choiceAt)
+		}
+	}
 	// Notify after writing the service or operator choice, before the panel delay.
 	s.AfterSelection = func() {
 		selections++
@@ -114,19 +122,71 @@ func TestScriptedSession(t *testing.T) {
 	if selections != 2 {
 		t.Errorf("got %d selection callbacks, want service and operator", selections)
 	}
+	if !reflect.DeepEqual(autoSelections, []string{"GSX Choice – Menzies"}) {
+		t.Errorf("auto-selections = %q", autoSelections)
+	}
 	if err := s.Close(); err != nil || !f.closed || s.Connected() {
 		t.Fatalf("close = %v, %+v", err, f)
 	}
-	want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuOpen, 0}, {Remote, 0}}
+	want := []operation{{Remote, 1}, {MenuOpen, 1}, {Remote, 0}, {Remote, 1}, {MenuChoice, 0}, {MenuChoice, 0}, {MenuChoice, 1}, {MenuOpen, 0}, {Remote, 0}}
 	if !reflect.DeepEqual(f.writes, want) {
 		t.Errorf("writes = %+v, want %+v", f.writes, want)
 	}
-	if clock != 2580*time.Millisecond {
+	if clock != 2080*time.Millisecond {
 		t.Errorf("clock = %v", clock)
 	}
 	s.Sim = &fakeSim{values: map[string]float64{Started: 1}}
 	if ready, _, err := s.Status(context.Background()); !ready || err != nil {
 		t.Fatalf("reconnect = %v, %v", ready, err)
+	}
+}
+
+// A pending operator prompt takes priority only while automatic selection is enabled
+func TestExecutePendingOperatorPrompt(t *testing.T) {
+	for _, autoOperator := range []bool{true, false} {
+		f := &fakeSim{values: map[string]float64{MenuOpen: 1}}
+		session := New(f, "")
+		page := ParseMenu("Choose an operator\nSwissport\nUse GSX CHOICE (Menzies)")
+		session.ReadMenu = func() Menu { return page }
+		session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+		var autoSelections []string
+		session.OnAutoSelection = func(label string) { autoSelections = append(autoSelections, label) }
+		selected, err := session.Execute(t.Context(), "request jetway", "JETWAY", []string{"jetway"}, autoOperator)
+		if autoOperator {
+			if selected != "" || err != nil || !reflect.DeepEqual(f.writes, []operation{{MenuChoice, 1}}) || !reflect.DeepEqual(autoSelections, page.Options[1:]) {
+				t.Fatalf("auto on: selection = %q, error = %v, writes = %v, events = %q", selected, err, f.writes, autoSelections)
+			}
+			continue
+		}
+		if selected != "" || !errors.Is(err, ErrNoMenuMatch) || len(autoSelections) != 0 {
+			t.Fatalf("auto off: selection = %q, error = %v, events = %q", selected, err, autoSelections)
+		}
+		for _, write := range f.writes {
+			if write.key == MenuChoice {
+				t.Fatalf("automatic click with the setting off: %v", write)
+			}
+		}
+	}
+}
+
+// A stale operator snapshot must not trigger a click when GSX has closed the menu
+func TestExecuteReopensClosedOperatorPrompt(t *testing.T) {
+	f := &fakeSim{values: map[string]float64{}}
+	session := New(f, "")
+	session.remote = true
+	page := ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
+	session.ReadMenu = func() Menu { return page }
+	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	session.OnAutoSelection = func(label string) { t.Errorf("clicked stale option %q", label) }
+	f.onWrite = func(key string, value float64) {
+		// The panel file can retain the old options until the next menu opens
+		if key == MenuOpen && value == 1 {
+			page = ParseMenu("Ramp\nRequest Jetway")
+		}
+	}
+	selected, err := session.Execute(t.Context(), "request jetway", "", nil, true)
+	if err != nil || selected != "Request Jetway" {
+		t.Fatalf("selection = %q, error = %v", selected, err)
 	}
 }
 
@@ -379,6 +439,8 @@ func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
 		session := New(f, "")
 		session.ReadMenu = func() Menu { return menu }
 		session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+		var autoSelections []string
+		session.OnAutoSelection = func(label string) { autoSelections = append(autoSelections, label) }
 		if _, err := session.Execute(t.Context(), "", "JETWAY", []string{"jetway"}, true); err != nil {
 			t.Fatal(err)
 		}
@@ -391,6 +453,9 @@ func TestOperatorWithoutGSXChoiceClosesBeforeFallback(t *testing.T) {
 		// Select the first operator only if the attempt to close that menu failed.
 		if (choices == 2) != failClose || (f.values[MenuOpen] == 1) != failClose {
 			t.Fatalf("failedClose=%t open=%v choices=%d", failClose, f.values[MenuOpen], choices)
+		}
+		if (!failClose && len(autoSelections) != 0) || (failClose && !reflect.DeepEqual(autoSelections, []string{"Swissport"})) {
+			t.Fatalf("failedClose=%t auto-selections = %q", failClose, autoSelections)
 		}
 	}
 }
