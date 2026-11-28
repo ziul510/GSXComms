@@ -485,16 +485,17 @@ func (s *state) simulator() {
 				s.async(s.retryConnection)
 				continue
 			}
-			if s.handleOperatorMenuTimeout(session, time.Now()) {
-				continue
-			}
-			if session.RemoteActive() {
+			if session.RemoteActive() || !s.operatorCloseAt.IsZero() {
 				// Idle polls only count as interaction when GSX supplies a changed page.
 				cache := s.menuCache.Load()
 				menu := readMenu()
-				s.rememberMenu(cache, menu, time.Now(), false)
+				now := time.Now()
+				s.rememberMenu(cache, menu, now, false)
 				if len(menu.Options) > 0 && !menu.Same(lastMenu) {
-					lastMenu, s.menuActivity = menu, time.Now()
+					lastMenu, s.menuActivity = menu, now
+				}
+				if s.handleOperatorMenuTimeout(session, menu, now) || !session.RemoteActive() {
+					continue
 				}
 				switch {
 				// Idle cleanup would close a fuel prompt while the pilot is deciding

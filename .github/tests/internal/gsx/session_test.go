@@ -176,14 +176,16 @@ func TestExecuteReopensClosedOperatorPrompt(t *testing.T) {
 	session.remote = true
 	page := ParseMenu("Operators\nSwissport\nGSX Choice – Menzies")
 	session.ReadMenu = func() Menu { return page }
-	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	session.OnAutoSelection = func(label string) { t.Errorf("clicked stale option %q", label) }
-	f.onWrite = func(key string, value float64) {
-		// The panel file can retain the old options until the next menu opens
-		if key == MenuOpen && value == 1 {
-			page = ParseMenu("Ramp\nRequest Jetway")
+	var elapsed time.Duration
+	session.Sleep = func(ctx context.Context, delay time.Duration) error {
+		elapsed += delay
+		// The old panel can survive the full reopen delay
+		if elapsed >= 650*time.Millisecond {
+			page = ParseMenu("Ramp\nRequest Jetway\nRequest Catering")
 		}
+		return ctx.Err()
 	}
+	session.OnAutoSelection = func(label string) { t.Errorf("clicked stale option %q", label) }
 	selected, err := session.Execute(t.Context(), "request jetway", "", nil, true)
 	if err != nil || selected != "Request Jetway" {
 		t.Fatalf("selection = %q, error = %v", selected, err)

@@ -24,9 +24,14 @@ type menuSnapshot struct {
 
 const idleMenuTimeout = 10 * time.Second
 
-// Leave the page opened by an automatic operator click alone until close
-func (s *state) handleOperatorMenuTimeout(session *gsx.Session, now time.Time) bool {
+// Keep the automatic close deadline unless GSX asks for a manual fuel quantity
+func (s *state) handleOperatorMenuTimeout(session *gsx.Session, menu gsx.Menu, now time.Time) bool {
 	if s.operatorCloseAt.IsZero() {
+		return false
+	}
+	// Leave fuel prompts available even when the pilot takes longer than the deadline
+	if menu.IsFuelQuantity() {
+		s.operatorCloseAt = time.Time{}
 		return false
 	}
 	// The deadline is based on the confirmed click, even if GSX changes the page

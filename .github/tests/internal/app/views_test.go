@@ -651,8 +651,13 @@ type menuChoices struct {
 	open        bool
 }
 
-// Zero lets the session exercise its normal closed menu sequence in tests
-func (*menuChoices) Get(ctx context.Context, _ string) (float64, error) { return 0, ctx.Err() }
+// Keep the simulator flag in sync with menu open and close writes
+func (m *menuChoices) Get(ctx context.Context, name string) (float64, error) {
+	if name == gsx.MenuOpen && m.open {
+		return 1, ctx.Err()
+	}
+	return 0, ctx.Err()
+}
 func (m *menuChoices) Set(ctx context.Context, name string, value float64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -792,13 +797,14 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 	for _, test := range []struct {
 		name, initial, command, outcome, cue string
 		choices                              []int
-		waitError                            bool
+		waitError, fuel                      bool
 	}{
-		{"pending operator", "", "request refueling", "request refueling", "", []int{1}, false},
-		{"service then operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false},
-		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", "", []int{0, 1}, true},
-		{"preset after pending operator", "", "prepare ramp", "1/2 services ok", "catering", []int{1, 0}, false},
-		{"preset after service operator", "Ramp\nRequest refueling", "prepare ramp", "2/2 services ok", "catering", []int{0, 1, 0}, false},
+		{"pending operator", "", "request refueling", "request refueling", "", []int{1}, false, false},
+		{"service then operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false, false},
+		{"fuel after operator", "Ramp\nRequest refueling", "request refueling", `Menu option "Request refueling" matched`, "", []int{0, 1}, false, true},
+		{"interrupted panel wait", "Ramp\nRequest refueling", "request refueling", "interrupted panel wait", "", []int{0, 1}, true, false},
+		{"preset after pending operator", "", "prepare ramp", "1/2 services ok", "catering", []int{1, 0}, false, false},
+		{"preset after service operator", "Ramp\nRequest refueling", "prepare ramp", "2/2 services ok", "catering", []int{0, 1, 0}, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := &state{dir: t.TempDir(), cfg: config.Defaults(), ctx: t.Context(), speechReady: true,
@@ -815,14 +821,15 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 			if test.initial != "" {
 				page = gsx.ParseMenu(test.initial)
 			}
-			transport := &menuChoices{}
+			transport := &menuChoices{open: test.initial == ""}
+			fuel := gsx.ParseMenu("Select refueling level\n50%\n100%")
 			transport.afterChoice = func() {
-				// The preset's next service uses the ramp menu after the operator click
-				if test.cue != "" && len(transport.selected) >= len(test.choices)-1 {
-					page = gsx.ParseMenu("Ramp\nRequest catering")
-					return
+				// Fuel prompts replace the operator page once GSX chooses the provider
+				if test.fuel && len(transport.selected) == len(test.choices) {
+					page = fuel
+				} else if test.cue == "" || len(transport.selected) < len(test.choices)-1 {
+					page = operator
 				}
-				page = operator
 			}
 			session := gsx.New(transport, t.TempDir())
 			session.ReadMenu = func() gsx.Menu {
@@ -832,7 +839,15 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 				}
 				return page
 			}
+			var operatorWait time.Duration
 			session.Sleep = func(ctx context.Context, delay time.Duration) error {
+				// Couatl can leave the operator page visible beyond the click's 300 ms wait
+				if test.cue != "" && len(transport.selected) == len(test.choices)-1 {
+					operatorWait += delay
+					if operatorWait >= 400*time.Millisecond {
+						page = gsx.ParseMenu("Ramp\nRequest catering")
+					}
+				}
 				// The audit event must survive a wait failure after the write succeeds
 				if test.waitError && delay == 300*time.Millisecond && len(transport.selected) == len(test.choices) {
 					return errors.New(test.outcome)
@@ -856,10 +871,13 @@ func TestAutoOperatorLogsWithoutResponse(t *testing.T) {
 					t.Fatalf("unexpected audio = %v", s.audioQueue)
 				}
 				closeAt := s.operatorCloseAt
-				if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, closeAt.Add(-time.Nanosecond)) || !transport.open {
+				if test.fuel {
+					if closeAt.IsZero() || !page.IsFuelQuantity() || s.handleOperatorMenuTimeout(session, page, closeAt) || !transport.open || !s.operatorCloseAt.IsZero() {
+						t.Fatal("automatic operator close dismissed the fuel quantity prompt")
+					}
+				} else if closeAt.IsZero() || !s.handleOperatorMenuTimeout(session, page, closeAt.Add(-time.Nanosecond)) || !transport.open {
 					t.Fatal("GSX menu did not stay open until the close deadline")
-				}
-				if !s.handleOperatorMenuTimeout(session, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
+				} else if !s.handleOperatorMenuTimeout(session, page, closeAt) || transport.open || !s.operatorCloseAt.IsZero() {
 					t.Fatal("GSX menu did not close at the deadline")
 				}
 			}

@@ -104,6 +104,7 @@ type Session struct {
 	BeforeChoice    func() error
 	Sleep           func(context.Context, time.Duration) error
 	remote          bool
+	lastOperator    *Menu
 }
 
 // The app can create a session before connecting and reuse it as transports come and go
@@ -327,6 +328,9 @@ func (s *Session) Release(ctx context.Context) error {
 	menuErr := s.set(ctx, MenuOpen, 0)
 	_ = s.Sleep(ctx, 100*time.Millisecond)
 	err := errors.Join(menuErr, s.set(ctx, Remote, 0))
+	if err == nil {
+		s.lastOperator = nil
+	}
 	// Keep tracking remote control after a failed release so idle cleanup can retry
 	s.remote = err != nil && s.Connected()
 	return err
@@ -339,6 +343,7 @@ func (s *Session) Close() error {
 	defer func() {
 		s.Sim = nil
 		s.remote = false
+		s.lastOperator = nil
 	}()
 	// A monitoring session should leave a menu opened by the simulator alone
 	if !s.remote {
@@ -384,6 +389,10 @@ func (s *Session) choose(ctx context.Context, page Menu, index int, check func()
 	}
 	if err := s.write(ctx, MenuChoice, float64(index), check); err != nil {
 		return err
+	}
+	// A choice on a different page confirms the previous prompt advanced
+	if s.lastOperator != nil && !page.Same(*s.lastOperator) {
+		s.lastOperator = nil
 	}
 	// Start command side effects before waiting for GSX to update the panel
 	if afterSelection != nil {
@@ -488,6 +497,7 @@ func stuck(options []string) bool {
 // Report a confirmed click before the panel delay can be interrupted
 func (s *Session) chooseOperator(ctx context.Context, page Menu, index int) error {
 	return s.chooseOn(ctx, page, index, func() {
+		s.lastOperator = &page
 		if s.OnAutoSelection != nil {
 			s.OnAutoSelection(page.Options[index])
 		}
@@ -495,6 +505,24 @@ func (s *Session) chooseOperator(ctx context.Context, page Menu, index int) erro
 			s.AfterSelection()
 		}
 	})
+}
+
+// Wait for Couatl to advance or close a confirmed operator prompt
+func (s *Session) waitAfterOperator(ctx context.Context, previous Menu) (Menu, error) {
+	for range 8 {
+		open, err := s.get(ctx, MenuOpen)
+		if err != nil || open < 0.5 {
+			return Menu{}, err
+		}
+		page := s.ReadMenu()
+		if len(page.Options) != 0 && !page.Same(previous) {
+			return page, nil
+		}
+		if err := s.Sleep(ctx, 500*time.Millisecond); err != nil {
+			return Menu{}, err
+		}
+	}
+	return Menu{}, ErrMenuChanged
 }
 
 func (s *Session) Execute(ctx context.Context, text, service string, keywords []string, autoOperator bool) (string, error) {
@@ -509,11 +537,24 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		return optionContaining(page.Options, []string{"gsx choice"}, "")
 	}
 	menu := s.ReadMenu()
+	stale := s.lastOperator
+	if stale != nil && (len(menu.Options) == 0 || menu.Same(*stale)) {
+		var err error
+		menu, err = s.waitAfterOperator(ctx, *stale)
+		if err != nil {
+			return "", err
+		}
+	}
 	// Select on a live prompt before reopening the menu can dismiss it
 	if operatorChoice(menu) >= 0 {
+		previous := menu
 		menu = s.ReadOpenMenu(ctx)
 		if index := operatorChoice(menu); index >= 0 {
 			return "", s.chooseOperator(ctx, menu, index)
+		}
+		// The old file can outlive a closed menu and linger after reopening
+		if len(menu.Options) == 0 {
+			stale = &previous
 		}
 	}
 	// Start services by opening the menu A text choice can use the current page
@@ -523,11 +564,21 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		if err != nil {
 			return "", err
 		}
+		if stale != nil && menu.Same(*stale) {
+			menu, err = s.waitMenu(ctx, stale)
+			if errors.Is(err, ErrAdditionalMenuInactive) {
+				return "", ErrMenuChanged
+			}
+			if err != nil {
+				return "", err
+			}
+		}
 		// The newly opened page can also have an operator choice
 		if index := operatorChoice(menu); index >= 0 {
 			return "", s.chooseOperator(ctx, menu, index)
 		}
 	}
+	s.lastOperator = nil
 	find := func(options []string) int {
 		if service != "" {
 			if strings.HasPrefix(service, config.CustomServicePrefix) && len(keywords) == 1 {
