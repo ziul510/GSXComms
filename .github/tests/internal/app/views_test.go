@@ -683,6 +683,8 @@ func TestCommandUsesCurrentMenuAndPreservesPresetOrder(t *testing.T) {
 	tr := &menuChoices{}
 	session := gsx.New(tr, "")
 	session.ReadMenu = func() gsx.Menu { return current }
+	s.menuCache.Store(&sessionMenuCache{})
+	s.observeMenuReads(session)
 	session.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 	// A command queued at a valid speed can still be rejected when it runs

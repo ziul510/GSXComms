@@ -91,7 +91,10 @@ type state struct {
 	ptt                                              string
 	connected, ready, busy, overlay                  bool
 	menu                                             gsx.Menu
-	menuWatch                                        bool // owned by the simulator loop
+	menuCache                                        atomic.Pointer[sessionMenuCache]
+	menuRefreshAfter                                 time.Time // UI thread only
+	menuWatch                                        bool      // owned by the simulator loop
+	menuOpened                                       bool      // the overlay acquired remote control
 	menuActivity                                     time.Time
 	lastConnect                                      time.Time
 	servicesMu                                       sync.Mutex
@@ -399,6 +402,7 @@ func (s *state) simulator() {
 	defer close(s.done)
 	session := gsx.New(nil, gsx.Panel())
 	defer session.Close()
+	readMenu := s.observeMenuReads(session)
 	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
 	var lastMenu gsx.Menu
@@ -419,9 +423,13 @@ func (s *state) simulator() {
 	session.OnChoice = func(page gsx.Menu, index int) {
 		s.trace("GSX", fmt.Sprintf("Selected slot %d of %d", index+1, len(page.Options)))
 		s.menuActivity = time.Now()
+		// The choice can open another prompt, so hiding the overlay should leave it alone.
+		s.menuOpened = false
+		cache := s.menuCache.Load()
+		s.rememberMenu(cache, page, s.menuActivity, true)
 		s.async(func() {
 			// Only add a highlight if the overlay is still open when the callback runs.
-			if !s.overlay {
+			if !s.overlay || cache == nil || s.menuCache.Load() != cache {
 				return
 			}
 			s.highlights = append(s.highlights, menuHighlight{page, index, time.Now().Add(time.Second)})
@@ -441,7 +449,7 @@ func (s *state) simulator() {
 			pollDone = nil
 			s.location.Store(nil)
 			lastMenu, lastReopen, s.menuActivity = gsx.Menu{}, time.Time{}, time.Time{}
-			s.menuWatch = false
+			s.menuWatch, s.menuOpened = false, false
 			s.resetServices()
 		default:
 		}
@@ -464,15 +472,20 @@ func (s *state) simulator() {
 			// Start telemetry once per connected session after the menu loop has established it.
 			if session.Connected() && pollDone == nil {
 				pollDone = make(chan struct{})
-				go s.pollSimulator(pollCtx, session.Sim, pollDone)
+				cache := &sessionMenuCache{}
+				s.menuCache.Store(cache)
+				go s.pollSimulator(pollCtx, session.Sim, cache, pollDone)
 			}
 		case <-ticker.C:
 			if !session.Connected() {
 				s.async(s.retryConnection)
 				continue
 			}
-			menu := session.ReadMenu()
 			if session.RemoteActive() {
+				// Idle polls only count as interaction when GSX supplies a changed page.
+				cache := s.menuCache.Load()
+				menu := readMenu()
+				s.rememberMenu(cache, menu, time.Now(), false)
 				if len(menu.Options) > 0 && !menu.Same(lastMenu) {
 					lastMenu, s.menuActivity = menu, time.Now()
 				}
@@ -480,49 +493,38 @@ func (s *state) simulator() {
 				case time.Since(s.menuActivity) >= 10*time.Second:
 					s.trace("GSX", "Releasing the idle menu")
 					ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
-					// Save a fresh page before releasing remote control so the overlay still has choices.
-					if s.menuWatch {
-						page, err := session.RefreshAndRelease(ctx)
-						if len(page.Options) > 0 {
-							menu = page
-						}
-						if err != nil {
-							s.traceFailure("GSX", "Could not refresh and release the idle menu", err)
-						}
+					// The cache already contains the latest page, including across release.
+					if err := session.Release(ctx); err != nil {
+						s.traceFailure("GSX", "Could not release the idle menu", err)
 					} else {
-						_ = session.Release(ctx)
+						s.menuOpened = false
 					}
 					cancel()
-				case s.menuWatch && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
+				case s.menuOpened && len(menu.Options) == 0 && time.Since(lastReopen) >= 2*time.Second:
 					lastReopen = time.Now()
 					ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 					if err := session.Open(ctx); err == nil {
-						menu = session.ReadMenu()
+						session.ReadMenu()
 					}
 					cancel()
 				}
-			}
-			if len(menu.Options) > 0 {
-				s.async(func() {
-					if s.overlay {
-						s.menu = menu
-					}
-				})
 			}
 		}
 	}
 }
 
 // Telemetry shares the transport one exchange at a time, independently of preset timing
-func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, done chan struct{}) {
+func (s *state) pollSimulator(ctx context.Context, sim gsx.Transport, cache *sessionMenuCache, done chan struct{}) {
 	lost := false
 	defer func() {
 		s.groundSpeed.Store(nil)
 		s.pttAltitude.Store(nil)
 		if lost {
+			// Detach immediately because a command may still be reading the old session.
+			s.menuCache.CompareAndSwap(cache, nil)
 			s.async(func() {
 				s.connected, s.ready, s.overlay = false, false, false
-				s.menu, s.highlights = gsx.Menu{}, nil
+				s.menu, s.highlights, s.menuRefreshAfter = gsx.Menu{}, nil, time.Time{}
 				s.log("SYS", "Disconnected from SimConnect")
 				if s.debugEnabled.Load() {
 					go s.traceLocation(s.cfg, nil)
@@ -679,47 +681,6 @@ func (s *state) toggleConnect() {
 	})
 }
 
-func (s *state) toggleMenu() {
-	// Leave the overlay visible if the queued close couldn't be scheduled
-	if s.overlay {
-		if s.addJob(func(ctx context.Context, session *gsx.Session) {
-			s.menuWatch = false
-			if session.RemoteActive() {
-				if err := session.Release(ctx); err != nil {
-					s.traceFailure("GSX", "Could not release the menu", err)
-				}
-			}
-		}) {
-			s.overlay = false
-		}
-		return
-	}
-	if !s.ready {
-		return
-	}
-	if s.addJob(func(ctx context.Context, session *gsx.Session) {
-		s.menuWatch = true
-		s.menuActivity = time.Now()
-		menu, err := session.OpenMenuPage(ctx)
-		if err != nil {
-			s.traceFailure("GSX", "Could not open the menu", err)
-		} else {
-			s.trace("GSX", fmt.Sprintf("Menu opened with %d options", len(menu.Options)))
-		}
-		s.async(func() {
-			if err != nil {
-				s.log("GSX", err.Error())
-				return
-			}
-			if s.overlay {
-				s.menu = menu
-			}
-		})
-	}) {
-		s.menu, s.highlights, s.overlay = gsx.Menu{}, nil, true
-	}
-}
-
 // selectNumber runs on the simulator loop so it can reacquire the same page after idle release
 func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx.Menu, index int, prefs config.Values) {
 	if !s.menuWatch {
@@ -737,13 +698,13 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 	current := session.ReadMenu()
 	var err error
 	if !session.RemoteActive() || len(current.Options) == 0 {
-		current, err = session.OpenMenuPage(ctx)
+		_, err = session.OpenMenuPage(ctx)
 	}
 	if err == nil {
 		// Select against the page the user saw because reopening can return different choices.
 		err = session.ChooseOn(ctx, page, index)
 		if err != nil {
-			current = session.ReadMenu()
+			session.ReadMenu()
 		}
 	}
 	if err != nil {
@@ -753,9 +714,6 @@ func (s *state) selectNumber(ctx context.Context, session *gsx.Session, page gsx
 		if err != nil {
 			s.log("GSX", err.Error())
 			s.cue(prefs, "error", "", true)
-			if s.overlay && (errors.Is(err, gsx.ErrMenuChanged) || len(current.Options) > 0) {
-				s.menu = current
-			}
 			return
 		}
 		s.log("GSX", fmt.Sprintf("Menu item %d selected by number", index+1))
@@ -974,12 +932,7 @@ func (s *state) submitCommand(input string, localSpeech bool) {
 			}
 			if err != nil {
 				if errors.Is(err, gsx.ErrMenuChanged) {
-					page := session.ReadMenu()
-					s.async(func() {
-						if s.overlay {
-							s.menu = page
-						}
-					})
+					session.ReadMenu()
 				}
 				log("GSX", err.Error())
 				return false
