@@ -233,6 +233,39 @@ func TestServiceUsesCustomMenuKeywords(t *testing.T) {
 	}
 }
 
+// Check the slot sent to GSX when boarding and deboarding labels overlap
+func TestExecuteDistinguishesBoardingAndDeboarding(t *testing.T) {
+	for _, test := range []struct {
+		name, options, service, keyword, selected string
+		slot                                      int
+	}{
+		{"boarding", "Request Deboarding\nRequest Boarding", "BOARDING", "board", "Request Boarding", 1},
+		{"boarding with hyphenated deboarding", "Request De-boarding\nRequest Boarding", "BOARDING", "board", "Request Boarding", 1},
+		{"boarding unavailable", "Request Deboarding", "BOARDING", "board", "", -1},
+		{"deboarding", "Request Boarding\nRequest Deboarding", "DEBOARDING", "deboard", "Request Deboarding", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := &fakeSim{values: map[string]float64{}}
+			s := New(f, "")
+			s.ReadMenu = func() Menu { return ParseMenu("GSX\n" + test.options) }
+			s.Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+			selected, err := s.Execute(t.Context(), "", test.service, []string{test.keyword}, false)
+			choice, wroteChoice := f.values[MenuChoice]
+			// When boarding is unavailable, GSX must receive no choice
+			if test.slot < 0 {
+				if !errors.Is(err, ErrNoMenuMatch) || selected != "" || wroteChoice {
+					t.Fatalf("selected %q, wrote choice %t, error %v", selected, wroteChoice, err)
+				}
+				return
+			}
+			// Check both the reported label and the slot sent to the simulator
+			if err != nil || selected != test.selected || !wroteChoice || choice != float64(test.slot) {
+				t.Fatalf("selected %q, choice %v, wrote choice %t, error %v", selected, choice, wroteChoice, err)
+			}
+		})
+	}
+}
+
 func TestExecuteWaitsForAdditionalServices(t *testing.T) {
 	f := &fakeSim{values: map[string]float64{}}
 	s := New(f, "")

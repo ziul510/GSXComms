@@ -441,11 +441,18 @@ func (s *Session) waitMenu(ctx context.Context, previous *Menu) (Menu, error) {
 	return menu, ErrMenuInactive
 }
 
+var deboardingLabel = regexp.MustCompile(`\bde[\s_-]*board`)
+
 // Use menu order to break ties when several labels contain a service term
-func optionContaining(options []string, keywords []string) int {
+func optionContaining(options []string, keywords []string, service string) int {
 	for i, option := range options {
+		label := strings.ToLower(option)
+		// The boarding keyword also matches deboarding, even with a separator
+		if service == "BOARDING" && deboardingLabel.MatchString(label) {
+			continue
+		}
 		for _, word := range keywords {
-			if strings.Contains(strings.ToLower(option), strings.ToLower(word)) {
+			if strings.Contains(label, strings.ToLower(word)) {
 				return i
 			}
 		}
@@ -491,7 +498,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 					return index
 				}
 			}
-			return optionContaining(options, keywords)
+			return optionContaining(options, keywords, service)
 		}
 		// Without a service ID, score the transcript against the visible labels
 		index, _ := commands.Match(text, options)
@@ -508,7 +515,7 @@ func (s *Session) Execute(ctx context.Context, text, service string, keywords []
 		}
 	}
 	// Search the submenu only after the current page has no match
-	if extra := optionContaining(menu.Options, []string{"additional services"}); index < 0 && extra >= 0 {
+	if extra := optionContaining(menu.Options, []string{"additional services"}, ""); index < 0 && extra >= 0 {
 		parent := menu
 		if err := s.chooseOn(ctx, menu, extra, nil); err != nil {
 			return "", err
