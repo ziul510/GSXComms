@@ -108,6 +108,10 @@ func (s *state) toggleMenu() {
 			return
 		}
 		s.menuActivity = time.Now()
+		// Reading an open page avoids pulsing remote control on a live prompt
+		if len(session.ReadOpenMenu(ctx).Options) != 0 {
+			return
+		}
 		menu, err := session.OpenMenuPage(ctx)
 		s.menuOpened = session.RemoteActive()
 		if err != nil {

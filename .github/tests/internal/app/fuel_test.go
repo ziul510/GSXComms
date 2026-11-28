@@ -19,6 +19,14 @@ type fuelMenuTransport struct {
 	menuWrites int
 }
 
+// Model the native menu flag independently of ownership by the app
+func (f *fuelMenuTransport) Get(ctx context.Context, name string) (float64, error) {
+	if name == gsx.MenuOpen && f.open {
+		return 1, ctx.Err()
+	}
+	return f.menuChoices.Get(ctx, name)
+}
+
 // Count flag writes because reopening the menu can dismiss the fuel prompt.
 func (f *fuelMenuTransport) Set(ctx context.Context, name string, value float64) error {
 	if name == gsx.MenuOpen || name == gsx.Remote {
@@ -98,5 +106,24 @@ func TestFuelQuantityCommandUsesPendingGSXMenu(t *testing.T) {
 					transport.selected, tt.want, transport.menuWrites, session.RemoteActive())
 			}
 		})
+	}
+}
+
+// Refreshing a stale overlay must leave the native fuel prompt open
+func TestShowMenuReadsAnOpenFuelPrompt(t *testing.T) {
+	s, cache := testMenuState(t)
+	page := gsx.ParseMenu("Select refueling level\n50%\n100%")
+	s.rememberMenu(cache, page, time.Now().Add(-15*time.Second), true)
+	transport := &fuelMenuTransport{menuChoices: menuChoices{open: true}}
+	session := gsx.New(transport, t.TempDir())
+	session.ReadMenu = func() gsx.Menu { return page }
+	s.observeMenuReads(session)
+	s.toggleMenu()
+	(<-s.jobs)(s.ctx, session)
+	s.main.FrameFn()
+	s.toggleMenu()
+	(<-s.jobs)(s.ctx, session)
+	if !s.menu.Same(page) || transport.menuWrites != 0 || !transport.open {
+		t.Fatalf("menu = %+v, flag writes = %d, native menu open = %v", s.menu, transport.menuWrites, transport.open)
 	}
 }

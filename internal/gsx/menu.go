@@ -313,6 +313,14 @@ func (s *Session) Toggle(ctx context.Context) error {
 	return s.Open(ctx)
 }
 
+// ReadOpenMenu gets the current page without changing its remote control state
+func (s *Session) ReadOpenMenu(ctx context.Context) Menu {
+	if open, err := s.get(ctx, MenuOpen); err == nil && open >= 0.5 {
+		return s.ReadMenu()
+	}
+	return Menu{}
+}
+
 func (s *Session) Release(ctx context.Context) error {
 	// Close the menu first, then attempt to release remote control even if closing failed
 	menuErr := s.set(ctx, MenuOpen, 0)
